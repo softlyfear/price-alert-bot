@@ -16,7 +16,7 @@ class DataBaseUrl(BaseSettings):
     expire_on_commit: bool = False
 
     model_config = {
-        "env_prefix": "BD_",
+        "env_prefix": "DB_",
     }
 
 
@@ -33,7 +33,7 @@ class BotSecret(BaseSettings):
 class Settings(BaseSettings):
     """All settings for import."""
 
-    bd: DataBaseUrl = DataBaseUrl()
+    db: DataBaseUrl = DataBaseUrl()
     tg: BotSecret = BotSecret()
 
     model_config = {
