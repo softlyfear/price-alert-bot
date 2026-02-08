@@ -6,15 +6,15 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from app.core import settings
 
 async_engine = create_async_engine(
-    settings.bd.url,
-    echo=settings.bd.echo,
+    settings.db.url,
+    echo=settings.db.echo,
 )
 
 
 async_session = async_sessionmaker(
     bind=async_engine,
-    autoflush=settings.bd.autoflush,
-    expire_on_commit=settings.bd.expire_on_commit,
+    autoflush=settings.db.autoflush,
+    expire_on_commit=settings.db.expire_on_commit,
 )
 
 
