@@ -28,6 +28,7 @@ dev = [
     "ruff>=0.15.0",
 ]
 
+
 [tool.ruff]
 line-length = 88
 target-version = "py314"
@@ -48,3 +49,15 @@ select = [
 
 [tool.ruff.lint.isort]
 force-single-line = true
+
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_untyped_fields = true
