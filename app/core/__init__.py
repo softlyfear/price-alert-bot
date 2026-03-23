@@ -1,7 +1,2 @@
-from app.core.config import settings
-from app.core.deps import SessionDep
-
-__all__ = [
-    "settings",
-    "SessionDep",
-]
+from app.core.config import settings as settings
+from app.core.deps import SessionDep as SessionDep
