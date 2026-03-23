@@ -6,7 +6,7 @@ from aiogram import Dispatcher
 from app.core import settings
 
 bot = Bot(
-    token=settings.tg.bot_token,
+    token=settings.tg.BOT_TOKEN,
 )
 
 dispatcher = Dispatcher()

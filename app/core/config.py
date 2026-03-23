@@ -44,10 +44,11 @@ class DatabaseSettings(BaseSettings):
 class BotSecret(BaseSettings):
     """Telegram bot configuration."""
 
-    bot_token: str = ""
+    BOT_TOKEN: str
 
     model_config = {
         "env_prefix": "TG_",
+        "env_file": BASE_DIR / ".env",
     }
 
 
