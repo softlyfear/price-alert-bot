@@ -49,6 +49,7 @@ class BotSecret(BaseSettings):
     model_config = {
         "env_prefix": "TG_",
         "env_file": BASE_DIR / ".env",
+        "extra": "ignore",
     }
 
 
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
 
     model_config = {
         "env_file": BASE_DIR / ".env",
+        "extra": "ignore",
     }
 
 
