@@ -1,8 +1,7 @@
 """Telegram bot application entry point."""
 
-import asyncio
-
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
+from aiogram import Dispatcher
 
 from app.core import settings
 

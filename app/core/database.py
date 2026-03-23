@@ -2,19 +2,25 @@
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.core import settings
 
 async_engine = create_async_engine(
-    settings.db.url,
-    echo=settings.db.echo,
+    url=settings.db.DATABASE_URL,
+    echo=settings.db.ECHO,
+    pool_size=settings.db.POOL_SIZE,
+    max_overflow=settings.db.MAX_OVERFLOW,
+    pool_pre_ping=settings.db.POOL_PRE_PING,
+    pool_recycle=settings.db.POOL_RECYCLE,
 )
-
 
 async_session = async_sessionmaker(
     bind=async_engine,
-    autoflush=settings.db.autoflush,
-    expire_on_commit=settings.db.expire_on_commit,
+    autoflush=settings.db.AUTOFLUSH,
+    expire_on_commit=settings.db.EXPIRE_ON_COMMIT,
 )
 
 
