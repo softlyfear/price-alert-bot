@@ -18,7 +18,7 @@ help:
 	@echo ""
 	@echo "$(GREEN)Quality:$(NC)"
 	@echo "  fmt            — Format + fix code (ruff)"
-	@echo "  type           — Type check (ty)"
+	@echo "  type           — Type check (mypy)"
 	@echo "  check          — fmt + type"
 	@echo "  pre-commit     — Run pre-commit hooks"
 	@echo ""
@@ -68,7 +68,7 @@ fmt:
 
 type:
 	@echo "$(GREEN)==> Type checking...$(NC)"
-	@uv run ty check || echo "$(YELLOW)⚠ Type issues found (non-critical)$(NC)"
+	@uv run mypy . || echo "$(YELLOW)⚠ Type issues found (non-critical)$(NC)"
 
 check: fmt type
 	@echo "$(GREEN)==> All checks passed!$(NC)"
@@ -123,7 +123,7 @@ docker-logs:
 docker-restart: docker-down docker-up
 
 clean:
-	@find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o -name .ty_cache -o -name htmlcov -o -name "*.egg-info" \) -exec rm -rf {} + 2>/dev/null || true
+	@find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o -name .mypy_cache -o -name htmlcov -o -name "*.egg-info" \) -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f \( -name "*.pyc" -o -name "*.pyo" -o -name .coverage \) -delete 2>/dev/null || true
 	@echo "$(GREEN)==> Clean!$(NC)"
 
