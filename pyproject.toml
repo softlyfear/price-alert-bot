@@ -48,6 +48,8 @@ select = [
     "T20"
 ]
 
+ignore = ["UP037"]
+
 [tool.ruff.lint.isort]
 force-single-line = true
 
