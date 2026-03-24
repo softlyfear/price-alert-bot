@@ -1,15 +1,15 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class AlertDirection(Enum):
-    """Enum for price alerts."""
+class AlertDirection(StrEnum):
+    """Directional trigger for price threshold alerts."""
 
-    BELOW = "below"
-    ABOVE = "above"
+    below = "below"
+    above = "above"
 
 
-class Marketplace(Enum):
-    """Enam for chose marketplace."""
+class Marketplace(StrEnum):
+    """Supported e-commerce platforms for product tracking."""
 
-    WB = "wb"
-    OZON = "ozon"
+    wb = "wb"
+    ozon = "ozon"
