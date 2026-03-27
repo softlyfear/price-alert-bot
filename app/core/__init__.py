@@ -1,2 +1,1 @@
-from app.core.config import settings as settings
-from app.core.deps import SessionDep as SessionDep
+from app.core.config import get_settings as get_settings

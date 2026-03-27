@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean
+from sqlalchemy import CheckConstraint
 from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
@@ -25,17 +26,25 @@ class Alert(Base, TimestampMixin):
 
     __tablename__ = "alerts"
 
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    product_id: Mapped[int] = mapped_column(
-        ForeignKey("products.id", ondelete="CASCADE")
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    target_price: Mapped[int] = mapped_column()
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
+    target_price: Mapped[int] = mapped_column(CheckConstraint("target_price >= 0"))
     direction: Mapped[AlertDirection] = mapped_column(Enum(AlertDirection))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        UniqueConstraint("user_id", "product_id", name="uq_alerts_user_product"),
+        UniqueConstraint(
+            "user_id",
+            "product_id",
+            "direction",
+            "target_price",
+            name="uq_alerts_user_product_logic",
+        ),
     )
 
     product: Mapped["Product"] = relationship(
