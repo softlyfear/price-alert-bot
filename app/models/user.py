@@ -1,3 +1,5 @@
+"""User model."""
+
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger

@@ -1,3 +1,5 @@
+"""Enum marketplace and alert."""
+
 from enum import StrEnum
 
 
