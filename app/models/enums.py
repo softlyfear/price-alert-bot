@@ -14,4 +14,4 @@ class Marketplace(StrEnum):
     """Supported e-commerce platforms for product tracking."""
 
     wb = "wb"
-    ozon = "ozon"
+    # ozon = "ozon"
