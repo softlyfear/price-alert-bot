@@ -8,7 +8,7 @@ from app.services.wb_client import WbClient
 
 
 class UnsupportedMarketplaceError(ValueError):
-    pass
+    """Raised when marketplace client is not implemented."""
 
 
 def get_client(
@@ -16,5 +16,7 @@ def get_client(
     http_client: httpx.AsyncClient,
 ) -> BaseMarketplaceClient:
     """Get marketplace client."""
+
     if marketplace is Marketplace.wb:
         return WbClient(http_client)
+    raise UnsupportedMarketplaceError(f"Unsupported marketplace: {marketplace}")
