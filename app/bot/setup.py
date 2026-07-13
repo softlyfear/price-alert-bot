@@ -11,4 +11,4 @@ bot = Bot(
     token=settings.tg.BOT_TOKEN,
 )
 
-dispatcher = Dispatcher()
+dp = Dispatcher()
