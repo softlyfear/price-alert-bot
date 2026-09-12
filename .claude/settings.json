@@ -36,19 +36,19 @@
       "Bash(docker ps:*)",
       "Bash(docker logs:*)",
       "Bash(bash -n:*)",
-      "Bash(shellcheck:*)"
-    ],
-    "ask": [
-      "Bash(git push:*)",
-      "Bash(git checkout:*)",
-      "Bash(git reset:*)",
-      "Bash(git rebase:*)",
+      "Bash(shellcheck:*)",
       "Bash(rm:*)",
       "Bash(sudo:*)",
       "Bash(docker system prune:*)",
       "Bash(docker compose down -v:*)",
       "Bash(ssh:*)",
       "Bash(scp:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(git reset:*)",
+      "Bash(git rebase:*)"
     ]
   }
 }
