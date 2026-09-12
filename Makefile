@@ -68,7 +68,7 @@ fmt:
 
 type:
 	@echo "$(GREEN)==> Type checking...$(NC)"
-	@uv run mypy . || echo "$(YELLOW)⚠ Type issues found (non-critical)$(NC)"
+	uv run mypy app tests
 
 check: fmt type
 	@echo "$(GREEN)==> All checks passed!$(NC)"
