@@ -8,7 +8,7 @@ from app.core import get_settings
 settings = get_settings()
 
 bot = Bot(
-    token=settings.tg.BOT_TOKEN,
+    token=settings.tg.BOT_TOKEN.get_secret_value(),
 )
 
 dp = Dispatcher()
