@@ -1,9 +1,14 @@
 """Regression test for import isolation of the ``app`` package.
 
-``app.core.database`` reads settings from the environment at import time and
-fails with a pydantic ``ValidationError`` when no ``.env`` is present. As
-long as plain ``import app`` does not pull in ``app.core`` (and therefore
-``app.core.database``), the test suite can run without a ``.env`` file.
+``app.core.database`` is lazy: it reads no settings and builds no engine at
+import time (settings are only read the first time ``get_engine()`` or
+``get_sessionmaker()`` actually runs -- see
+``tests/unit/core/test_database.py``), so importing it cannot fail for lack
+of a ``.env`` file. What this test guards instead is import *structure*:
+plain ``import app`` must not pull in ``app.core`` (and therefore
+``app.core.database``) as a side effect, so that a test merely importing the
+top-level package is not silently coupled to the whole ``app.core``
+dependency surface.
 
 The check has to happen in a fresh interpreter: once any other test in the
 same process has imported ``app.core``, inspecting ``sys.modules`` from
