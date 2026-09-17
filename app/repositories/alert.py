@@ -39,7 +39,6 @@ class AlertRepository(
             "product_id",
             "target_price",
             "direction",
-            "is_active",
         }
 
     @property
