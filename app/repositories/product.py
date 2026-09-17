@@ -122,10 +122,15 @@ class ProductRepository(
         avoids the ORM cascade of ``Product.alerts``
         (``cascade="all, delete-orphan"`` without ``passive_deletes=True``),
         which would otherwise load the alerts collection and delete each
-        row individually. ``synchronize_session="evaluate"`` expires a
+        row individually. ``synchronize_session="evaluate"`` evicts a
         matching ``Product`` already present in this session's identity map
-        without an extra round trip, so a subsequent ``get_by_id_for_user``
-        in the same session does not return a stale object.
+        without an extra round trip.
+
+        This only synchronizes the ``Product`` itself: an ``Alert`` already
+        loaded into this session before the delete stays persistent even
+        though the DB-level cascade has removed its row, and mutating that
+        stale ``Alert`` followed by a flush raises ``StaleDataError``,
+        aborting the transaction.
         """
         stmt = (
             delete(Product)

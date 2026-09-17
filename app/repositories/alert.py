@@ -69,13 +69,16 @@ class AlertRepository(
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def deactivate(self, alert_id: int, user_id: int) -> None:
+    async def deactivate(self, alert_id: int, user_id: int) -> bool:
         """Deactivate active alert, scoped to its owning user.
 
         ``alert_id`` reaches this method from a Telegram callback and is
         therefore untrusted user input (PROJECT.md §8.2), so the ownership
         predicate is part of the same UPDATE statement as the lookup rather
-        than a check performed after loading the row.
+        than a check performed after loading the row. Returns whether a row
+        matched and was updated, taken from that statement's rowcount, so
+        the caller can tell an alert belonging to another user or missing
+        entirely apart from one that was actually deactivated.
         """
         stmt = (
             update(Alert)
@@ -83,8 +86,12 @@ class AlertRepository(
             .values(is_active=False)
             .execution_options(synchronize_session="evaluate")
         )
-        await self._session.execute(stmt)
-        await self._session.flush()
+        result = await self._session.execute(stmt)
+        # AsyncSession.execute() is typed to return the generic Result[Any]
+        # for a plain Executable; at runtime a Core DELETE/UPDATE always
+        # yields a CursorResult, which is the type that actually defines
+        # `.rowcount` (see SQLAlchemy docs, CursorResult.rowcount).
+        return bool(cast(CursorResult[Any], result).rowcount)
 
     async def get_by_id_for_user(self, alert_id: int, user_id: int) -> Alert | None:
         """Get an alert by primary key, scoped to its owning user.
@@ -103,7 +110,7 @@ class AlertRepository(
         Issued as a single Core DELETE with the ownership predicate in the
         same statement. ``Alert`` has no dependent relationships, so unlike
         ``ProductRepository.delete_for_user`` there is no cascade cost to
-        weigh. ``synchronize_session="evaluate"`` expires a matching
+        weigh. ``synchronize_session="evaluate"`` evicts a matching
         ``Alert`` already present in this session's identity map without an
         extra round trip.
         """
