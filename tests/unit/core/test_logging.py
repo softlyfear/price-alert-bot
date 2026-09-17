@@ -57,6 +57,50 @@ def _restore_loguru_state() -> Iterator[None]:
         logger.add(sys.stderr)
 
 
+def test_restore_loguru_state_fixture_rebuilds_handler_on_ordinary_run() -> None:
+    """Witness for ``_restore_loguru_state``'s ordinary branch (convention 22).
+
+    ``test_fixture_restores_no_handler_when_loguru_autoinit_disabled``
+    below only exercises the fixture's *rare* branch, where
+    ``LOGURU_AUTOINIT=0`` and ``had_handlers`` is ``False`` -- the branch
+    that never re-adds a handler. Nothing in this file previously checked
+    the branch every ordinary test run actually takes: ``had_handlers``
+    is ``True`` under the process' real (enabled) ``LOGURU_AUTOINIT``,
+    the one this whole suite runs under by default, so this is the
+    direction that matters for every other test in this file.
+
+    Drives the fixture directly through ``__wrapped__`` -- the plain
+    generator function ``pytest.fixture`` preserves there for
+    introspection; calling the fixture object itself is rejected
+    ("Fixture ... called directly"). No nested ``pytest.main()``
+    subprocess is needed here, unlike the ``LOGURU_AUTOINIT=0`` guard
+    below: this process already runs under the ordinary, enabled
+    ``LOGURU_AUTOINIT``, so the handler count read directly below is
+    already the value of interest.
+
+    The assertion is ``after == before`` rather than a hard-coded
+    ``before == 1``, because this test is also collected (and run) by
+    the nested ``pytest.main()`` inside
+    ``test_fixture_restores_no_handler_when_loguru_autoinit_disabled``
+    below, where the environment starts with zero handlers instead; the
+    invariant checked here holds identically in both regimes. On an
+    ordinary top-level run, measured directly: ``before=1``, ``after=1``.
+
+    Mutation ``if had_handlers:`` -> ``if False:`` is caught here: on an
+    ordinary run this discards the re-add step, so ``after`` becomes 0
+    while ``before`` stays 1.
+    """
+    before = len(logger._core.handlers)  # type: ignore[attr-defined]
+
+    gen = _restore_loguru_state.__wrapped__()  # type: ignore[attr-defined]
+    next(gen)
+    with pytest.raises(StopIteration):
+        next(gen)
+
+    after = len(logger._core.handlers)  # type: ignore[attr-defined]
+    assert after == before
+
+
 def test_setup_logging_removes_preexisting_handlers() -> None:
     """setup_logging() must remove every handler already registered.
 
@@ -70,15 +114,30 @@ def test_setup_logging_removes_preexisting_handlers() -> None:
     handler and receives the marker; on correct code it does not,
     because setup_logging removed it before adding its own handler.
 
+    Positive control (convention 22): before setup_logging() ever runs,
+    a log call must actually reach the probe sink -- proving the sink is
+    registered and this logger is not, some other way, already muted.
+    Without this, a combined mutation that both turns ``logger.remove()``
+    into a no-op *and* silences this test's own logger (e.g. a stray
+    ``logger.disable(__name__)``) would leave ``records`` empty for the
+    wrong reason and pass regardless of what setup_logging() does --
+    measured on a copy: that exact combination gives ``1 passed`` against
+    the pre-fix version of this test, a false green on a fully broken
+    guard.
+
     This guard's limit: it only proves setup_logging removes handlers
     that existed *before* it runs. It does not, by itself, prove two
     consecutive calls to setup_logging() leave exactly one handler -
     that is the narrower guarantee ``test_setup_logging_called_twice_...``
-    below covers, and it is the only guard that mutation actually
-    exercises.
+    below covers. Mutating away ``logger.remove()`` inside setup_logging
+    now turns *both* tests red, not just that one -- see its docstring.
     """
     records: list[str] = []
     logger.add(records.append, format="{message}")
+    logger.info("probe alive marker")
+    assert records == ["probe alive marker\n"]
+    records.clear()
+
     setup_logging()
     logger.info("single line marker")
     assert records == []
@@ -90,13 +149,14 @@ def test_setup_logging_called_twice_still_produces_a_single_handler(
     """Idempotency: calling setup_logging() twice must not double output
     and must not leave the process without a working handler.
 
-    This is the guard that actually catches mutating away the
-    ``logger.remove()`` call inside setup_logging (PAB-054 review
-    finding 1): both handlers added across the two calls are attached
-    to the same capsys-visible ``sys.stderr``, so a duplicate handler
-    surviving the second call doubles the captured line here - the
-    property ``test_setup_logging_removes_preexisting_handlers`` above
-    does not exercise.
+    Mutating away the ``logger.remove()`` call inside setup_logging
+    (PAB-054 review finding 1) turns this test red too, not only this
+    one: both handlers added across the two calls are attached to the
+    same capsys-visible ``sys.stderr``, so a duplicate handler surviving
+    the second call doubles the captured line here. What this test
+    exercises and ``test_setup_logging_removes_preexisting_handlers``
+    above does not is specifically duplication *across two calls* - the
+    other test only ever calls setup_logging() once.
     """
     setup_logging()
     setup_logging()
@@ -236,8 +296,9 @@ def test_fixture_restores_no_handler_when_loguru_autoinit_disabled() -> None:
     ``pytest.main()`` call inside a subprocess started with
     ``LOGURU_AUTOINIT=0``, then compares the handler count read
     immediately after importing loguru to the handler count read after
-    that whole nested run completes: they must be equal, and (per the
-    manual check above) both zero.
+    that whole nested run completes: they must be equal, and both zero -
+    the assertions below check both directly, on the values parsed out
+    of the nested run's own output.
 
     Run as a subprocess, not called in-process from this test:
     ``LOGURU_AUTOINIT`` is read once at loguru's import time, so it has
@@ -245,8 +306,8 @@ def test_fixture_restores_no_handler_when_loguru_autoinit_disabled() -> None:
     must not touch the already-initialised loguru state of the outer
     pytest run executing this guard itself.
 
-    ``-k "not test_restore_fixture_matches"`` excludes this test itself
-    from the nested run - without it, the nested ``pytest.main()`` would
+    ``-k "not test_fixture_restores_no_handler"`` excludes this test
+    itself from the nested run - without it, the nested ``pytest.main()`` would
     collect and re-run this same test, which would spawn another
     subprocess, recursively without bound. The reentry-guard env var
     checked first is a second, unconditional line of defence against
@@ -256,7 +317,12 @@ def test_fixture_restores_no_handler_when_loguru_autoinit_disabled() -> None:
     of spawning a child.
     """
     if os.environ.get(_LOGURU_AUTOINIT_REENTRY_GUARD_ENV) == "1":
-        return
+        pytest.skip(
+            "reentry guard tripped: this process is itself the nested "
+            "pytest.main() run spawned by an outer invocation of this "
+            "same test, reached only if the -k filter above stops "
+            "matching this test's name"
+        )
     repo_root = Path(__file__).resolve().parents[3]
     env = {
         **os.environ,

@@ -61,6 +61,7 @@ from urllib.parse import unquote
 from urllib.parse import urlsplit
 
 import pytest
+from pydantic import BaseModel
 from pydantic import SecretStr
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
@@ -561,6 +562,41 @@ def test_app_settings_env_var_partial_override_keeps_other_defaults(
 # --- get_settings(): the one call site that must read the environment ----
 
 
+# Prefix -> nested settings model, used to clear the whole prefix space
+# (convention 19) by reading field names off ``model_fields`` directly
+# rather than off a hand-maintained tuple: a field added to one of these
+# four models later is picked up automatically, instead of silently
+# reintroducing a dependency on the calling shell the next time someone
+# adds a field and forgets this list exists.
+_SETTINGS_PREFIX_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
+    ("DB__", DatabaseSettings),
+    ("TG__", BotSecret),
+    ("REDIS__", RedisSettings),
+    ("APP__", AppSettings),
+)
+
+
+def _delenv_settings_prefix_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear every ``DB__``/``TG__``/``REDIS__``/``APP__`` variable
+    get_settings() could read (convention 19), not just the ones a test
+    sets itself.
+
+    Without this, a stray value already present in the calling shell --
+    e.g. ``APP__HTTP_TIMEOUT_SECONDS=not-a-number`` -- merges in underneath
+    the variables a test sets explicitly and fails validation on a
+    developer's machine while the same test passes in CI, or vice versa.
+    Measured before this fix: with ``APP__HTTP_TIMEOUT_SECONDS=not-a-number``
+    or ``REDIS__PORT=not-a-port`` set in the shell, the two get_settings()
+    tests below turned red (``2 failed, 36 passed`` out of the file's 38
+    tests at the time); a variable already covered by the explicit
+    ``monkeypatch.setenv`` calls below, such as ``DB__PORT=abc``, stayed
+    green either way and served as the control.
+    """
+    for prefix, model in _SETTINGS_PREFIX_MODELS:
+        for field_name in model.model_fields:
+            monkeypatch.delenv(f"{prefix}{field_name}", raising=False)
+
+
 def _set_env_for_get_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set every environment variable ``get_settings()`` needs to build a
     valid ``Settings`` starting from a completely empty environment.
@@ -568,7 +604,11 @@ def _set_env_for_get_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     Shared by the two tests below that exercise ``get_settings()`` itself
     -- the one call site in this file that must read the environment by
     construction, since it calls ``Settings()`` with no overrides at all.
+
+    Clears the whole prefix space first (convention 19) so a stray shell
+    variable outside the set below cannot merge in underneath it.
     """
+    _delenv_settings_prefix_space(monkeypatch)
     monkeypatch.setenv("DB__USER", "db_user")
     monkeypatch.setenv("DB__PASSWORD", "db-marker-pass")
     monkeypatch.setenv("DB__HOST", "db-host")
@@ -667,9 +707,22 @@ def test_settings_builds_from_explicit_values_across_all_sections() -> None:
     every field's default, specifically so that a section assigned to the
     wrong attribute (e.g. ``Settings(db=redis, redis=db, ...)`` from a
     copy-paste mistake, or a keyword silently renamed) fails on a mismatch
-    instead of by accident matching some other section's value. No other
-    test in this file inspects more than one section at a time, so none of
-    them would catch a swap like that.
+    instead of by accident matching some other section's value.
+
+    This test is not the only guard against a ``db``/``redis`` swap at the
+    ``Settings`` level -- measured on a copy with the section types on the
+    model itself swapped (``db: RedisSettings`` / ``redis: DatabaseSettings``):
+    three other tests in this file turn red too --
+    ``test_app_settings_env_var_partial_override_keeps_other_defaults``,
+    ``test_get_settings_builds_settings_from_environment_variables``, and
+    ``test_get_settings_is_cached_across_calls`` -- because pydantic itself
+    rejects the mismatched section types before any field-level assertion
+    here runs (``4 failed, 34 passed``). What this test's distinct-value
+    setup earns on top of that is precision: if a future change ever made
+    the section types compatible (both plain ``BaseModel`` subclasses with
+    overlapping fields, say), a swap would stop being a pydantic-level
+    error and become a silent value mismatch -- this is the one test in the
+    file positioned to catch that narrower case, by construction.
     """
     db = _make_db_settings(host="explicit-db-host")
     tg = _make_bot_secret(token="explicit-bot-token")
