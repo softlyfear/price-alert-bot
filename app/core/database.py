@@ -24,10 +24,20 @@ def get_engine() -> AsyncEngine:
     ``get_engine.cache_clear()`` -- without that, a disposed engine would
     stay cached and be handed out again.
 
-    Not a concurrency hazard: the whole body runs without ever awaiting, so
-    there is no point between the cache check and the cache write where
-    another coroutine can run. Two concurrent first callers cannot race into
-    building two engines.
+    Not a concurrency hazard for coroutines sharing one event loop: the whole
+    body runs without ever awaiting, so there is no point between the cache
+    check and the cache write where another coroutine can run. Two
+    concurrent first callers on the same loop cannot race into building two
+    engines.
+
+    This guarantee does not extend to threads. ``lru_cache`` calls the
+    wrapped function outside of its internal lock, so two threads racing
+    into a cold cache can both execute this body concurrently; only one of
+    the two resulting engines ends up cached, and the other -- with its own
+    connection pool -- is returned to nobody and never closed by
+    ``dispose_engine()``. FastAPI runs synchronous dependencies and
+    synchronous handlers in a threadpool, so this matters the moment a
+    synchronous call path reaches ``get_engine()``.
     """
     settings = get_settings()
     return create_async_engine(
@@ -60,16 +70,28 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 async def dispose_engine() -> None:
     """Dispose the engine's connection pool and reset both caches.
 
-    Resetting the caches is mandatory: without it, the next call to
-    ``get_engine``/``get_sessionmaker`` would return the already-disposed
-    objects instead of building fresh ones. Safe to call when no engine was
-    ever built -- ``cache_info().currsize`` distinguishes that case, so this
-    does not build an engine just to dispose it.
+    Both caches are cleared *before* the ``await`` on ``dispose()``, not
+    after. ``AsyncEngine.dispose()`` does not put the engine into a
+    terminal state -- it replaces its connection pool with a fresh one and
+    leaves the engine object perfectly usable. If the caches were cleared
+    only after awaiting, a coroutine calling ``get_async_session()`` during
+    that window would still see the not-yet-cleared factory bound to the
+    same engine object, and would silently open connections on the new pool
+    after shutdown has already begun; once the caches are finally cleared,
+    no reference to that pool remains, so a later ``dispose()`` cannot close
+    it either. Grabbing the engine reference and clearing both caches
+    synchronously, before the only point of control transfer in this
+    function, closes that window: any caller reaching this point after the
+    clear builds a brand new engine instead of reaching the one about to be
+    disposed. Safe to call when no engine was ever built --
+    ``cache_info().currsize`` distinguishes that case, so this does not
+    build an engine just to dispose it.
     """
     if get_engine.cache_info().currsize:
-        await get_engine().dispose()
-    get_engine.cache_clear()
-    get_sessionmaker.cache_clear()
+        engine = get_engine()
+        get_engine.cache_clear()
+        get_sessionmaker.cache_clear()
+        await engine.dispose()
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession]:
