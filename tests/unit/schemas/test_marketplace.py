@@ -4,6 +4,8 @@ All tests are pure: no I/O, no network, no database, no asyncio. They
 validate pydantic model behaviour only.
 """
 
+import typing
+
 import pytest
 from pydantic import ValidationError
 
@@ -31,6 +33,18 @@ def test_fetch_failure_reason_members_match_reference() -> None:
     member, a missing member, and a name/value mismatch alike (AC1)."""
     actual = frozenset((member.name, member.value) for member in FetchFailureReason)
     assert actual == _EXPECTED_REASON_MEMBERS
+
+
+def test_fetch_failure_reason_members_mapping_has_no_alias() -> None:
+    """`__members__` includes aliases, unlike plain iteration over the enum
+    class. Measured: adding `banned = "blocked"` as a fifth name leaves
+    `list(FetchFailureReason)` at four members (`Enum` iteration skips
+    aliases) while `FetchFailureReason.__members__` grows to five keys, so
+    the pair-based test above stays green under that exact mutation. This
+    guard compares the name set from `__members__` and catches it (Minor 1,
+    PAB-012)."""
+    expected_names = frozenset(name for name, _ in _EXPECTED_REASON_MEMBERS)
+    assert frozenset(FetchFailureReason.__members__) == expected_names
 
 
 def test_fetch_failure_reason_str_yields_bare_value() -> None:
@@ -90,6 +104,39 @@ def test_marketplace_fetch_failure_detail_stores_given_text() -> None:
         reason=FetchFailureReason.bad_payload, detail="unexpected schema"
     )
     assert failure.detail == "unexpected schema"
+
+
+def test_marketplace_fetch_failure_detail_accepts_max_length() -> None:
+    """500 characters is the documented limit and is accepted as-is
+    (Minor 2, PAB-012)."""
+    failure = MarketplaceFetchFailure(
+        reason=FetchFailureReason.blocked, detail="x" * 500
+    )
+    assert failure.detail == "x" * 500
+
+
+def test_marketplace_fetch_failure_detail_rejects_over_max_length() -> None:
+    """One character over the limit is rejected with `string_too_long`.
+    Measured: without this test, removing `Field(max_length=500)` passes
+    the whole suite silently (Minor 2, PAB-012)."""
+    with pytest.raises(ValidationError) as exc_info:
+        MarketplaceFetchFailure(reason=FetchFailureReason.blocked, detail="x" * 501)
+
+    assert exc_info.value.errors()[0]["type"] == "string_too_long"
+
+
+def test_fetch_result_alias_composition_matches_expected_members() -> None:
+    """Runtime guard on the actual union composition behind the PEP 695
+    alias. `typing.get_args` applied to the alias's lazily-evaluated
+    `__value__` returns the union members. Measured: `type
+    MarketplaceFetchResult = object` leaves the two accepts-tests below
+    green (an `object` annotation rejects nothing at runtime) and passes
+    `mypy --strict`; this guard catches it because `get_args` on a bare
+    `object` returns an empty tuple, which does not match the expected set
+    (Minor 3, PAB-012)."""
+    args = typing.get_args(MarketplaceFetchResult.__value__)
+    expected = frozenset({MarketplaceProductData, MarketplaceFetchFailure})
+    assert frozenset(args) == expected
 
 
 def test_fetch_result_alias_accepts_product_data() -> None:
