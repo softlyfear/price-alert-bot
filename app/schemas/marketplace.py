@@ -1,4 +1,4 @@
-"""Wildberries schemas for api."""
+"""Marketplace-agnostic schemas: product data and a marked fetch result."""
 
 from enum import StrEnum
 from typing import Annotated
