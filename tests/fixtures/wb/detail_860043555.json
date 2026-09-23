@@ -1,0 +1,250 @@
+{
+  "products": [
+    {
+      "brand": "KRAUS Collection",
+      "brandId": 236885,
+      "colors": [
+        {
+          "id": 16777215,
+          "name": "белый"
+        },
+        {
+          "id": 8421504,
+          "name": "серый"
+        },
+        {
+          "id": 0,
+          "name": "черный"
+        }
+      ],
+      "entity": "",
+      "feedbacks": 487,
+      "id": 860043555,
+      "kindId": 2,
+      "matchId": 568689975,
+      "mtype": 4097,
+      "name": "Кроссовки женские на высокой подошве",
+      "panelPromoId": 1056340,
+      "pics": 17,
+      "picsUpdate": 0,
+      "promotions": [
+        1003057,
+        1003234,
+        1003392,
+        1003832,
+        1003955,
+        1005085,
+        1006716,
+        1007025,
+        1007046,
+        1007116,
+        1007666,
+        1009413,
+        1011354,
+        1012550,
+        1015761,
+        1015919,
+        1016713,
+        1019835,
+        1020414,
+        1021914,
+        1022640,
+        1022645,
+        1022681,
+        1022835,
+        1023420,
+        1023718,
+        1023915,
+        1023916,
+        1024096,
+        1024264,
+        1024959,
+        1025174,
+        1026990,
+        1026992,
+        1027999,
+        1028596,
+        1028607,
+        1029080,
+        1029649,
+        1031991,
+        1032044,
+        1033080,
+        1034512,
+        1036827,
+        1038845,
+        1039313,
+        1041060,
+        1042229,
+        1043161,
+        1044345,
+        1049415,
+        1049762,
+        1053938,
+        1054452,
+        1054713,
+        1054899,
+        1055241,
+        1055492,
+        1055614,
+        1055801,
+        1056041,
+        1056340,
+        1056382,
+        1056446,
+        1056857,
+        1056876,
+        1056916,
+        1056991,
+        1057092,
+        1057323,
+        1057437,
+        1057622,
+        1057625,
+        1057647,
+        1057951,
+        1058180,
+        1058203,
+        1058220,
+        1058337
+      ],
+      "rating": 5,
+      "reviewRating": 4.8,
+      "root": 965562811,
+      "siteBrandId": 0,
+      "sizes": [
+        {
+          "name": "36",
+          "optionId": 1294600121,
+          "origName": "36",
+          "rank": 413520,
+          "stocks": []
+        },
+        {
+          "name": "37",
+          "optionId": 1294600122,
+          "origName": "37",
+          "price": {
+            "basic": 480000,
+            "cashback": 0,
+            "logistics": 0,
+            "product": 142900,
+            "return": 0,
+            "wallet": 0
+          },
+          "rank": 435769,
+          "saleConditions": 134217728,
+          "stocks": [
+            {
+              "qty": 30
+            }
+          ]
+        },
+        {
+          "name": "38",
+          "optionId": 1294600123,
+          "origName": "38",
+          "price": {
+            "basic": 480000,
+            "cashback": 0,
+            "logistics": 0,
+            "product": 142900,
+            "return": 0,
+            "wallet": 0
+          },
+          "rank": 450661,
+          "saleConditions": 134217728,
+          "stocks": [
+            {
+              "qty": 49
+            }
+          ]
+        },
+        {
+          "name": "39",
+          "optionId": 1294600124,
+          "origName": "39",
+          "price": {
+            "basic": 480000,
+            "cashback": 0,
+            "logistics": 0,
+            "product": 142900,
+            "return": 0,
+            "wallet": 0
+          },
+          "rank": 473839,
+          "saleConditions": 134217728,
+          "stocks": [
+            {
+              "qty": 1
+            }
+          ]
+        },
+        {
+          "name": "40",
+          "optionId": 1294600125,
+          "origName": "40",
+          "rank": 489124,
+          "stocks": []
+        },
+        {
+          "name": "41",
+          "optionId": 1294600126,
+          "origName": "41",
+          "price": {
+            "basic": 480000,
+            "cashback": 0,
+            "logistics": 0,
+            "product": 142900,
+            "return": 0,
+            "wallet": 0
+          },
+          "rank": 526459,
+          "saleConditions": 134217728,
+          "stocks": [
+            {
+              "qty": 1
+            }
+          ]
+        },
+        {
+          "name": "42",
+          "optionId": 1294600127,
+          "origName": "42",
+          "rank": 541753,
+          "stocks": []
+        },
+        {
+          "name": "43",
+          "optionId": 1294600128,
+          "origName": "43",
+          "price": {
+            "basic": 480000,
+            "cashback": 0,
+            "logistics": 0,
+            "product": 142900,
+            "return": 0,
+            "wallet": 0
+          },
+          "rank": 582969,
+          "saleConditions": 134217728,
+          "stocks": [
+            {
+              "qty": 21
+            }
+          ]
+        }
+      ],
+      "subjectId": 105,
+      "subjectParentId": 2,
+      "supplier": "KRAUS & CALIPSO & PATROL",
+      "supplierFlags": 12240,
+      "supplierId": 290744,
+      "supplierRating": 4.8,
+      "totalQuantity": 49,
+      "viewFlags": 8725487625,
+      "volume": 131,
+      "weight": 1.2
+    }
+  ]
+}

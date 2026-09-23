@@ -24,12 +24,13 @@ _EXPECTED_REASON_MEMBERS = frozenset(
         ("blocked", "blocked"),
         ("transport_error", "transport_error"),
         ("bad_payload", "bad_payload"),
+        ("out_of_stock", "out_of_stock"),
     }
 )
 
 
 def test_fetch_failure_reason_members_match_reference() -> None:
-    """Exactly four members, values equal to names - catches an extra
+    """Exactly five members, values equal to names - catches an extra
     member, a missing member, and a name/value mismatch alike (AC1)."""
     actual = frozenset((member.name, member.value) for member in FetchFailureReason)
     assert actual == _EXPECTED_REASON_MEMBERS
@@ -37,9 +38,9 @@ def test_fetch_failure_reason_members_match_reference() -> None:
 
 def test_fetch_failure_reason_members_mapping_has_no_alias() -> None:
     """`__members__` includes aliases, unlike plain iteration over the enum
-    class. Measured: adding `banned = "blocked"` as a fifth name leaves
-    `list(FetchFailureReason)` at four members (`Enum` iteration skips
-    aliases) while `FetchFailureReason.__members__` grows to five keys, so
+    class. Measured: adding `banned = "blocked"` as a sixth name leaves
+    `list(FetchFailureReason)` at five members (`Enum` iteration skips
+    aliases) while `FetchFailureReason.__members__` grows to six keys, so
     the pair-based test above stays green under that exact mutation. This
     guard compares the name set from `__members__` and catches it (Minor 1,
     PAB-012)."""
@@ -78,7 +79,7 @@ def test_marketplace_fetch_failure_rejects_reassignment() -> None:
 def test_marketplace_fetch_failure_accepts_every_reason(
     reason: FetchFailureReason,
 ) -> None:
-    """Every one of the four enum members is a valid `reason` (AC3)."""
+    """Every one of the five enum members is a valid `reason` (AC3)."""
     failure = MarketplaceFetchFailure(reason=reason)
     assert failure.reason is reason
 
@@ -172,3 +173,21 @@ def test_marketplace_product_data_rejects_extra_field() -> None:
         MarketplaceProductData(name="Kettle", price=199900, unknown="x")  # type: ignore[call-arg]
 
     assert exc_info.value.errors()[0]["type"] == "extra_forbidden"
+
+
+def test_marketplace_product_data_accepts_price_at_int4_max() -> None:
+    """`price` equal to the int4 maximum (2_147_483_647) - the type of the
+    `current_price`/`previous_price`/`target_price` columns - is accepted
+    (PAB-064, AC8, Minor 1 PAB-014)."""
+    product = MarketplaceProductData(name="Kettle", price=2_147_483_647)
+    assert product.price == 2_147_483_647
+
+
+def test_marketplace_product_data_rejects_price_above_int4_max() -> None:
+    """One kopeck above the int4 maximum is rejected with a `ValidationError`
+    of type `less_than_equal`, before the value could reach the database and
+    fail on the driver instead (PAB-064, AC8)."""
+    with pytest.raises(ValidationError) as exc_info:
+        MarketplaceProductData(name="Kettle", price=2_147_483_648)
+
+    assert exc_info.value.errors()[0]["type"] == "less_than_equal"

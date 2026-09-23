@@ -7,12 +7,19 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+# Upper bound on `price` (kopecks): the `current_price`/`previous_price`
+# (`products`) and `target_price` (`alerts`) columns are `sa.Integer()` (int4,
+# migration `c55fadc558a3`), whose maximum value is 2_147_483_647. A price
+# above this limit must fail validation here - the single point of truth for
+# "a valid price" - rather than reach the database and fail on the driver.
+_MAX_PRICE_KOPECKS = 2_147_483_647
+
 
 class MarketplaceProductData(BaseModel):
-    """Base marketplace validation shema"""
+    """Base marketplace validation schema. `price` is in kopecks."""
 
     name: Annotated[str, Field(min_length=2, max_length=150)]
-    price: Annotated[int, Field(gt=0)]
+    price: Annotated[int, Field(gt=0, le=_MAX_PRICE_KOPECKS)]
 
     model_config = {
         "extra": "forbid",
@@ -22,7 +29,7 @@ class MarketplaceProductData(BaseModel):
 class FetchFailureReason(StrEnum):
     """Category of a marketplace fetch failure.
 
-    Fixed set of four members per PROJECT.md section 2.6 - membership is not
+    Fixed set of five members per PROJECT.md section 2.6 - membership is not
     meant to grow casually, each value drives distinct user-facing text and
     a distinct log level. `StrEnum` (not `str, Enum`) is chosen deliberately:
     `str(member)` yields the bare value (e.g. "blocked"), which is exactly
@@ -35,6 +42,7 @@ class FetchFailureReason(StrEnum):
     blocked = "blocked"
     transport_error = "transport_error"
     bad_payload = "bad_payload"
+    out_of_stock = "out_of_stock"
 
 
 class MarketplaceFetchFailure(BaseModel):
