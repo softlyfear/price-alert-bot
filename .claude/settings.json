@@ -91,6 +91,19 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/ruff-on-edit.py\"",
+            "timeout": 30,
+            "statusMessage": "ruff: формат и проверка файла"
+          }
+        ]
+      }
     ]
   }
 }
