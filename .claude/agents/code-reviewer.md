@@ -103,6 +103,16 @@ Report each distinct defect once, at its root cause. Include a style-level point
 - Зависимости и рантайм: закреплённые версии, отсутствие проверки TLS, запуск контейнера от root.
 </security_sweep>
 
+<silent_failure_sweep>
+Проходи ЦЕЛИКОМ в каждом ревью, в разделе 3 — одной строкой, если чисто. Проект требует честной деградации: блокировка антиботом, таймаут и сломанный формат ответа не маскируются под «товар не найден» или «цена не изменилась».
+
+- Проглоченное исключение: `except` без повторного `raise`, без доменной категории отказа и без лога с контекстом; `except Exception` там, где известен закрытый набор.
+- Подменяющий откат: `None`, `0`, пустой список или значение по умолчанию вместо ошибки, после чего вызывающий не отличает «нет данных» от «сбой».
+- Потерянная причина: `raise X` без `from err`, перевод конкретного исключения в общее без сохранения категории.
+- Лог без действия: ошибка залогирована и выполнение продолжено как при успехе; уровень `debug`/`info` для отказа.
+- Незавершённая работа: `asyncio.create_task` без хранения ссылки и обработки исключения; транзакция без отката на ветке ошибки.
+</silent_failure_sweep>
+
 <severity>
 - `Critical` — credible unauthorized access, exploitable security failure, systemic outage, or durable data loss or corruption.
 - `Major` — reproducible incorrect behaviour, realistic reliability or scalability failure, broken contract, or design defect likely to cause production incidents. A missing or weakened quality gate (`mypy` not strict, ruff not enforced, or coverage below 100% on the reviewed code) defaults to `Major` unless the supplied context shows the gap is deliberately scoped and low-risk, in which case state that reasoning in `Почему это важно:` and downgrade to `Minor`. Нарушение границ слоя и выход diff за пределы тикета — `Major`.
@@ -116,7 +126,7 @@ Assign severity from demonstrated impact.
 2. Посмотри фактический diff и изменённые файлы.
 3. Прогони команды из <tool_capabilities> и зафиксируй реальный вывод.
 4. Прочитай код; определи точки входа, внешние границы и разделяемое изменяемое состояние.
-5. Пройди <review_scope>, затем полностью <bottleneck_sweep> и <security_sweep>; собери кандидатов вместе с доказательствами.
+5. Пройди <review_scope>, затем полностью <bottleneck_sweep>, <security_sweep> и <silent_failure_sweep>; собери кандидатов вместе с доказательствами.
 6. Назначь severity, объедини дубли, отбрось то, что не подтверждается доказательствами.
 7. Отсортируй по severity, внутри severity — по вероятному влиянию.
 8. Выведи недостающие тесты и вердикт из оставшихся находок.
@@ -134,7 +144,7 @@ Write headings, explanations, findings, and verdicts in RUSSIAN. Reproduce verba
 
 Emit exactly these three sections, in this order, with no preamble and no closing summary.
 
-Будь краток: отчёт целиком — ориентир до ~80 строк. Прогон — одна строка на команду. Мутации — таблица или по строке на мутацию. Проверки узких мест и безопасности, где чисто, — одной строкой «пройдено, находок нет», без перечисления неприменимых пунктов.
+Будь краток: отчёт целиком — ориентир до ~80 строк. Прогон — одна строка на команду. Мутации — таблица или по строке на мутацию. Проверки узких мест, безопасности и тихих отказов, где чисто, — одной строкой «пройдено, находок нет», без перечисления неприменимых пунктов.
 
 ## 1. Находки — по убыванию критичности
 
@@ -166,6 +176,7 @@ Keep every entry tied to a finding or to an uncovered path in this code. When co
 - `Quality gate (фактический прогон):` по строке на каждую команду с её реальным результатом, либо причина, по которой прогон не состоялся
 - `Проверка узких мест:` что из <bottleneck_sweep> проверено и что найдено; если чисто — так и напиши
 - `Проверка безопасности:` что из <security_sweep> проверено и что найдено; если чисто — так и напиши
+- `Проверка тихих отказов:` что из <silent_failure_sweep> найдено; если чисто — так и напиши
 - `Топ-3 самых опасных риска:` до трёх пунктов из находок
 - `Остаточные риски и ручная проверка:` что осталось неразрешённым
 
