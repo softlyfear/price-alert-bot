@@ -1,7 +1,7 @@
 ---
 name: tests-agent
 description: Слой тестирования price-alert-bot. Владеет tests/ и конфигурацией pytest. Пишет unit-тесты на моках и интеграционные тесты на реальном PostgreSQL, обеспечивает 100% покрытие кода тикета. Вызывать явно по имени, когда тикет от python-architect адресован тестам или когда слоевой агент сдал код без собственных тестов.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

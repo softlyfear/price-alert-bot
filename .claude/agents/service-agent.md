@@ -1,7 +1,7 @@
 ---
 name: service-agent
 description: Слой доменной бизнес-логики price-alert-bot. Владеет app/services/price_service.py, app/services/notification.py, прочими доменными сервисами и app/domain/. Отвечает за правила срабатывания алертов, cooldown, лимиты пользователя, оркестрацию репозиториев и клиентов, транзакционные границы и доменные исключения. Вызывать явно по имени, когда тикет от python-architect адресован доменному слою.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

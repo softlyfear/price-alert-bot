@@ -1,7 +1,7 @@
 ---
 name: db-models-agent
 description: Слой персистентной модели данных price-alert-bot. Владеет app/models/ и alembic/. Пишет и правит SQLAlchemy 2.0 declarative-модели, миксины, enum'ы, ограничения, индексы и Alembic-миграции. Вызывать явно по имени, когда тикет от python-architect адресован слою моделей или требует изменения схемы БД.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

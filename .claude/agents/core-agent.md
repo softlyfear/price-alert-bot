@@ -1,7 +1,7 @@
 ---
 name: core-agent
 description: Инфраструктурный слой и точка входа price-alert-bot. Владеет app/core/ (конфигурация, движок БД, DI), app/main.py (lifespan, сборка зависимостей) и app/scheduler.py (asyncio-цикл проверки цен). Отвечает за настройки pydantic-settings, пул соединений, graceful shutdown и запуск фоновых задач. Вызывать явно по имени, когда тикет от python-architect адресован инфраструктурному слою или требует новой переменной окружения.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

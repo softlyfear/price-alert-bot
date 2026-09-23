@@ -1,7 +1,7 @@
 ---
 name: python-architect
 description: Владелец архитектуры и приёмки проекта price-alert-bot. Проектирует слои и контракты, ведёт .claude/PROJECT.md и .claude/TASKS.md, выдаёт тикеты слоевым агентам-исполнителям и проводит финальную приёмку после code-reviewer. Вызывать явно по имени на этапах: проектирование, выдача очередного тикета, финальная приёмка тикета. Никогда не пишет реализацию.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: opus
 ---
 

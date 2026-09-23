@@ -1,7 +1,7 @@
 ---
 name: devops-agent
 description: Слой сборки, зависимостей и эксплуатации price-alert-bot. Владеет Dockerfile, docker-compose.yml, .dockerignore, Makefile, pyproject.toml, uv.lock, .pre-commit-config.yaml и конфигурацией CI. Отвечает за состав зависимостей, образ контейнера, локальное окружение и инструменты качества. Вызывать явно по имени, когда тикет от python-architect адресован сборке, зависимостям или эксплуатации.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 
