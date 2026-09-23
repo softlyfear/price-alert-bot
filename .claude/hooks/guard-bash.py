@@ -1,7 +1,8 @@
 """PreToolUse guard for Bash: block system-wiping commands, ask before destructive ones.
 
-`sudo` and `rm` stay allowed in general; only the catastrophic forms are denied,
-and a short list of data-destroying operations asks the user first.
+`sudo` and `rm` stay allowed in general; only the catastrophic forms are denied
+(system and home roots, the project root and its ancestors, `.claude`), and a short
+list of data-destroying operations asks the user first.
 """
 
 import json
@@ -76,8 +77,24 @@ def _norm(path: str) -> str:
     return path.rstrip("/") or "/"
 
 
-def check(command: str) -> tuple[str, str] | None:
+def _wipes_project(target: str, cwd: str, project: str) -> bool:
+    """True when the target is the project root, one of its ancestors or `.claude`.
+
+    `.claude` holds unversioned pipeline documents, so it is guarded like the root.
+    """
+    wipes_contents = target == "*" or target.endswith("/*")
+    base = target[:-1] if wipes_contents else target
+    path = os.path.normpath(os.path.join(cwd, os.path.expanduser(base or ".")))
+    guarded = (project, os.path.join(project, ".claude"))
+    return path in guarded or project.startswith(path.rstrip("/") + "/")
+
+
+def check(
+    command: str, cwd: str | None = None, project: str | None = None
+) -> tuple[str, str] | None:
     """Return (decision, reason) or None when the command is fine."""
+    cwd = cwd or os.getcwd()
+    project = os.path.normpath(project or os.environ.get("CLAUDE_PROJECT_DIR", cwd))
     if re.search(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", command):
         return "deny", "fork bomb"
     for raw in SEGMENT_SPLIT.split(command):
@@ -107,6 +124,8 @@ def check(command: str) -> tuple[str, str] | None:
                     and not n.startswith(("/tmp", "/home/"))
                 ):
                     return "deny", f"recursive rm inside system dir {t}"
+                if _is_recursive(flags) and _wipes_project(t, cwd, project):
+                    return "deny", f"recursive rm of the project or .claude {t}"
                 if _is_recursive(flags) and re.search(r"(^|/)\.git/?$", t):
                     return "ask", f"recursive rm of git metadata {t}"
         elif prog.startswith("mkfs") or prog in ("wipefs", "fdisk", "sfdisk", "parted"):
@@ -151,7 +170,7 @@ def check(command: str) -> tuple[str, str] | None:
 def main() -> None:
     data = json.load(sys.stdin)
     command = (data.get("tool_input") or {}).get("command") or ""
-    verdict = check(command)
+    verdict = check(command, data.get("cwd"))
     if verdict is None:
         return
     decision, reason = verdict
