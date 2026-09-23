@@ -1,7 +1,7 @@
 ---
 name: bot-agent
 description: Слой Telegram-интерфейса price-alert-bot. Владеет app/bot/ и app/handlers/. Пишет и правит aiogram 3 роутеры, хендлеры, FSM-сценарии, клавиатуры, middleware и тексты для пользователя. Вызывать явно по имени, когда тикет от python-architect адресован слою бота.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

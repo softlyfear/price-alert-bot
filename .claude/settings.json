@@ -9,6 +9,7 @@
       "Write",
       "Grep",
       "Glob",
+      "mcp__context7",
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(grep:*)",
@@ -62,5 +63,8 @@
       "Bash(ssh:*)",
       "Bash(scp:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "context7"
+  ]
 }

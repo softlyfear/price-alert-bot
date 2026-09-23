@@ -1,7 +1,7 @@
 ---
 name: schemas-agent
 description: Слой контрактов данных price-alert-bot. Владеет app/schemas/. Пишет и правит Pydantic v2 схемы: валидация ответов внешних маркетплейсов, DTO между слоями, парсинг пользовательского ввода. Вызывать явно по имени, когда тикет от python-architect адресован слою схем или требует изменения контракта данных.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

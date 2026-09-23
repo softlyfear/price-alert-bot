@@ -1,7 +1,7 @@
 ---
 name: repository-agent
 description: Слой доступа к данным price-alert-bot. Владеет app/repositories/. Пишет и правит асинхронные SQLAlchemy-репозитории, запросы, транзакционные границы, пагинацию и защиту от N+1. Вызывать явно по имени, когда тикет от python-architect адресован слою репозиториев или требует нового запроса к БД.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 

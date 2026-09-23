@@ -1,7 +1,7 @@
 ---
 name: integrations-agent
 description: Слой интеграций с внешними маркетплейсами в price-alert-bot. Владеет HTTP-клиентами Wildberries и Ozon и их фабрикой (app/services/base_client.py, wb_client.py, ozon_client.py, client_factory.py). Отвечает за httpx, таймауты, retry, backoff, ограничение параллелизма и честную деградацию при блокировке антиботом. Вызывать явно по имени, когда тикет от python-architect адресован слою интеграций.
-tools: Read, Write, Edit, Grep, Glob, Bash
+tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 ---
 
