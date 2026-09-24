@@ -452,18 +452,23 @@ async def test_dispose_engine_gives_concurrent_callers_fresh_objects_in_the_wind
     entered = asyncio.Event()
     release = asyncio.Event()
     real_dispose = AsyncEngine.dispose
+    real_dispose_ran = False
 
     async def slow_dispose(self: AsyncEngine, close: bool = True) -> None:
+        nonlocal real_dispose_ran
         entered.set()
         await release.wait()
         await real_dispose(self, close)
+        real_dispose_ran = True
 
     monkeypatch.setattr(AsyncEngine, "dispose", slow_dispose)
 
     task = asyncio.create_task(database.dispose_engine())
+    reached_window = False
     try:
         async with asyncio.timeout(1):
             await entered.wait()
+        reached_window = True
 
         engine_in_window = database.get_engine()
         sessionmaker_in_window = database.get_sessionmaker()
@@ -472,10 +477,13 @@ async def test_dispose_engine_gives_concurrent_callers_fresh_objects_in_the_wind
         assert sessionmaker_in_window is not old_sessionmaker
     finally:
         release.set()
-        if not task.done():
+        if not reached_window and not task.done():
             task.cancel()
-        with contextlib.suppress(BaseException):
+        with contextlib.suppress(asyncio.CancelledError):
             await task
+
+    assert not task.cancelled()
+    assert real_dispose_ran is True
 
 
 @pytest.mark.asyncio
