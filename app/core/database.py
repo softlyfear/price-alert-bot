@@ -86,6 +86,19 @@ async def dispose_engine() -> None:
     disposed. Safe to call when no engine was ever built --
     ``cache_info().currsize`` distinguishes that case, so this does not
     build an engine just to dispose it.
+
+    Precondition owned by the caller, not enforced here: nothing should
+    still be using a session bound to this engine when this is called.
+    ``AsyncEngine.dispose()`` only closes connections currently checked
+    back into the pool; a connection checked out by an in-flight session
+    is left alone and only closed later, on garbage collection of the
+    now-orphaned pool (SQLAlchemy docs, "Engine Disposal") -- so calling
+    this while a session is still in use does not raise, but provides no
+    synchronization with that session either. ``app.main``'s shutdown
+    sequence (PROJECT.md §8.3, Р6) satisfies this by calling
+    ``dispose_engine()`` last, after waiting for in-flight Telegram updates
+    up to a bounded timeout. That wait can itself time out, so on a slow
+    handler this precondition is only best-effort, not guaranteed.
     """
     if get_engine.cache_info().currsize:
         engine = get_engine()
