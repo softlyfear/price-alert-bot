@@ -1,9 +1,24 @@
+default_install_hook_types: [ pre-commit, commit-msg ]
+# No hook in this configuration runs on the `pre-push` stage (PAB-065, попытка
+# 2): the `pre-commit` framework stashes unindexed changes on that stage
+# regardless of configuration, risking loss of other agents' uncommitted work.
+# `pre-push` is a separate, versioned script (`scripts/pre-push`, installed by
+# `make hooks`), not a `pre-commit` hook — see PROJECT.md §4.
+default_stages: [ pre-commit ]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # These two hooks (and check-added-large-files below) ship with their
+      # own `stages: [pre-commit, pre-push, manual]` in v6, which overrides
+      # `default_stages` above — set explicitly so a future `--hook-type
+      # pre-push` install (or a manual `--hook-stage pre-push` run) still
+      # can't mutate the working tree during a push.
       - id: trailing-whitespace
+        stages: [ pre-commit ]
       - id: end-of-file-fixer
+        stages: [ pre-commit ]
       - id: check-yaml
       - id: check-toml
       - id: check-json
@@ -12,6 +27,7 @@ repos:
       - id: detect-private-key
       - id: check-added-large-files
         args: [ --maxkb=500 ]
+        stages: [ pre-commit ]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.7
@@ -22,9 +38,42 @@ repos:
 
   - repo: local
     hooks:
-      - id: mypy
-        name: mypy
-        entry: uv run mypy app tests
+      # Closed list of AI-assistant mail domains (PAB-065). Case-insensitive,
+      # matches only email-shaped occurrences (`@domain`), so a customer's own
+      # address in the body is not affected. No network, no `uv` involved.
+      # Checked directly against the message file (no `grep | grep -q` pipe:
+      # an early match makes the reader exit before the writer has finished,
+      # and under `pipefail` that SIGPIPE let a ~240 KB message with an
+      # address through unnoticed). Lines starting with `#` ARE checked: with
+      # `-m`/`-F` (cleanup=whitespace) they are not stripped and stay in
+      # history. Only the `git commit -v` diff, which git appends below the
+      # `>8` cut marker and only strips from the message *after* this hook
+      # runs, is excluded — otherwise the hook is false-red on any commit
+      # whose diff merely contains the literal (e.g. editing this file).
+      # Forging the `>8` marker via `-m`/`-F` is an intentional bypass, on par
+      # with `--no-verify`; it is caught server-side by PAB-037, not here.
+      # The Copilot local part is matched with a negative character class
+      # (anything but `@`, whitespace, `<`/`>`), not an allow-list — a
+      # positive class missing `[`/`]` let bot addresses like
+      # `…+copilot-swe-agent[bot]@users.noreply.github.com` through.
+      - id: commit-msg-no-ai-email
+        name: commit message must not contain an AI-assistant email address
         language: system
-        pass_filenames: false
-        stages: [ pre-push ]
+        entry: >-
+          bash -c '
+          set -eu;
+          msg_file="$1";
+          cut_line="$(grep -Fn -- "------------------------ >8 ------------------------" "$msg_file" | head -1 | cut -d: -f1 || true)";
+          if [ -n "$cut_line" ]; then
+          check_file="$(mktemp)";
+          trap "rm -f \"$check_file\"" EXIT;
+          head -n $((cut_line - 1)) "$msg_file" > "$check_file";
+          else
+          check_file="$msg_file";
+          fi;
+          if grep -Eiq -- "@([a-z0-9-]+\.)*(anthropic\.com|claude\.ai|openai\.com|cursor\.com|cursor\.sh|codeium\.com)\b|[^@[:space:]<>]*copilot[^@[:space:]<>]*@users\.noreply\.github\.com" "$check_file"; then
+          echo "commit message contains a forbidden AI-assistant email address" >&2;
+          exit 1;
+          fi;
+          ' --
+        stages: [ commit-msg ]

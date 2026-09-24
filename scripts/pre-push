@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# git pre-push hook (PAB-065, попытка 2).
+#
+# Installed directly by `make hooks` (see PROJECT.md §4), not through the
+# `pre-commit` framework: on the `pre-push` stage that framework stashes any
+# unindexed changes regardless of configuration, which risks losing other
+# agents' uncommitted work (see TASKS.md, PAB-065 "Попытка 2"). This script
+# never touches the working tree, the index, or the stash of the repository
+# it runs in — it only reads pushed commits into detached worktrees outside
+# the repository.
+#
+# For every ref being pushed, each pushed commit is checked out into a
+# detached `git worktree` in a temporary directory and validated with `mypy`
+# and `lint-imports` from the project's existing `.venv`, without installing
+# anything and without network access.
+#
+# stdin format, per githooks(5), one line per ref being pushed:
+#   <local ref> SP <local sha1> SP <remote ref> SP <remote sha1> LF
+# A local sha of all zeros means the ref is being deleted: nothing to check.
+# A remote sha of all zeros means a brand-new ref on the remote side: the
+# pushed commit is still checked (no fallback to HEAD).
+
+set -euo pipefail
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+VENV_LINT_IMPORTS="$REPO_ROOT/.venv/bin/lint-imports"
+
+declare -a TMP_WORKTREES=()
+
+cleanup() {
+    local dir
+    for dir in ${TMP_WORKTREES[@]+"${TMP_WORKTREES[@]}"}; do
+        git -C "$REPO_ROOT" worktree remove --force "$dir" >/dev/null 2>&1 || true
+        rm -rf "$dir"
+    done
+}
+# Cleanup runs exactly once, on EXIT (bash SIGNALS/trap: a signal handler that
+# does not itself `exit` returns control to the script, so INT/TERM/HUP here
+# must terminate the run explicitly — otherwise the loop below would keep
+# checking the remaining commits after an interrupt). `exit N` from within a
+# signal trap still fires the EXIT trap, so cleanup is not duplicated.
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+declare -A seen=()
+shas=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -n "${local_ref:-}" ] || continue
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+    if [ -z "${seen[$local_sha]+x}" ]; then
+        seen[$local_sha]=1
+        shas+=("$local_sha")
+    fi
+done
+
+if [ "${#shas[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+status=0
+for sha in "${shas[@]}"; do
+    tmpdir="$(mktemp -d)"
+    TMP_WORKTREES+=("$tmpdir")
+
+    if ! git -C "$REPO_ROOT" worktree add --detach --quiet "$tmpdir" "$sha" >/dev/null 2>&1; then
+        echo "pre-push: failed to check out $sha for validation" >&2
+        status=1
+        continue
+    fi
+
+    if ! ( cd "$tmpdir" && "$VENV_PYTHON" -m mypy app tests ) \
+       || ! ( cd "$tmpdir" && "$VENV_LINT_IMPORTS" ); then
+        echo "pre-push: commit $sha failed mypy/lint-imports, push rejected" >&2
+        status=1
+    fi
+done
+
+exit "$status"
