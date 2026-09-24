@@ -21,6 +21,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "factory-boy>=3.3.3",
+    "import-linter>=2.15",
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
@@ -46,7 +47,8 @@ select = [
     "UP",
     "SIM",
     "ASYNC",
-    "T20"
+    "T20",
+    "DTZ"
 ]
 
 ignore = ["UP037"]
@@ -58,8 +60,16 @@ force-single-line = true
 [tool.mypy]
 python_version = "3.14"
 strict = true
-ignore_missing_imports = true
 plugins = ["pydantic.mypy"]
+
+# Third-party packages without stubs/py.typed, named individually (measured
+# by running `mypy app tests` without a global `ignore_missing_imports`, not
+# guessed) — a global override would also silence a missing module of our own
+# package, e.g. a commit deleting an imported `app/**` module (PAB-065,
+# попытка 3, AC 4).
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -81,4 +91,94 @@ branch = true
 show_missing = true
 exclude_also = [
     "@(abc\\.)?abstractmethod",
+]
+
+# Layer boundaries, see PROJECT.md §4 "Механическая проверка границ".
+# Contract composition is an architect decision; new client/service modules
+# are added by the ticket that creates them.
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "L1: layer order"
+type = "layers"
+layers = [
+    "app.main",
+    "app.scheduler",
+    "app.handlers : app.bot",
+    "app.services",
+    "app.repositories",
+    "app.models",
+]
+
+[[tool.importlinter.contracts]]
+name = "L2: bot and handlers do not reach repositories directly"
+type = "forbidden"
+source_modules = [
+    "app.bot",
+    "app.handlers",
+]
+forbidden_modules = [
+    "app.repositories",
+]
+# The legitimate app.handlers -> app.services -> app.repositories path is an
+# indirect import and must not break this contract; only a *direct* import of
+# app.repositories from app.bot/app.handlers is forbidden (PAB-065, попытка 2).
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "L3: marketplace clients do not know about persistence or application services"
+type = "forbidden"
+source_modules = [
+    "app.services.base_client",
+    "app.services.wb_client",
+    "app.services.client_factory",
+]
+forbidden_modules = [
+    "app.repositories",
+    "app.models",
+    "app.core.database",
+    "sqlalchemy",
+    "app.services.price_service",
+    "app.services.notification",
+    "app.services.tracking",
+]
+ignore_imports = [
+    "app.services.client_factory -> app.models.enums",
+]
+
+[[tool.importlinter.contracts]]
+name = "L4: schemas and domain stay free of infrastructure"
+type = "forbidden"
+source_modules = [
+    "app.schemas",
+    "app.domain",
+]
+forbidden_modules = [
+    "app.main",
+    "app.scheduler",
+    "app.bot",
+    "app.handlers",
+    "app.services",
+    "app.repositories",
+    "app.core",
+    "sqlalchemy",
+    "httpx",
+    "aiogram",
+]
+
+[[tool.importlinter.contracts]]
+name = "L5: core is a foundation, not a consumer of upper layers"
+type = "forbidden"
+source_modules = [
+    "app.core",
+]
+forbidden_modules = [
+    "app.main",
+    "app.scheduler",
+    "app.bot",
+    "app.handlers",
+    "app.services",
+    "app.repositories",
 ]

@@ -1,4 +1,4 @@
-.PHONY: help install update run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit
+.PHONY: help install update run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks
 
 RED    := \033[0;31m
 GREEN  := \033[0;32m
@@ -21,6 +21,7 @@ help:
 	@echo "  type           — Type check (mypy)"
 	@echo "  check          — fmt + type"
 	@echo "  pre-commit     — Run pre-commit hooks"
+	@echo "  hooks          — Install git hooks (pre-commit, commit-msg, pre-push)"
 	@echo ""
 	@echo "$(GREEN)Test:$(NC)"
 	@echo "  test           — Run tests"
@@ -75,6 +76,19 @@ check: fmt type
 
 pre-commit:
 	uv run pre-commit run --all-files
+
+# Installs a thin wrapper into the hooks dir (found via `git rev-parse
+# --git-path hooks`, so this also works for `core.hooksPath` and linked
+# worktrees) that `exec`s the versioned scripts/pre-push of whichever
+# worktree triggers the push — editing the script takes effect without
+# re-running this target.
+hooks:
+	@echo "$(GREEN)==> Installing git hooks...$(NC)"
+	uv run pre-commit install -f --hook-type pre-commit --hook-type commit-msg
+	@hooks_dir="$$(git rev-parse --git-path hooks)"; \
+	printf '#!/usr/bin/env bash\nexec "$$(git rev-parse --show-toplevel)/scripts/pre-push" "$$@"\n' > "$$hooks_dir/pre-push"; \
+	chmod 0755 "$$hooks_dir/pre-push"
+	@echo "$(GREEN)==> Installed: pre-commit, commit-msg (pre-commit framework), pre-push (wrapper -> scripts/pre-push)$(NC)"
 
 test:
 	@if [ ! -d "tests" ]; then \
