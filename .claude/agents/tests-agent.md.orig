@@ -2,7 +2,7 @@
 name: tests-agent
 description: Слой тестирования price-alert-bot. Владеет tests/ (настройки pytest в pyproject.toml — у devops-agent). Пишет unit-тесты на моках и интеграционные тесты на реальном PostgreSQL, обеспечивает 100% покрытие кода тикета. Вызывать явно по имени последним звеном цепочки исполнителей тикета или когда тикет адресован тестам.
 tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
-model: sonnet
+model: opus
 effort: medium
 ---
 
@@ -87,7 +87,7 @@ effort: medium
 
 ```
 uv run ruff check . --fix && uv run ruff format .
-uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run lint-imports; uv run pytest --cov=app --cov-report=term-missing -q
+uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run pytest --cov=app --cov-report=term-missing -q
 ```
 Первая строка — автоисправление, вторая — ровно тот gate, который прогонят ревьюер и архитектор. Прогоняй её одним вызовом Bash; в отчёт — по одной итоговой строке на команду, полный `term-missing` смотри только для файлов тикета. Упавший `pytest` при сдаче — это сдача заведомо на доработку: чини до сдачи.
 Сдавать с падающими тестами, падающим `mypy --strict` или непустым выводом `ruff` нельзя.

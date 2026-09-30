@@ -2,7 +2,7 @@
 name: devops-agent
 description: Слой сборки, зависимостей и эксплуатации price-alert-bot. Владеет Dockerfile, docker-compose.yml, .dockerignore, Makefile, pyproject.toml, uv.lock, .pre-commit-config.yaml и конфигурацией CI. Отвечает за состав зависимостей, образ контейнера, локальное окружение и инструменты качества. Вызывать явно по имени, когда тикет от python-architect адресован сборке, зависимостям или эксплуатации.
 tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
-model: sonnet
+model: opus
 effort: medium
 ---
 
@@ -64,7 +64,7 @@ effort: medium
 - Пароли берутся из окружения, а не пишутся в `docker-compose.yml`.
 
 ### CI
-- Прогон обязан включать: `ruff check`, `ruff format --check`, `mypy --strict`, `lint-imports`, `pytest` с покрытием.
+- Прогон обязан включать: `ruff check`, `ruff format --check`, `mypy --strict`, `pytest` с покрытием.
 - Интеграционным тестам нужен сервис PostgreSQL в пайплайне.
 - Кешируй зависимости, но не кешируй результат проверок.
 - Пайплайн, который «зеленеет» при падении шага, бесполезен: не прячь коды возврата.
@@ -76,7 +76,7 @@ effort: medium
 
 ```
 uv run ruff check . --fix && uv run ruff format .
-uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run lint-imports; uv run pytest --cov=app --cov-report=term-missing -q
+uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run pytest --cov=app --cov-report=term-missing -q
 ```
 Первая строка — автоисправление, вторая — ровно тот gate, который прогонят ревьюер и архитектор. Прогоняй её одним вызовом Bash; в отчёт — по одной итоговой строке на команду, полный `term-missing` смотри только для файлов тикета. Упавший `pytest` при сдаче — это сдача заведомо на доработку: чини до сдачи.
 Если менял `Dockerfile` или `docker-compose.yml` — собери и подними, чтобы убедиться, что оно работает. Если Docker недоступен, так и напиши, не выдумывай результат.

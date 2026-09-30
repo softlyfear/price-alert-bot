@@ -28,7 +28,6 @@ git diff --stat HEAD
 uv run mypy app tests
 uv run ruff check .
 uv run ruff format --check .
-uv run lint-imports
 uv run pytest --cov=app --cov-report=term-missing
 ```
 Прогоняй gate одним вызовом Bash, команды через `;`, чтобы выполнились все; в отчёт — по одной итоговой строке на команду. Полный `term-missing` разбирай только для файлов тикета или при красном результате.

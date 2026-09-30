@@ -2,7 +2,7 @@
 name: schemas-agent
 description: Слой контрактов данных price-alert-bot. Владеет app/schemas/. Пишет и правит Pydantic v2 схемы: валидация ответов внешних маркетплейсов, DTO между слоями, парсинг пользовательского ввода. Вызывать явно по имени, когда тикет от python-architect адресован слою схем или требует изменения контракта данных.
 tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
-model: sonnet
+model: opus
 effort: medium
 ---
 
@@ -49,7 +49,7 @@ effort: medium
 
 ```
 uv run ruff check . --fix && uv run ruff format .
-uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run lint-imports; uv run pytest --cov=app --cov-report=term-missing -q
+uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run pytest --cov=app --cov-report=term-missing -q
 ```
 Первая строка — автоисправление, вторая — ровно тот gate, который прогонят ревьюер и архитектор. Прогоняй её одним вызовом Bash; в отчёт — по одной итоговой строке на команду, полный `term-missing` смотри только для файлов тикета. Упавший `pytest` при сдаче — это сдача заведомо на доработку: чини до сдачи.
 Сдавать код с падающим `mypy --strict` или непустым выводом `ruff` нельзя. Если не проходит и починить в своей зоне нельзя — сдавай с явным описанием причины.

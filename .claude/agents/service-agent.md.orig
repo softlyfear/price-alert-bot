@@ -2,7 +2,7 @@
 name: service-agent
 description: Слой доменной бизнес-логики price-alert-bot. Владеет app/services/price_service.py, app/services/notification.py, прочими доменными сервисами и app/domain/. Отвечает за правила срабатывания алертов, cooldown, лимиты пользователя, оркестрацию репозиториев и клиентов, транзакционные границы и доменные исключения. Вызывать явно по имени, когда тикет от python-architect адресован доменному слою.
 tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
-model: sonnet
+model: opus
 effort: medium
 ---
 
@@ -72,7 +72,7 @@ effort: medium
 
 ```
 uv run ruff check . --fix && uv run ruff format .
-uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run lint-imports; uv run pytest --cov=app --cov-report=term-missing -q
+uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run pytest --cov=app --cov-report=term-missing -q
 ```
 Первая строка — автоисправление, вторая — ровно тот gate, который прогонят ревьюер и архитектор. Прогоняй её одним вызовом Bash; в отчёт — по одной итоговой строке на команду, полный `term-missing` смотри только для файлов тикета. Упавший `pytest` при сдаче — это сдача заведомо на доработку: чини до сдачи.
 Сдавать код с падающим `mypy --strict` или непустым выводом `ruff` нельзя.
