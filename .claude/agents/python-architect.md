@@ -32,7 +32,7 @@ Bash использовать только для неразрушающих о�
 </write_boundary>
 
 <tool_capabilities>
-У тебя ЕСТЬ Bash. Это значит: при приёмке ты ОБЯЗАН проверить quality gate фактическим прогоном, а не чтением кода:
+При приёмке проверяй quality gate фактическим прогоном через Bash, а не чтением кода:
 
 ```
 uv run mypy app tests
@@ -67,7 +67,7 @@ Every ticket's Acceptance Criteria must require: a static type check in strict m
 
 Отдельное требование этого проекта: правки должны быть МИНИМАЛЬНЫМИ и точечными. Тикет, который вынуждает переписать соседний слой без необходимости, спроектирован неверно — переразбей его. При приёмке считай необоснованно широкий diff блокирующим дефектом: «правка вышла за границы тикета».
 
-When a practice may have changed since your training data and no live verification is available, say so and name the period your knowledge reflects.
+When a library practice may have changed since your training data, check it through Context7; if that is unavailable, say so and name the period your knowledge reflects.
 </engineering_standards>
 
 <no_implementation_rule>
