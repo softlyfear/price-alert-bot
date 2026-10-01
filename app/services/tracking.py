@@ -1,6 +1,8 @@
 """Tracking service: preview a product and start tracking its price."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
 
 import httpx
 from loguru import logger
@@ -25,8 +27,24 @@ from app.services.client_factory import UnsupportedMarketplaceError
 from app.services.failure_levels import failure_log_level
 
 
+@dataclass(frozen=True, slots=True)
+class ProductCard:
+    """A product together with its alerts, sorted by `target_price`."""
+
+    product: Product
+    alerts: tuple[Alert, ...]
+
+
+class AlertRemoval(StrEnum):
+    """Outcome of removing a single alert."""
+
+    not_found = "not_found"
+    removed = "removed"
+    removed_with_product = "removed_with_product"
+
+
 class TrackingService:
-    """Orchestrates adding a product to tracking.
+    """Orchestrates adding a product to tracking and managing the list.
 
     Does not commit or roll back: the transaction belongs to the caller
     (bot middleware). Duplicates are resolved with a SAVEPOINT per insert.
@@ -95,6 +113,53 @@ class TrackingService:
                 user.id, marketplace, article, product_name, current_price
             )
         return await self._create_alert(user.id, product.id, target_price, direction)
+
+    async def list_products(self, tg_user_id: int) -> list[Product]:
+        """Return the caller's products ordered by `id` ascending."""
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        products = await self._products.get_by_user_id(user.id)
+        return sorted(products, key=lambda product: product.id)
+
+    async def get_product_card(
+        self, tg_user_id: int, product_id: int
+    ) -> ProductCard | None:
+        """Return the caller's product with its alerts, or None.
+
+        A foreign and a missing `product_id` are indistinguishable.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        product = await self._products.get_by_id_for_user(product_id, user.id)
+        if product is None:
+            return None
+        alerts = await self._alerts.get_by_user_and_product(user.id, product.id)
+        return ProductCard(
+            product=product,
+            alerts=tuple(sorted(alerts, key=lambda alert: alert.target_price)),
+        )
+
+    async def remove_product(self, tg_user_id: int, product_id: int) -> bool:
+        """Delete the caller's product; its alerts go with it (DB cascade)."""
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        return await self._products.delete_for_user(product_id, user.id)
+
+    async def remove_alert(self, tg_user_id: int, alert_id: int) -> AlertRemoval:
+        """Delete the caller's alert; drop the product with its last alert.
+
+        Runs in the caller's transaction, so the alert and product removal
+        commit or roll back together.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        alert = await self._alerts.get_by_id_for_user(alert_id, user.id)
+        if alert is None:
+            return AlertRemoval.not_found
+        product_id = alert.product_id
+        if not await self._alerts.delete_for_user(alert_id, user.id):
+            return AlertRemoval.not_found
+        remaining = await self._alerts.get_by_user_and_product(user.id, product_id)
+        if remaining:
+            return AlertRemoval.removed
+        await self._products.delete_for_user(product_id, user.id)
+        return AlertRemoval.removed_with_product
 
     async def _ensure_within_limit(
         self, user_id: int, marketplace: Marketplace, article: int
