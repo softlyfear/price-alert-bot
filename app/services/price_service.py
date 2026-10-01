@@ -14,18 +14,10 @@ from app.models.enums import Marketplace
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
-from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.services.base_client import BaseMarketplaceClient
+from app.services.failure_levels import failure_log_level
 from app.services.notification import NotificationService
-
-_FAILURE_LOG_LEVELS: dict[FetchFailureReason, str] = {
-    FetchFailureReason.bad_payload: "ERROR",
-    FetchFailureReason.blocked: "WARNING",
-    FetchFailureReason.transport_error: "WARNING",
-    FetchFailureReason.not_found: "WARNING",
-    FetchFailureReason.out_of_stock: "INFO",
-}
 
 
 class PriceService:
@@ -97,7 +89,7 @@ class PriceService:
                 detail=market_data.detail,
             )
             log_context.log(
-                _FAILURE_LOG_LEVELS[market_data.reason], "Marketplace fetch failed"
+                failure_log_level(market_data.reason), "Marketplace fetch failed"
             )
             await session.flush()
             return

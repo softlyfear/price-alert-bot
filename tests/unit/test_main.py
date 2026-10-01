@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import NamedTuple
 from typing import cast
 
 import httpx
@@ -61,6 +62,11 @@ from app.core.config import BotSecret
 from app.core.config import DatabaseSettings
 from app.core.config import RedisSettings
 from app.core.config import Settings
+from app.repositories.alert import AlertRepository
+from app.repositories.product import ProductRepository
+from app.repositories.user import UserRepository
+from app.services.client_factory import get_client
+from app.services.notification import NotificationService
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_command_update
 
@@ -235,9 +241,15 @@ class _FakeRedisClient:
 
 
 def _make_orchestration_settings(
-    *, bot_token: str = "1:orchestration-token", redis_password: str | None = None
+    *,
+    bot_token: str = "1:orchestration-token",
+    redis_password: str | None = None,
+    pool_size: int = 1,
+    max_overflow: int = 1,
+    concurrency: int = 3,
 ) -> Settings:
-    """Settings with non-default HTTP timeout and product limit (PAB-068)."""
+    """Settings with non-default HTTP timeout, product limit (PAB-068),
+    scheduler interval, cooldown and concurrency (PAB-069)."""
     return Settings(
         _env_file=None,
         db=DatabaseSettings(
@@ -247,8 +259,8 @@ def _make_orchestration_settings(
             PORT=5432,
             NAME="db-name",
             ECHO=False,
-            POOL_SIZE=1,
-            MAX_OVERFLOW=1,
+            POOL_SIZE=pool_size,
+            MAX_OVERFLOW=max_overflow,
             POOL_PRE_PING=False,
             POOL_RECYCLE=1,
             AUTOFLUSH=False,
@@ -259,7 +271,13 @@ def _make_orchestration_settings(
             HOST="redis-host",
             PASSWORD=SecretStr(redis_password) if redis_password is not None else None,
         ),
-        app=AppSettings(HTTP_TIMEOUT_SECONDS=7.5, MAX_PRODUCTS_PER_USER=13),
+        app=AppSettings(
+            HTTP_TIMEOUT_SECONDS=7.5,
+            MAX_PRODUCTS_PER_USER=13,
+            SCHEDULER_INTERVAL_SECONDS=777,
+            ALERT_COOLDOWN_SECONDS=4321,
+            MARKETPLACE_CONCURRENCY=concurrency,
+        ),
     )
 
 
@@ -330,8 +348,17 @@ def _patch_orchestration_factories(
     get_engine_calls: list[None] | None = None,
     redis_client: _FakeRedisClient | None = None,
     dispatcher_calls: list[tuple[Any, ...]] | None = None,
+    settings: Settings | None = None,
+    scheduler_loop: StartPolling | None = None,
+    loop_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] | None = None,
 ) -> RedisStorage:
-    settings = _make_orchestration_settings()
+    """Patch every I/O-touching factory of ``lifespan``.
+
+    The scheduler loop is replaced by ``scheduler_loop`` or, by default, by an
+    idle loop that only waits for its ``stop_event`` -- so a test that is not
+    about the scheduler never races a real pass against its own log sink.
+    """
+    settings = settings or _make_orchestration_settings()
     created = dispatcher_calls if dispatcher_calls is not None else []
     storage = RedisStorage(redis=cast(Any, redis_client or _FakeRedisClient()))
     calls = get_engine_calls if get_engine_calls is not None else []
@@ -353,6 +380,13 @@ def _patch_orchestration_factories(
         )
 
     monkeypatch.setattr(main, "create_dispatcher", fake_create_dispatcher)
+
+    async def idle_loop(*args: Any, **kwargs: Any) -> None:
+        if loop_calls is not None:
+            loop_calls.append((args, kwargs))
+        await kwargs["stop_event"].wait()
+
+    monkeypatch.setattr(main, "price_check_loop", scheduler_loop or idle_loop)
     return storage
 
 
@@ -854,33 +888,77 @@ class _FakeShutdownDispatcher:
             raise self._raises
 
 
+class _RecordingStopEvent(asyncio.Event):
+    """The scheduler's ``stop_event``; ``set()`` records the first step."""
+
+    def __init__(self, recorder: _Recorder, raises: Exception | None = None) -> None:
+        super().__init__()
+        self._recorder = recorder
+        self._raises = raises
+
+    def set(self) -> None:
+        self._recorder.events.append("signal_scheduler_stop")
+        super().set()
+        if self._raises is not None:
+            raise self._raises
+
+
+class _ShutdownDoubles(NamedTuple):
+    dispatcher: Dispatcher
+    polling_task: asyncio.Task[None]
+    scheduler_task: asyncio.Task[None]
+    stop_event: asyncio.Event
+    bot: Bot
+    http_client: httpx.AsyncClient
+    storage: RedisStorage
+
+    async def shutdown(self) -> None:
+        await main._shutdown(*self)
+
+
 def _build_shutdown_doubles(
     recorder: _Recorder,
     *,
     stop_polling_raises: Exception | None = None,
+    signal_scheduler_stop_raises: Exception | None = None,
     close_bot_session_raises: Exception | None = None,
     close_http_client_raises: Exception | None = None,
     close_storage_raises: Exception | None = None,
     already_done: bool = False,
-) -> tuple[Dispatcher, asyncio.Task[None], Bot, httpx.AsyncClient, RedisStorage]:
-    stop_event = asyncio.Event()
+    scheduler_ignores_stop: bool = False,
+    scheduler_dies_with: Exception | None = None,
+) -> _ShutdownDoubles:
+    polling_event = asyncio.Event()
 
     async def polling_stub() -> None:
-        await stop_event.wait()
+        await polling_event.wait()
 
     polling_task = asyncio.create_task(polling_stub())
     if already_done:
-        stop_event.set()
+        polling_event.set()
+
+    stop_event = _RecordingStopEvent(recorder, signal_scheduler_stop_raises)
+
+    async def scheduler_stub() -> None:
+        if scheduler_dies_with is not None:
+            raise scheduler_dies_with
+        if scheduler_ignores_stop:
+            await asyncio.Event().wait()
+        await stop_event.wait()
+
+    scheduler_task = asyncio.create_task(scheduler_stub())
 
     dispatcher = _FakeShutdownDispatcher(
-        recorder, stop_event=stop_event, raises=stop_polling_raises
+        recorder, stop_event=polling_event, raises=stop_polling_raises
     )
     bot = _FakeShutdownBot(recorder, raises=close_bot_session_raises)
     http_client = _FakeShutdownHttpClient(recorder, raises=close_http_client_raises)
     storage = _FakeShutdownStorage(recorder, raises=close_storage_raises)
-    return (
+    return _ShutdownDoubles(
         cast(Dispatcher, dispatcher),
         polling_task,
+        scheduler_task,
+        stop_event,
         cast(Bot, bot),
         cast(httpx.AsyncClient, http_client),
         cast(RedisStorage, storage),
@@ -890,26 +968,40 @@ def _build_shutdown_doubles(
 def _patch_generic_shutdown_steps(
     monkeypatch: pytest.MonkeyPatch,
     recorder: _Recorder,
+    doubles: _ShutdownDoubles,
     *,
     wait_polling_task_raises: Exception | None = None,
+    wait_scheduler_task_raises: Exception | None = None,
     wait_inflight_raises: Exception | None = None,
     dispose_engine_raises: Exception | None = None,
 ) -> None:
-    """Give ``wait_polling_task``/``wait_inflight_updates``/``dispose_engine``
-    the same "record an event, optionally fail" shape the three
-    object-backed steps get from ``_build_shutdown_doubles`` -- these three
-    have no object of their own to hang a double off, since they call a
-    bare ``asyncio`` function or a module-level name directly.
+    """Give the waiting steps and ``dispose_engine`` the same "record an event,
+    optionally fail" shape the object-backed steps get from
+    ``_build_shutdown_doubles`` -- these have no object of their own to hang a
+    double off, since they call a bare ``asyncio`` function or a module-level
+    name directly. The two ``asyncio.wait`` steps are told apart by the task
+    they wait for; only the first wait of each is recorded (a timed-out
+    scheduler wait is followed by a second one after ``cancel()``).
+    The scheduler stop budget is shortened so a scheduler that never stops
+    cannot stall a test for 45 seconds.
     """
     real_wait = asyncio.wait
 
     async def recording_wait(tasks: Any, **kwargs: Any) -> Any:
-        recorder.events.append("wait_polling_task")
-        if wait_polling_task_raises is not None:
-            raise wait_polling_task_raises
+        if doubles.polling_task in tasks:
+            recorder.events.append("wait_polling_task")
+            if wait_polling_task_raises is not None:
+                raise wait_polling_task_raises
+        elif doubles.scheduler_task in tasks:
+            if "wait_scheduler_task" not in recorder.events:
+                recorder.events.append("wait_scheduler_task")
+                if wait_scheduler_task_raises is not None:
+                    raise wait_scheduler_task_raises
         return await real_wait(tasks, **kwargs)
 
     monkeypatch.setattr(asyncio, "wait", recording_wait)
+    monkeypatch.setattr(main, "_SCHEDULER_STOP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(main, "_SCHEDULER_CANCEL_TIMEOUT_SECONDS", 0.05)
 
     async def fake_wait_for_inflight_updates(
         dispatcher: Any,
@@ -933,9 +1025,11 @@ def _patch_generic_shutdown_steps(
 
 
 _EXPECTED_ORDER = [
+    "signal_scheduler_stop",
     "stop_polling",
     "wait_polling_task",
     "wait_inflight_updates",
+    "wait_scheduler_task",
     "close_bot_session",
     "close_http_client",
     "close_storage",
@@ -944,22 +1038,23 @@ _EXPECTED_ORDER = [
 
 
 @pytest.mark.asyncio
-async def test_shutdown_runs_all_seven_steps_in_the_exact_documented_order(
+async def test_shutdown_runs_all_nine_steps_in_the_exact_documented_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutation target: swapping ``close_bot_session``/``dispose_engine``
-    order (Р6, the mutation the ticket names explicitly) turns this exact
-    sequence comparison red.
+    """Mutation targets: swapping ``close_bot_session``/``dispose_engine``
+    (PAB-067); moving ``wait_scheduler_task`` after ``close_bot_session`` or
+    before ``wait_inflight_updates``; moving ``signal_scheduler_stop`` off the
+    first place (PAB-069, Р3) -- each turns this exact comparison red.
     """
     recorder = _Recorder()
-    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
-        recorder
-    )
-    _patch_generic_shutdown_steps(monkeypatch, recorder)
+    doubles = _build_shutdown_doubles(recorder)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
 
-    await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
+    await doubles.shutdown()
 
     assert recorder.events == _EXPECTED_ORDER
+    assert doubles.scheduler_task.done()
+    assert not doubles.scheduler_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -967,16 +1062,18 @@ async def test_shutdown_skips_stop_polling_when_task_already_done(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorder = _Recorder()
-    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
-        recorder, already_done=True
-    )
-    await polling_task  # make "already done" genuinely true before _shutdown runs
-    _patch_generic_shutdown_steps(monkeypatch, recorder)
+    doubles = _build_shutdown_doubles(recorder, already_done=True)
+    await (
+        doubles.polling_task
+    )  # make "already done" genuinely true before _shutdown runs
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
 
-    await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
+    await doubles.shutdown()
 
     assert "stop_polling" not in recorder.events
-    assert recorder.events == _EXPECTED_ORDER[1:]
+    assert recorder.events == [
+        step for step in _EXPECTED_ORDER if step != "stop_polling"
+    ]
 
 
 @pytest.mark.asyncio
@@ -991,7 +1088,9 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
 
     doubles_kwargs: dict[str, Any] = {}
     generic_kwargs: dict[str, Any] = {}
-    if failing_step == "stop_polling":
+    if failing_step == "signal_scheduler_stop":
+        doubles_kwargs["signal_scheduler_stop_raises"] = boom
+    elif failing_step == "stop_polling":
         doubles_kwargs["stop_polling_raises"] = boom
     elif failing_step == "close_bot_session":
         doubles_kwargs["close_bot_session_raises"] = boom
@@ -1001,15 +1100,15 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
         doubles_kwargs["close_storage_raises"] = boom
     elif failing_step == "wait_polling_task":
         generic_kwargs["wait_polling_task_raises"] = boom
+    elif failing_step == "wait_scheduler_task":
+        generic_kwargs["wait_scheduler_task_raises"] = boom
     elif failing_step == "wait_inflight_updates":
         generic_kwargs["wait_inflight_raises"] = boom
     elif failing_step == "dispose_engine":
         generic_kwargs["dispose_engine_raises"] = boom
 
-    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
-        recorder, **doubles_kwargs
-    )
-    _patch_generic_shutdown_steps(monkeypatch, recorder, **generic_kwargs)
+    doubles = _build_shutdown_doubles(recorder, **doubles_kwargs)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles, **generic_kwargs)
 
     records: list[Record] = []
 
@@ -1018,11 +1117,11 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
 
     sink_id = logger.add(_sink, level="ERROR")
     try:
-        await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
+        await doubles.shutdown()
     finally:
         logger.remove(sink_id)
 
-    # All seven steps still ran, in order, despite the one failure.
+    # All nine steps still ran, in order, despite the one failure.
     assert recorder.events == _EXPECTED_ORDER
 
     error_records = [r for r in records if r["level"].name == "ERROR"]
@@ -1040,10 +1139,8 @@ async def test_shutdown_does_not_swallow_an_external_cancelled_error() -> None:
     propagates out of ``_shutdown`` instead of being logged and absorbed.
     """
     recorder = _Recorder()
-    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
-        recorder, already_done=True
-    )
-    await polling_task
+    doubles = _build_shutdown_doubles(recorder, already_done=True)
+    await doubles.polling_task
 
     async def cancelling_dispose_engine() -> None:
         raise asyncio.CancelledError
@@ -1051,7 +1148,139 @@ async def test_shutdown_does_not_swallow_an_external_cancelled_error() -> None:
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main, "dispose_engine", cancelling_dispose_engine)
         with pytest.raises(asyncio.CancelledError):
-            await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
+            await doubles.shutdown()
+
+
+# --- PAB-069 AC9: bounded wait for the scheduler ---------------------------
+
+
+def _capture_records(level: str) -> tuple[list[Record], int]:
+    from loguru import logger
+
+    records: list[Record] = []
+
+    def _sink(message: Message) -> None:
+        records.append(message.record)
+
+    return records, logger.add(_sink, level=level)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_a_scheduler_that_ignores_stop_after_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutations: drop ``scheduler_task.cancel()`` (the task stays alive and the
+    ``cancelled()`` check fails); drop the timeout warning; wait without a
+    timeout (the test would hang -- bounded by the ``wait_for``)."""
+    from loguru import logger
+
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(recorder, scheduler_ignores_stop=True)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    records, sink_id = _capture_records("WARNING")
+
+    try:
+        await asyncio.wait_for(doubles.shutdown(), 5)
+    finally:
+        logger.remove(sink_id)
+        if not doubles.scheduler_task.done():
+            doubles.scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await doubles.scheduler_task
+
+    assert doubles.scheduler_task.cancelled()
+    warnings = [r["message"] for r in records if r["level"].name == "WARNING"]
+    assert len(warnings) == 1
+    assert "scheduler" in warnings[0]
+    assert "Timed out" in warnings[0]
+    # The steps after the scheduler wait still ran.
+    assert recorder.events[-4:] == [
+        "close_bot_session",
+        "close_http_client",
+        "close_storage",
+        "dispose_engine",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_warns_again_when_the_scheduler_survives_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from loguru import logger
+
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(recorder)
+    release = asyncio.Event()
+
+    async def stubborn() -> None:
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    doubles = doubles._replace(scheduler_task=asyncio.create_task(stubborn()))
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    records, sink_id = _capture_records("WARNING")
+
+    try:
+        await asyncio.wait_for(doubles.shutdown(), 5)
+    finally:
+        logger.remove(sink_id)
+        release.set()
+        await doubles.scheduler_task
+
+    messages = [r["message"] for r in records if r["level"].name == "WARNING"]
+    assert len(messages) == 2
+    assert "Timed out" in messages[0]
+    assert "did not finish after cancellation" in messages[1]
+
+
+@pytest.mark.asyncio
+async def test_dead_scheduler_is_logged_once_by_the_callback_not_by_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: ``await scheduler_task`` in the wait step -- it would re-raise
+    the stored exception, ``_run_steps`` would log it again as a failed step
+    (two ERROR records instead of one)."""
+    from loguru import logger
+
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(
+        recorder, scheduler_dies_with=RuntimeError("scheduler boom")
+    )
+    doubles.scheduler_task.add_done_callback(main._log_scheduler_task_failure)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    records, sink_id = _capture_records("ERROR")
+
+    try:
+        await doubles.shutdown()
+    finally:
+        logger.remove(sink_id)
+
+    assert len(records) == 1
+    assert records[0]["extra"]["error_type"] == "RuntimeError"
+    assert "Scheduler" in records[0]["message"]
+    assert "scheduler boom" in records[0]["message"]
+    assert recorder.events == _EXPECTED_ORDER
+
+
+@pytest.mark.asyncio
+async def test_scheduler_failure_callback_ignores_a_cancelled_task() -> None:
+    from loguru import logger
+
+    task = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    records, sink_id = _capture_records("ERROR")
+    try:
+        main._log_scheduler_task_failure(cast("asyncio.Task[None]", task))
+    finally:
+        logger.remove(sink_id)
+
+    assert records == []
 
 
 # --- AC8(c)/(d): a real in-flight handler, through the whole lifespan ----
@@ -1365,3 +1594,388 @@ async def test_lifespan_closes_client_storage_and_engine_when_startup_fails(
     assert created_http_clients[0].is_closed is True
     assert len(storage_closes) == 1
     assert len(dispose_calls) == 1
+
+
+# --- PAB-069: scheduler wiring in lifespan (Р1, Р3; AC8, AC12, AC13) --------
+
+
+@pytest.mark.asyncio
+async def test_lifespan_builds_services_then_polling_then_scheduler_with_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutations: pass a literal instead of ``ALERT_COOLDOWN_SECONDS`` /
+    ``SCHEDULER_INTERVAL_SECONDS`` / ``MARKETPLACE_CONCURRENCY``; start the
+    scheduler task before the polling task; build the services after the tasks;
+    wire ``NotificationService`` with another bot or a different ``http_client``.
+    Settings carry 4321 / 777 / 3 (not the defaults), so a default is visible.
+    """
+    events: list[str] = []
+    price_service_kwargs: list[dict[str, Any]] = []
+    notification_bots: list[Bot] = []
+    real_notification_service = NotificationService
+
+    def recording_notification(bot: Bot) -> Any:
+        events.append("notification_service")
+        notification_bots.append(bot)
+        return real_notification_service(bot)
+
+    class _RecordingPriceService:
+        def __init__(self, **kwargs: Any) -> None:
+            events.append("price_service")
+            price_service_kwargs.append(kwargs)
+
+    stop_polling_event = asyncio.Event()
+
+    async def start_polling(*args: Any, **kwargs: Any) -> None:
+        events.append("polling_started")
+        await stop_polling_event.wait()
+
+    async def stop_polling(*args: Any, **kwargs: Any) -> None:
+        stop_polling_event.set()
+
+    loop_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def recording_loop(*args: Any, **kwargs: Any) -> None:
+        events.append("scheduler_started")
+        loop_calls.append((args, kwargs))
+        await kwargs["stop_event"].wait()
+
+    bot = build_fake_bot()
+    clients: list[httpx.AsyncClient] = []
+    real_client = httpx.AsyncClient
+
+    def recording_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        client = real_client(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=bot,
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        scheduler_loop=recording_loop,
+    )
+    monkeypatch.setattr(main, "NotificationService", recording_notification)
+    monkeypatch.setattr(main, "PriceService", _RecordingPriceService)
+    monkeypatch.setattr(httpx, "AsyncClient", recording_client)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert events == [
+            "notification_service",
+            "price_service",
+            "polling_started",
+            "scheduler_started",
+        ]
+
+    assert notification_bots == [bot]
+    kwargs = price_service_kwargs[0]
+    assert kwargs["alert_cooldown_seconds"] == 4321
+    assert kwargs["http_client"] is clients[0]
+    assert kwargs["product_repo_factory"] is ProductRepository
+    assert kwargs["alert_repo_factory"] is AlertRepository
+    assert kwargs["user_repo_factory"] is UserRepository
+    assert kwargs["client_factory"] is get_client
+    assert isinstance(kwargs["notification_service"], real_notification_service)
+
+    (loop_args, loop_kwargs), *rest = loop_calls
+    assert rest == []
+    assert isinstance(loop_args[0], _RecordingPriceService)
+    assert loop_args[1] is _SESSION_FACTORY
+    assert loop_kwargs["interval_seconds"] == 777
+    assert loop_kwargs["concurrency"] == 3
+
+
+@pytest.mark.asyncio
+async def test_lifespan_stops_the_scheduler_through_its_stop_event_not_by_cancelling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: drop the ``signal_scheduler_stop`` step or hand the loop an
+    event other than the one ``_shutdown`` sets (the task would then be
+    cancelled after the shortened budget, not finish)."""
+    monkeypatch.setattr(main, "_SCHEDULER_STOP_TIMEOUT_SECONDS", 0.05)
+    loop_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        loop_calls=loop_calls,
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        stop_event = loop_calls[0][1]["stop_event"]
+        assert not stop_event.is_set()
+
+    assert stop_event.is_set()
+    assert main.app.state.scheduler_task.done()
+    assert not main.app.state.scheduler_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_registers_the_failure_callback_on_the_scheduler_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: drop ``scheduler_task.add_done_callback(...)`` -- nothing else
+    logs the scheduler's death. The sink stays through shutdown, which awaits
+    the dead task: still exactly one record."""
+    from loguru import logger
+
+    async def failing_loop(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("scheduler boom via lifespan")
+
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        scheduler_loop=failing_loop,
+    )
+
+    lifespan_cm = main.lifespan(main.app)
+    await lifespan_cm.__aenter__()  # setup_logging() clears handlers first
+    records, sink_id = _capture_records("ERROR")
+    try:
+        with pytest.raises(RuntimeError, match="scheduler boom via lifespan"):
+            await main.app.state.scheduler_task
+        await lifespan_cm.__aexit__(None, None, None)
+    finally:
+        logger.remove(sink_id)
+
+    assert len(records) == 1
+    assert records[0]["extra"]["error_type"] == "RuntimeError"
+    assert "Scheduler" in records[0]["message"]
+
+
+async def _get_health(app: Any) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.get("/health")
+
+
+@pytest.mark.asyncio
+async def test_health_returns_200_when_polling_and_scheduler_are_both_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert not main.app.state.polling_task.done()
+        assert not main.app.state.scheduler_task.done()
+        response = await _get_health(main.app)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_health_returns_503_naming_the_scheduler_when_only_it_died(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: ``/health`` looks at the polling task only."""
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        scheduler_loop=_finish_immediately,
+    )
+
+    async with main.lifespan(main.app):
+        await main.app.state.scheduler_task
+        assert not main.app.state.polling_task.done()
+        response = await _get_health(main.app)
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "scheduler stopped"}
+
+
+# --- PAB-069 AC11: cleanup after a failed startup ---------------------------
+
+
+class _CleanupProbe:
+    """Records which cleanup steps ran, optionally failing one of them."""
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, bot: Bot, failing: str | None = None
+    ) -> None:
+        self.events: list[str] = []
+        self.storage = _patch_orchestration_factories(monkeypatch, bot=bot)
+        self.failing = failing
+        self._wrap(bot.session, "close", "close_bot_session")
+        self._wrap(httpx.AsyncClient, "aclose", "close_http_client", monkeypatch)
+        self._wrap(self.storage, "close", "close_storage", monkeypatch)
+
+        async def fake_dispose_engine() -> None:
+            self._record("dispose_engine")
+
+        monkeypatch.setattr(main, "dispose_engine", fake_dispose_engine)
+        self._monkeypatch = monkeypatch
+
+    def _record(self, name: str) -> None:
+        self.events.append(name)
+        if name == self.failing:
+            raise OSError(f"{name} failed")
+
+    def _wrap(
+        self,
+        target: Any,
+        attr: str,
+        name: str,
+        monkeypatch: pytest.MonkeyPatch | None = None,
+    ) -> None:
+        async def replacement(*args: Any, **kwargs: Any) -> None:
+            self._record(name)
+
+        if monkeypatch is None:
+            # ``bot.session`` is a per-test object: patch the instance.
+            setattr(target, attr, replacement)
+        else:
+            monkeypatch.setattr(target, attr, replacement)
+
+
+_ALL_CLEANUP_STEPS = [
+    "close_bot_session",
+    "close_http_client",
+    "close_storage",
+    "dispose_engine",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_step", _ALL_CLEANUP_STEPS)
+async def test_failed_startup_runs_every_cleanup_step_even_if_one_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failing_step: str,
+) -> None:
+    """AC11 (а)/(в). Mutation: remove the per-step isolation in
+    ``_run_steps`` -- the failing step would skip the rest and replace the
+    original ``boom`` with its own ``OSError``."""
+    boom = RuntimeError("configure_bot_profile boom")
+
+    async def failing_profile(bot: Bot) -> None:
+        raise boom
+
+    probe = _CleanupProbe(monkeypatch, build_fake_bot(), failing=failing_step)
+    monkeypatch.setattr(main, "configure_bot_profile", failing_profile)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert probe.events == _ALL_CLEANUP_STEPS
+    err = capsys.readouterr().err
+    assert err.count("Shutdown step failed") == 1
+    assert f"Shutdown step failed: {failing_step}" in err
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_bot_profile_setup_closes_everything_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC11 (б). Mutation: ``except Exception`` instead of ``BaseException`` in
+    ``lifespan`` -- the ``Bot`` session (and the rest) would stay open."""
+
+    async def cancelled_profile(bot: Bot) -> None:
+        raise asyncio.CancelledError
+
+    probe = _CleanupProbe(monkeypatch, build_fake_bot())
+    monkeypatch.setattr(main, "configure_bot_profile", cancelled_profile)
+
+    with pytest.raises(asyncio.CancelledError):
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup is cancelled")
+
+    assert probe.events == _ALL_CLEANUP_STEPS
+
+
+@pytest.mark.asyncio
+async def test_http_client_constructor_failure_cleans_up_without_touching_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AC11 (г). Mutation: drop the ``is not None`` guards in
+    ``_cleanup_failed_startup`` -- the cleanup would call ``aclose`` / close
+    the session of an object that was never created; that shows up as a logged
+    failed step."""
+    boom = RuntimeError("AsyncClient boom")
+
+    def failing_client(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    bot_factory_calls: list[None] = []
+    probe = _CleanupProbe(monkeypatch, build_fake_bot())
+    monkeypatch.setattr(httpx, "AsyncClient", failing_client)
+    monkeypatch.setattr(
+        main, "create_bot", lambda _settings: bot_factory_calls.append(None)
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert bot_factory_calls == []
+    assert probe.events == ["close_storage", "dispose_engine"]
+    assert "Shutdown step failed" not in capsys.readouterr().err
+
+
+# --- PAB-069 AC12: DB pool budget warning -----------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pool_size", "max_overflow", "concurrency", "expect_warning"),
+    [
+        (5, 10, 5, False),  # .env.example defaults
+        (2, 3, 4, False),  # one below the capacity
+        (2, 3, 5, True),  # exactly the capacity
+        (2, 3, 6, True),  # above the capacity
+    ],
+)
+async def test_lifespan_warns_once_when_concurrency_reaches_the_pool_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pool_size: int,
+    max_overflow: int,
+    concurrency: int,
+    expect_warning: bool,
+) -> None:
+    """Mutations: ``<`` instead of ``<=`` (the equality cell goes quiet),
+    inverted comparison, warning without the two figures. Startup is not
+    cancelled: ``lifespan`` yields in every cell."""
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        settings=_make_orchestration_settings(
+            pool_size=pool_size, max_overflow=max_overflow, concurrency=concurrency
+        ),
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if "WARNING" in line]
+    if not expect_warning:
+        assert lines == []
+        return
+    assert len(lines) == 1
+    assert f"MARKETPLACE_CONCURRENCY={concurrency}" in lines[0]
+    assert f"POOL_SIZE + MAX_OVERFLOW={pool_size + max_overflow}" in lines[0]

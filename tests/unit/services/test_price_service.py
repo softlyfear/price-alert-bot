@@ -12,6 +12,7 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import NamedTuple
 from typing import cast
 from unittest.mock import AsyncMock
@@ -19,10 +20,13 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from aiogram.exceptions import TelegramNetworkError
+from aiogram.methods import TelegramMethod
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.price_service as price_service_module
+from tests.unit.conftest import build_fake_bot
 
 if TYPE_CHECKING:
     # `Message`/`Record` only exist in loguru's bundled `.pyi` stub, not at
@@ -30,6 +34,7 @@ if TYPE_CHECKING:
     from loguru import Message
     from loguru import Record
 
+from app.core.logging import setup_logging
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
@@ -109,6 +114,7 @@ def _build_harness(
     alerts: list[Alert] | None = None,
     user: User | None = None,
     cooldown_seconds: int = _COOLDOWN_SECONDS,
+    real_notification: NotificationService | None = None,
 ) -> _Harness:
     """Wire a `PriceService` with mocked collaborators.
 
@@ -135,7 +141,8 @@ def _build_harness(
     session = MagicMock(spec=AsyncSession)
 
     service = PriceService(
-        notification_service=cast(NotificationService, notification),
+        notification_service=real_notification
+        or cast(NotificationService, notification),
         product_repo_factory=lambda _session: cast(ProductRepository, product_repo),
         alert_repo_factory=lambda _session: cast(AlertRepository, alert_repo),
         user_repo_factory=lambda _session: cast(UserRepository, user_repo),
@@ -477,3 +484,146 @@ async def test_repository_calls_do_not_grow_with_alert_count() -> None:
     harness.user_repo.get_by_id.assert_called_once_with(product.user_id)
     cast(AsyncMock, harness.session.flush).assert_called_once()
     assert harness.notification.send_alert.call_count == 3
+
+
+# --- PAB-069 AC10: cooldown for the `above` direction ----------------------
+# Already covered before this ticket (both directions): `test_predicate_matrix`
+# (equality, beyond the threshold, the other side), the exact-boundary and
+# one-microsecond cooldown cells and the naive `triggered_at` -- the latter
+# cooldown cells only for the default `below`. Added below: `above` x cooldown.
+
+
+@pytest.mark.asyncio
+async def test_above_cooldown_within_window_suppresses_repeat() -> None:
+    """Mutation: apply the cooldown gate only to the `below` branch."""
+    product = _make_product(current_price=100000)
+    triggered_at = datetime.now(UTC) - timedelta(seconds=_COOLDOWN_SECONDS // 2)
+    alert = _make_alert(
+        direction=AlertDirection.above, target_price=90000, triggered_at=triggered_at
+    )
+    harness = _build_harness(
+        product=product,
+        market_data=MarketplaceProductData(name="Товар", price=100000),
+        alerts=[alert],
+        user=_make_user(),
+    )
+
+    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+
+    harness.notification.send_alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_above_cooldown_past_window_sends_again() -> None:
+    product = _make_product(current_price=100000)
+    triggered_at = datetime.now(UTC) - timedelta(seconds=_COOLDOWN_SECONDS * 2)
+    alert = _make_alert(
+        direction=AlertDirection.above, target_price=90000, triggered_at=triggered_at
+    )
+    harness = _build_harness(
+        product=product,
+        market_data=MarketplaceProductData(name="Товар", price=100000),
+        alerts=[alert],
+        user=_make_user(),
+    )
+
+    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+
+    harness.notification.send_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_above_cooldown_boundary_exact_equality_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(price_service_module, "datetime", _FrozenClock(fixed_now))
+    triggered_at = fixed_now - timedelta(seconds=_COOLDOWN_SECONDS)
+    alert = _make_alert(
+        direction=AlertDirection.above, target_price=90000, triggered_at=triggered_at
+    )
+    harness = _build_harness(
+        product=_make_product(current_price=100000),
+        market_data=MarketplaceProductData(name="Товар", price=100000),
+        alerts=[alert],
+        user=_make_user(),
+    )
+
+    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+
+    harness.notification.send_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_above_cooldown_boundary_one_microsecond_short_suppresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(price_service_module, "datetime", _FrozenClock(fixed_now))
+    triggered_at = (
+        fixed_now - timedelta(seconds=_COOLDOWN_SECONDS) + timedelta(microseconds=1)
+    )
+    alert = _make_alert(
+        direction=AlertDirection.above, target_price=90000, triggered_at=triggered_at
+    )
+    harness = _build_harness(
+        product=_make_product(current_price=100000),
+        market_data=MarketplaceProductData(name="Товар", price=100000),
+        alerts=[alert],
+        user=_make_user(),
+    )
+
+    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+
+    harness.notification.send_alert.assert_not_called()
+
+
+# --- PAB-069 AC4: Telegram error text never reaches the process log --------
+
+_TOKEN_MARKER = "bot424242:LEAK-MARKER-TOKEN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_factory",
+    [
+        lambda method: TelegramNetworkError(method=method, message=_TOKEN_MARKER),
+        lambda method: RuntimeError(_TOKEN_MARKER),
+    ],
+    ids=["telegram-network-error", "runtime-error"],
+)
+async def test_telegram_failure_text_is_absent_from_stderr_under_production_logging(
+    capsys: pytest.CaptureFixture[str], exc_factory: Any
+) -> None:
+    """Real path `check_product` -> `NotificationService.send_alert` -> bot, with
+    the production handler from `setup_logging()` (`diagnose=False`) writing to
+    the process `stderr`. Target mutations (each turns this red): `raise ...
+    from exc` or a bare `raise` in `send_alert` (the loguru traceback in
+    `PriceService`'s `logger.exception` then prints the chained error text);
+    `str(exc)` in the `send_alert` log call. The positive control proves the
+    channel carries a marker written straight to the log (convention 22)."""
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        raise exc_factory(method)
+
+    bot = build_fake_bot(responder=responder)
+    harness = _build_harness(
+        product=_make_product(current_price=150000),
+        market_data=MarketplaceProductData(name="Товар", price=100000),
+        alerts=[_make_alert(target_price=120000)],
+        user=_make_user(),
+        real_notification=NotificationService(bot),
+    )
+
+    setup_logging()
+    try:
+        await harness.service.check_product(1, cast(AsyncSession, harness.session))
+        logger.error("control {marker}", marker=_TOKEN_MARKER)
+    finally:
+        logger.remove()
+
+    err = capsys.readouterr().err
+    assert "Failed to send alert in price check loop" in err  # the path really ran
+    lines_with_marker = [line for line in err.splitlines() if _TOKEN_MARKER in line]
+    assert len(lines_with_marker) == 1  # only the direct control line
+    assert "control" in lines_with_marker[0]
