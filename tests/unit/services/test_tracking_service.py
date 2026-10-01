@@ -26,6 +26,7 @@ import app.services.tracking as tracking_module
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
+from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
@@ -151,7 +152,7 @@ def _build(
 
     async def create_alert(data: dict[str, Any]) -> Alert:
         events.append("create_alert")
-        return _alert(target_price=data["target_price"])
+        return _alert(target_price=data["target_price"], direction=data["direction"])
 
     alerts_repo.create.side_effect = create_alert
 
@@ -610,6 +611,126 @@ async def test_add_tracking_reraises_the_same_alert_integrity_error_without_row(
 
     assert excinfo.value is boom
     assert harness.events == ["savepoint_begin", "savepoint_rollback"]
+
+
+# --- add_tracking: direction (PAB-072) ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_creates_an_above_alert_for_a_threshold_over_the_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch)
+
+    alert = await _add(harness, target=20_000)  # current price is 15_000
+
+    harness.alerts.create.assert_awaited_once_with(
+        {
+            "user_id": _USER_ID,
+            "product_id": 10,
+            "target_price": 20_000,
+            "direction": AlertDirection.above,
+        }
+    )
+    assert alert.direction is AlertDirection.above
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [(14_999, AlertDirection.below), (15_001, AlertDirection.above)],
+)
+async def test_add_tracking_direction_flips_exactly_at_the_current_price(
+    monkeypatch: pytest.MonkeyPatch, target: int, expected: AlertDirection
+) -> None:
+    harness = _build(monkeypatch)
+
+    await _add(harness, target=target)
+
+    created = harness.alerts.create.await_args.args[0]
+    assert created["direction"] is expected
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_equal_threshold_touches_no_repository_and_no_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, existing_product=_product())
+
+    with pytest.raises(TargetEqualsCurrentPriceError):
+        await _add(harness, target=15_000)
+
+    assert harness.users.mock_calls == []
+    assert harness.products.mock_calls == []
+    assert harness.alerts.mock_calls == []
+    harness.factory.assert_not_called()
+    harness.client.get_product_data.assert_not_called()
+    assert harness.events == []
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_below_alert_does_not_make_an_above_alert_a_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(
+        monkeypatch,
+        existing_product=_product(),
+        alerts=[_alert(target_price=20_000, direction=AlertDirection.below)],
+    )
+
+    await _add(harness, target=20_000)
+
+    harness.alerts.create.assert_awaited_once()
+    assert harness.alerts.create.await_args.args[0]["direction"] is AlertDirection.above
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_same_direction_and_target_is_a_duplicate_for_above(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(
+        monkeypatch,
+        existing_product=_product(),
+        alerts=[_alert(target_price=20_000, direction=AlertDirection.above)],
+    )
+
+    with pytest.raises(DuplicateAlertError):
+        await _add(harness, target=20_000)
+
+    harness.alerts.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_race_with_the_other_direction_is_not_a_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boom = _integrity_error()
+    harness = _build(monkeypatch, existing_product=_product())
+    harness.alerts.get_by_user_and_product.side_effect = [
+        [],
+        [_alert(target_price=20_000, direction=AlertDirection.below)],
+    ]
+    harness.alerts.create.side_effect = boom
+
+    with pytest.raises(IntegrityError) as excinfo:
+        await _add(harness, target=20_000)
+
+    assert excinfo.value is boom
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_race_with_the_same_direction_is_a_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, existing_product=_product())
+    harness.alerts.get_by_user_and_product.side_effect = [
+        [],
+        [_alert(target_price=20_000, direction=AlertDirection.above)],
+    ]
+    harness.alerts.create.side_effect = _integrity_error()
+
+    with pytest.raises(DuplicateAlertError):
+        await _add(harness, target=20_000)
 
 
 # --- constant number of database round trips ---------------------------------

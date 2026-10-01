@@ -103,3 +103,10 @@ class MarketplaceNotSupportedError(DomainError):
     def __init__(self, marketplace: str) -> None:
         self.marketplace = marketplace
         super().__init__(f"Marketplace is not supported: {marketplace}")
+
+
+class TargetEqualsCurrentPriceError(DomainError):
+    """Raised when the threshold equals the current price: no direction."""
+
+    def __init__(self) -> None:
+        super().__init__("Target price equals the current price")

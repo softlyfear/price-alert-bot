@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import ProductLimitExceededError
+from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
@@ -336,3 +337,58 @@ async def test_preview_registers_the_user_and_returns_the_client_result(
         await db_session.execute(select(func.count()).where(User.tg_user_id == tg))
     ).scalar_one()
     assert users == 1
+
+
+async def test_below_and_above_alerts_with_the_same_target_coexist(
+    db_session: AsyncSession,
+) -> None:
+    """``direction`` is part of ``uq_alerts_user_product_logic`` (PAB-072)."""
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    below = await _add(service, tg, article, target=9_000, price=15_000)
+
+    above = await _add(service, tg, article, target=9_000, price=5_000)
+
+    assert (below.direction, above.direction) == (
+        AlertDirection.below,
+        AlertDirection.above,
+    )
+    assert above.product_id == below.product_id
+    assert await _counts_for_user(db_session, tg) == (1, 2)
+    await db_session.commit()
+
+
+async def test_duplicate_above_alert_raises_and_the_transaction_stays_usable(
+    db_session: AsyncSession,
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    first = await _add(service, tg, article, target=20_000, price=15_000)
+
+    with pytest.raises(DuplicateAlertError):
+        await _add(service, tg, article, target=20_000, price=15_000)
+
+    assert first.direction is AlertDirection.above
+    assert await _counts_for_user(db_session, tg) == (1, 1)
+
+
+async def test_equal_threshold_is_rejected_before_anything_is_written(
+    db_session: AsyncSession,
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    client = _CountingClient()
+
+    with pytest.raises(TargetEqualsCurrentPriceError):
+        await _add(
+            _service(db_session, client=client),
+            tg,
+            article,
+            target=15_000,
+            price=15_000,
+        )
+
+    users = (
+        await db_session.execute(select(func.count()).where(User.tg_user_id == tg))
+    ).scalar_one()
+    assert users == 0
+    assert client.fetches == 0

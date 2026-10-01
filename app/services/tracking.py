@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
+from app.domain.thresholds import choose_direction
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
@@ -93,7 +94,13 @@ class TrackingService:
         current_price: int,
         target_price: int,
     ) -> Alert:
-        """Create (or reuse) the product and add a `below` alert for it."""
+        """Create (or reuse) the product and add an alert for it.
+
+        The direction follows from the threshold versus `current_price`;
+        an equal threshold raises `TargetEqualsCurrentPriceError` before
+        any database access.
+        """
+        direction = choose_direction(current_price, target_price)
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
         await self._ensure_within_limit(user.id, marketplace, article)
 
@@ -104,7 +111,7 @@ class TrackingService:
             product = await self._create_product(
                 user.id, marketplace, article, product_name, current_price
             )
-        return await self._create_alert(user.id, product.id, target_price)
+        return await self._create_alert(user.id, product.id, target_price, direction)
 
     async def _ensure_within_limit(
         self, user_id: int, marketplace: Marketplace, article: int
@@ -149,9 +156,13 @@ class TrackingService:
             return existing
 
     async def _create_alert(
-        self, user_id: int, product_id: int, target_price: int
+        self,
+        user_id: int,
+        product_id: int,
+        target_price: int,
+        direction: AlertDirection,
     ) -> Alert:
-        if await self._find_duplicate(user_id, product_id, target_price):
+        if await self._find_duplicate(user_id, product_id, target_price, direction):
             raise DuplicateAlertError
         try:
             async with self._session.begin_nested():
@@ -160,20 +171,23 @@ class TrackingService:
                         "user_id": user_id,
                         "product_id": product_id,
                         "target_price": target_price,
-                        "direction": AlertDirection.below,
+                        "direction": direction,
                     }
                 )
         except IntegrityError as exc:
-            if await self._find_duplicate(user_id, product_id, target_price):
+            if await self._find_duplicate(user_id, product_id, target_price, direction):
                 raise DuplicateAlertError from exc
             raise
 
     async def _find_duplicate(
-        self, user_id: int, product_id: int, target_price: int
+        self,
+        user_id: int,
+        product_id: int,
+        target_price: int,
+        direction: AlertDirection,
     ) -> bool:
         alerts = await self._alerts.get_by_user_and_product(user_id, product_id)
         return any(
-            alert.direction is AlertDirection.below
-            and alert.target_price == target_price
+            alert.direction is direction and alert.target_price == target_price
             for alert in alerts
         )

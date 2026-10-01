@@ -38,8 +38,10 @@ from app.domain.exceptions import InvalidPriceInputError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import ProductRefParseError
+from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.links import parse_product_ref
 from app.domain.money import rubles_to_kopecks
+from app.domain.thresholds import choose_direction
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
@@ -51,6 +53,7 @@ _KEY_ARTICLE = "article"
 _KEY_NAME = "product_name"
 _KEY_CURRENT_PRICE = "current_price"
 _KEY_TARGET_PRICE = "target_price"
+_KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
 
 # Prevents a huge message from reaching the parser; the domain parser
 # enforces its own, larger bound.
@@ -186,13 +189,21 @@ def create_router() -> Router:
             await state.clear()
             await message.answer(texts.ADD_STALE_TEXT)
             return
+        try:
+            direction = choose_direction(current_price, target_price)
+        except TargetEqualsCurrentPriceError:
+            await message.answer(
+                texts.ADD_TARGET_EQUALS_TEXT, reply_markup=cancel_keyboard()
+            )
+            return
         await state.update_data({_KEY_TARGET_PRICE: target_price})
         await state.set_state(AddProduct.confirming)
-        await message.answer(
-            texts.confirm_text(name, current_price, target_price),
+        card = await message.answer(
+            texts.confirm_text(name, current_price, target_price, direction),
             reply_markup=confirm_keyboard(),
             parse_mode=None,
         )
+        await state.update_data({_KEY_CONFIRM_MESSAGE_ID: card.message_id})
 
     @router.message(
         StateFilter(AddProduct.waiting_link, AddProduct.waiting_target_price),
@@ -203,11 +214,16 @@ def create_router() -> Router:
         await message.answer(texts.ADD_NOT_TEXT_TEXT, reply_markup=cancel_keyboard())
 
     @router.message(StateFilter(AddProduct.confirming))
-    async def on_text_while_confirming(message: Message) -> None:
-        """Text instead of a button press: point at the buttons, keep the state."""
-        await message.answer(
+    async def on_text_while_confirming(message: Message, state: FSMContext) -> None:
+        """Text instead of a button press: point at the buttons, keep the state.
+
+        The hint carries a fresh "Confirm" button, so it becomes the only
+        live card; the previous one turns stale.
+        """
+        hint = await message.answer(
             texts.ADD_CONFIRM_HINT_TEXT, reply_markup=confirm_keyboard()
         )
+        await state.update_data({_KEY_CONFIRM_MESSAGE_ID: hint.message_id})
 
     @router.callback_query(F.data == CB_ADD_CANCEL)
     async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
@@ -220,6 +236,12 @@ def create_router() -> Router:
     ) -> None:
         """Create the product and the alert for the pressing user only."""
         data = await state.get_data()
+        if (
+            not isinstance(callback.message, Message)
+            or data.get(_KEY_CONFIRM_MESSAGE_ID) != callback.message.message_id
+        ):
+            await callback.answer(texts.ADD_OLD_CARD_ALERT_TEXT, show_alert=True)
+            return
         try:
             marketplace = Marketplace(data[_KEY_MARKETPLACE])
             article = data[_KEY_ARTICLE]
@@ -238,7 +260,7 @@ def create_router() -> Router:
             await _finish(callback, state, texts.ADD_STALE_TEXT)
             return
         try:
-            await tracking.add_tracking(
+            alert = await tracking.add_tracking(
                 callback.from_user.id,
                 marketplace,
                 article,
@@ -252,8 +274,14 @@ def create_router() -> Router:
             await _finish(callback, state, texts.ADD_DUPLICATE_TEXT)
         except MarketplaceNotSupportedError:
             await _finish(callback, state, texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT)
+        except TargetEqualsCurrentPriceError:
+            await _finish(callback, state, texts.ADD_TARGET_EQUALS_RESTART_TEXT)
         else:
-            await _finish(callback, state, texts.added_text(name, target_price))
+            await _finish(
+                callback,
+                state,
+                texts.added_text(name, target_price, alert.direction),
+            )
 
     @router.callback_query(F.data == CB_ADD_CONFIRM)
     async def on_stale_confirm(callback: CallbackQuery) -> None:

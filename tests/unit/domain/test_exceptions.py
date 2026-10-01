@@ -7,6 +7,7 @@ the body of ``__init__``, where all the logic lives, uncovered.
 
 import pytest
 
+from app.domain.exceptions import DomainError
 from app.domain.exceptions import EmptyPatchError
 from app.domain.exceptions import GetOrCreateUserError
 from app.domain.exceptions import InvalidCreateFieldsError
@@ -14,6 +15,7 @@ from app.domain.exceptions import InvalidPaginationError
 from app.domain.exceptions import InvalidPatchFieldsError
 from app.domain.exceptions import MissingRequiredCreateFieldsError
 from app.domain.exceptions import RequiredFieldCannotBeNoneError
+from app.domain.exceptions import TargetEqualsCurrentPriceError
 
 
 def test_invalid_create_fields_error_stores_unknown_fields_and_message() -> None:
@@ -91,3 +93,13 @@ def test_missing_required_create_fields_error_lists_all_fields_order_independent
     assert exc.missing_fields == {"tg_user_id", "username"}
     assert str(exc).startswith("Missing required fields for creation: ")
     assert all(f"'{f}'" in str(exc) for f in exc.missing_fields)
+
+
+def test_target_equals_current_price_error_is_a_domain_error_with_fixed_message() -> (
+    None
+):
+    with pytest.raises(DomainError) as excinfo:
+        raise TargetEqualsCurrentPriceError()
+
+    assert isinstance(excinfo.value, TargetEqualsCurrentPriceError)
+    assert str(excinfo.value) == "Target price equals the current price"
