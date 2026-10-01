@@ -10,6 +10,7 @@ the service and are covered by ``tests/unit/services/test_tracking_service.py``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 from unittest.mock import AsyncMock
@@ -38,7 +39,10 @@ from app.bot.states import AddProduct
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
+from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.money import PRICE_DISCLAIMER_SHORT
+from app.models.alert import Alert
+from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
@@ -48,12 +52,18 @@ from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
 from tests.unit.conftest import make_message_update
+from tests.unit.conftest import send_message_responder
+from tests.unit.conftest import sent_message_id
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 _NBSP = " "
 _CHAT = 9_999
 _USER = 4_242  # deliberately different from the chat id
 _WB_LINK = "https://www.wildberries.ru/catalog/12345678/detail.aspx"
 _NAME = "Кроссовки <b>x*"
+_CARD_ID = 5  # message_id of the card in ``_CONFIRMING_DATA``
 _PRICE = 199_000  # 1 990 rubles
 
 
@@ -67,6 +77,7 @@ class _TrackingStub:
         self.preview_result: Any = MarketplaceProductData(name=_NAME, price=_PRICE)
         self.preview_error: Exception | None = None
         self.add_error: Exception | None = None
+        self.add_direction = AlertDirection.below
 
     async def preview(
         self, tg_user_id: int, marketplace: Marketplace, article: int
@@ -76,10 +87,17 @@ class _TrackingStub:
             raise self.preview_error
         return self.preview_result
 
-    async def add_tracking(self, *args: Any) -> None:
+    async def add_tracking(self, *args: Any) -> Alert:
         self.add_calls.append(args)
         if self.add_error is not None:
             raise self.add_error
+        return Alert(
+            id=1,
+            user_id=1,
+            product_id=1,
+            target_price=args[5],
+            direction=self.add_direction,
+        )
 
 
 @pytest.fixture
@@ -123,7 +141,14 @@ class _Dialog:
             )
         )
 
-    async def press(self, data: str, *, accessible: bool = True) -> None:
+    async def press(
+        self,
+        data: str,
+        *,
+        accessible: bool = True,
+        message_id: int = _CARD_ID,
+        with_message: bool = True,
+    ) -> None:
         await self.feed(
             make_callback_update(
                 data,
@@ -131,6 +156,8 @@ class _Dialog:
                 chat_id=_CHAT,
                 user_id=_USER,
                 accessible=accessible,
+                message_id=message_id,
+                with_message=with_message,
             )
         )
 
@@ -169,7 +196,8 @@ class _Dialog:
 
 @pytest.fixture
 def dialog(real_dispatcher: Dispatcher) -> _Dialog:
-    return _Dialog(real_dispatcher, build_fake_bot())
+    bot = build_fake_bot(responder=send_message_responder())
+    return _Dialog(real_dispatcher, bot)
 
 
 _CONFIRMING_DATA: dict[str, Any] = {
@@ -178,6 +206,7 @@ _CONFIRMING_DATA: dict[str, Any] = {
     "product_name": _NAME,
     "current_price": _PRICE,
     "target_price": 150_000,
+    "confirm_message_id": _CARD_ID,
 }
 
 
@@ -554,7 +583,7 @@ async def test_confirm_outside_the_confirmation_step_is_stale_and_never_calls_se
 @pytest.mark.parametrize(
     "broken",
     [
-        {},
+        {"confirm_message_id": _CARD_ID},
         {**_CONFIRMING_DATA, "marketplace": "amazon"},
         {**_CONFIRMING_DATA, "article": "12345678"},
         {**_CONFIRMING_DATA, "product_name": 5},
@@ -654,6 +683,232 @@ async def test_cancel_button_on_an_inaccessible_message_still_answers_the_callba
     assert await dialog.state() is None
 
 
+# --- direction (PAB-072) ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_threshold_below_the_price_shows_a_below_card_and_saves_the_card_id(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await _at_waiting_price(dialog)
+
+    await dialog.say("1500")
+
+    card = dialog.sent[-1]
+    assert f"Сообщу, когда цена станет ниже 1{_NBSP}500{_NBSP}₽." in card.text
+    assert "выше" not in card.text
+    assert PRICE_DISCLAIMER_SHORT in card.text
+    assert card.parse_mode is None
+    assert await dialog.state() == AddProduct.confirming.state
+    assert (await dialog.data())["confirm_message_id"] == sent_message_id(0)
+
+
+@pytest.mark.asyncio
+async def test_threshold_above_the_price_shows_an_above_card_with_disclaimer(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await _at_waiting_price(dialog)
+
+    await dialog.say("2500")
+
+    card = dialog.sent[-1]
+    assert f"Сообщу, когда цена станет выше 2{_NBSP}500{_NBSP}₽." in card.text
+    assert "ниже" not in card.text
+    assert PRICE_DISCLAIMER_SHORT in card.text
+    assert card.parse_mode is None
+    assert _keyboard_callbacks(card) == [CB_ADD_CONFIRM, CB_ADD_CANCEL]
+    assert await dialog.state() == AddProduct.confirming.state
+
+
+@pytest.mark.asyncio
+async def test_threshold_one_kopeck_either_side_of_the_price_picks_each_direction(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await _at_waiting_price(dialog)
+    await dialog.say("1989,99")
+    assert "станет ниже" in dialog.last_text
+
+    await _at_waiting_price(dialog)
+    await dialog.say("1990,01")
+    assert "станет выше" in dialog.last_text
+
+
+@pytest.mark.asyncio
+async def test_threshold_equal_to_the_price_is_refused_and_the_step_holds(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await _at_waiting_price(dialog)
+
+    await dialog.say("1990")
+
+    assert dialog.last_text == texts.ADD_TARGET_EQUALS_TEXT
+    assert _keyboard_callbacks(dialog.sent[-1]) == [CB_ADD_CANCEL]
+    assert await dialog.state() == AddProduct.waiting_target_price.state
+    data = await dialog.data()
+    assert "target_price" not in data
+    assert "confirm_message_id" not in data
+    assert stub.add_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("direction", "phrase"),
+    [
+        (AlertDirection.below, "цена станет ниже"),
+        (AlertDirection.above, "цена станет выше"),
+    ],
+)
+async def test_success_text_follows_the_direction_of_the_created_alert(
+    dialog: _Dialog, stub: _TrackingStub, direction: AlertDirection, phrase: str
+) -> None:
+    """For ``above`` the stub answers against what the 150_000 target implies,
+    so the text must come from the returned alert, not be recomputed."""
+    stub.add_direction = direction
+    await _at_confirming(dialog)
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert f"Сообщу, когда {phrase} 1{_NBSP}500{_NBSP}₽." in dialog.last_text
+    assert PRICE_DISCLAIMER_SHORT in dialog.last_text
+    assert dialog.sent[-1].parse_mode is None
+
+
+@pytest.mark.asyncio
+async def test_service_reporting_equal_threshold_gets_a_domain_text_and_clears_state(
+    dialog: _Dialog, stub: _TrackingStub, log_records: list[Record]
+) -> None:
+    stub.add_error = TargetEqualsCurrentPriceError()
+    await _at_confirming(dialog)
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert dialog.last_text == texts.ADD_TARGET_EQUALS_RESTART_TEXT
+    assert len(dialog.callback_answers) == 1
+    assert await dialog.state() is None
+    assert [r for r in log_records if r["level"].name == "ERROR"] == []
+
+
+# --- stale confirmation card (PAB-072) -----------------------------------------
+
+
+async def _two_cards_by_restart(dialog: _Dialog) -> tuple[int, int]:
+    """Run the dialog twice; return the ``message_id`` of both cards."""
+    await dialog.command("add")
+    await dialog.say(_WB_LINK)
+    await dialog.say("1500")
+    first = (await dialog.data())["confirm_message_id"]
+    await dialog.command("add")
+    await dialog.say(_WB_LINK)
+    await dialog.say("1400")
+    return first, (await dialog.data())["confirm_message_id"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_under_the_first_of_two_cards_is_stale_and_the_second_works(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    first, second = await _two_cards_by_restart(dialog)
+    assert first != second
+    data_before = await dialog.data()
+
+    await dialog.press(CB_ADD_CONFIRM, message_id=first)
+
+    assert stub.add_calls == []
+    assert [a.text for a in dialog.callback_answers] == [texts.ADD_OLD_CARD_ALERT_TEXT]
+    assert dialog.callback_answers[0].show_alert is True
+    assert await dialog.state() == AddProduct.confirming.state
+    assert await dialog.data() == data_before
+
+    await dialog.press(CB_ADD_CONFIRM, message_id=second)
+
+    assert stub.add_calls == [(_USER, Marketplace.wb, 12345678, _NAME, _PRICE, 140_000)]
+    assert dialog.last_text.startswith("Отслеживание добавлено")
+    assert await dialog.state() is None
+
+
+@pytest.mark.asyncio
+async def test_hint_card_replaces_the_live_card_and_the_old_one_turns_stale(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await _at_waiting_price(dialog)
+    await dialog.say("1500")
+    card_id = (await dialog.data())["confirm_message_id"]
+
+    await dialog.say("yes")
+
+    hint_id = (await dialog.data())["confirm_message_id"]
+    assert hint_id == sent_message_id(1)
+    assert hint_id != card_id
+    await dialog.press(CB_ADD_CONFIRM, message_id=card_id)
+    assert stub.add_calls == []
+    await dialog.press(CB_ADD_CONFIRM, message_id=hint_id)
+    assert len(stub.add_calls) == 1
+    assert await dialog.state() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("data", "press_kwargs", "expected"),
+    [
+        (
+            {k: v for k, v in _CONFIRMING_DATA.items() if k != "confirm_message_id"},
+            {},
+            texts.ADD_OLD_CARD_ALERT_TEXT,
+        ),
+        # No message at all is not routed to the card check: generic stale text.
+        (dict(_CONFIRMING_DATA), {"with_message": False}, texts.ADD_STALE_ALERT_TEXT),
+        (dict(_CONFIRMING_DATA), {"accessible": False}, texts.ADD_OLD_CARD_ALERT_TEXT),
+    ],
+    ids=["no-key", "message-none", "inaccessible-message"],
+)
+async def test_confirm_without_a_verifiable_card_is_stale_and_keeps_the_draft(
+    dialog: _Dialog,
+    stub: _TrackingStub,
+    data: dict[str, Any],
+    press_kwargs: dict[str, Any],
+    expected: str,
+) -> None:
+    await dialog.set_state(AddProduct.confirming.state, data)
+
+    await dialog.press(CB_ADD_CONFIRM, **press_kwargs)
+
+    assert stub.add_calls == []
+    assert [a.text for a in dialog.callback_answers] == [expected]
+    assert dialog.sent == []
+    assert await dialog.state() == AddProduct.confirming.state
+    assert await dialog.data() == data
+
+
+@pytest.mark.asyncio
+async def test_commit_failure_after_a_successful_confirm_adds_the_error_text(
+    stub: _TrackingStub, log_records: list[Any]
+) -> None:
+    """The callback is already answered; the catch-all still tells the user."""
+
+    class _CommitFails(AsyncSession):
+        async def commit(self) -> None:
+            raise RuntimeError("COMMIT failed")
+
+    dispatcher = create_dispatcher(
+        MemoryStorage(),
+        async_sessionmaker(class_=_CommitFails),
+        httpx.AsyncClient(),
+        50,
+    )
+    dialog = _Dialog(dispatcher, build_fake_bot(responder=send_message_responder()))
+    await _at_confirming(dialog)
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert len(stub.add_calls) == 1
+    # One answer from the handler, one from the catch-all (always attempted).
+    assert len(dialog.callback_answers) == 2
+    texts_sent = [m.text for m in dialog.sent]
+    assert len(texts_sent) == 2
+    assert texts_sent[0].startswith("Отслеживание добавлено")
+    assert texts_sent[1] == texts.UNEXPECTED_ERROR_TEXT
+
+
 # --- wiring ----------------------------------------------------------------------
 
 
@@ -685,17 +940,20 @@ async def test_tracking_service_is_assembled_from_session_and_workflow_data(
 
 
 @pytest.mark.asyncio
-async def test_unknown_failure_reason_is_not_swallowed_by_the_dialog(
-    dialog: _Dialog, stub: _TrackingStub
+async def test_unknown_failure_reason_is_logged_as_error_and_not_shown_as_a_normal_text(
+    dialog: _Dialog, stub: _TrackingStub, log_records: list[Record]
 ) -> None:
     stub.preview_result = MarketplaceFetchFailure.model_construct(
         reason=cast(Any, "brand_new_reason")
     )
     await dialog.command("add")
 
-    with pytest.raises(AssertionError):
-        await dialog.say(_WB_LINK)
+    await dialog.say(_WB_LINK)  # must not propagate: the errors router handles it
 
+    errors = [r for r in log_records if r["level"].name == "ERROR"]
+    assert len(errors) == 1
+    assert isinstance(errors[0]["exception"].value, AssertionError)  # type: ignore[union-attr]
+    assert dialog.last_text == texts.UNEXPECTED_ERROR_TEXT
     assert await dialog.state() == AddProduct.waiting_link.state
 
 

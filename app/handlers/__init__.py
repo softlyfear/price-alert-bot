@@ -11,6 +11,7 @@ from aiogram import Router
 
 from app.handlers.add_product import create_router as create_add_product_router
 from app.handlers.common import create_router as create_common_router
+from app.handlers.errors import create_router as create_errors_router
 
 
 def create_root_router() -> Router:
@@ -18,4 +19,5 @@ def create_root_router() -> Router:
     root = Router(name="root")
     root.include_router(create_common_router())
     root.include_router(create_add_product_router())
+    root.include_router(create_errors_router())
     return root

@@ -8,9 +8,14 @@ disclaimer-carrying text is built from the imported constant rather than an
 independent copy.
 """
 
+from typing import cast
+
+import pytest
+
 from app.bot import texts
 from app.domain.money import PRICE_DISCLAIMER_FULL
 from app.domain.money import PRICE_DISCLAIMER_SHORT
+from app.models.enums import AlertDirection
 
 
 def test_bot_description_contains_full_disclaimer_and_fits_bot_api_limit() -> None:
@@ -61,15 +66,80 @@ def test_start_and_help_texts_mention_the_add_command() -> None:
     assert "/add" in texts.HELP_TEXT
 
 
-def test_dialog_texts_with_a_price_carry_the_short_disclaimer_from_money() -> None:
+_NBSP = "\u00a0"
+
+
+@pytest.mark.parametrize("direction", list(AlertDirection))
+def test_dialog_texts_with_a_price_carry_the_short_disclaimer_from_money(
+    direction: AlertDirection,
+) -> None:
     assert PRICE_DISCLAIMER_SHORT in texts.product_found_text("Item", 199_000)
-    assert PRICE_DISCLAIMER_SHORT in texts.confirm_text("Item", 199_000, 150_000)
-    assert PRICE_DISCLAIMER_SHORT in texts.added_text("Item", 150_000)
+    assert PRICE_DISCLAIMER_SHORT in texts.confirm_text(
+        "Item", 199_000, 150_000, direction
+    )
+    assert PRICE_DISCLAIMER_SHORT in texts.added_text("Item", 150_000, direction)
 
 
 def test_dialog_texts_embed_the_name_verbatim_without_markup() -> None:
     name = "<b>x*"
+    below = AlertDirection.below
 
     assert name in texts.product_found_text(name, 100)
-    assert name in texts.confirm_text(name, 100, 50)
-    assert name in texts.added_text(name, 50)
+    assert name in texts.confirm_text(name, 100, 50, below)
+    assert name in texts.added_text(name, 50, below)
+
+
+def test_direction_phrase_names_each_direction_with_the_formatted_price() -> None:
+    assert (
+        texts.direction_phrase(AlertDirection.below, 150_000)
+        == f"цена станет ниже 1{_NBSP}500{_NBSP}₽"
+    )
+    assert (
+        texts.direction_phrase(AlertDirection.above, 250_000)
+        == f"цена станет выше 2{_NBSP}500{_NBSP}₽"
+    )
+
+
+def test_direction_phrase_rejects_a_value_outside_the_enum() -> None:
+    with pytest.raises(AssertionError):
+        texts.direction_phrase(cast(AlertDirection, "sideways"), 100)
+
+
+def test_confirm_and_success_texts_use_the_phrase_of_their_direction() -> None:
+    above_confirm = texts.confirm_text("Item", 199_000, 250_000, AlertDirection.above)
+    below_confirm = texts.confirm_text("Item", 199_000, 150_000, AlertDirection.below)
+    above_added = texts.added_text("Item", 250_000, AlertDirection.above)
+    below_added = texts.added_text("Item", 150_000, AlertDirection.below)
+
+    assert f"Сообщу, когда цена станет выше 2{_NBSP}500{_NBSP}₽." in above_confirm
+    assert f"Сообщу, когда цена станет ниже 1{_NBSP}500{_NBSP}₽." in below_confirm
+    assert f"Сообщу, когда цена станет выше 2{_NBSP}500{_NBSP}₽." in above_added
+    assert f"Сообщу, когда цена станет ниже 1{_NBSP}500{_NBSP}₽." in below_added
+    assert "ниже 2" not in above_confirm
+    assert "выше 1" not in below_confirm
+
+
+def test_price_prompt_explains_both_outcomes() -> None:
+    assert "снизится" in texts.ADD_PROMPT_PRICE_TEXT
+    assert "вырастет" in texts.ADD_PROMPT_PRICE_TEXT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        texts.START_TEXT,
+        texts.HELP_TEXT,
+        texts.BOT_DESCRIPTION,
+        texts.BOT_SHORT_DESCRIPTION,
+    ],
+    ids=["start", "help", "description", "short-description"],
+)
+def test_profile_and_intro_texts_mention_both_directions(text: str) -> None:
+    lowered = text.lower()
+    assert "сниж" in lowered or "снизи" in lowered
+    assert "рост" in lowered or "растёт" in lowered or "вырастет" in lowered
+
+
+def test_unexpected_error_text_says_the_action_may_not_have_happened() -> None:
+    assert "могло не выполниться" in texts.UNEXPECTED_ERROR_TEXT
+    assert "ничего не сохранено" not in texts.UNEXPECTED_ERROR_TEXT.lower()

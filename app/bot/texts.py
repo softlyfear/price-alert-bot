@@ -8,6 +8,7 @@ disclaimer wordings themselves are not duplicated: they are imported from
 """
 
 from typing import Final
+from typing import assert_never
 
 from aiogram.types import BotCommand
 
@@ -15,11 +16,12 @@ from app.domain.money import MAX_PRICE_KOPECKS
 from app.domain.money import PRICE_DISCLAIMER_FULL
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.domain.money import format_price
+from app.models.enums import AlertDirection
 from app.schemas.marketplace import FetchFailureReason
 
 START_TEXT: Final[str] = (
     "Привет! Я слежу за ценами товаров Wildberries и Ozon и сообщу, "
-    "когда цена станет ниже заданного вами порога.\n\n"
+    "когда цена снизится или вырастет до заданного вами порога.\n\n"
     "Команды:\n"
     "/add — добавить товар в отслеживание\n"
     "/help — подробнее о боте\n"
@@ -28,9 +30,9 @@ START_TEXT: Final[str] = (
 
 HELP_TEXT: Final[str] = (
     "Добавьте товар со ссылкой или артикулом Wildberries или Ozon и "
-    "укажите цену, ниже которой хотите получить уведомление. Я буду "
-    "регулярно проверять цену и напишу вам, как только она опустится "
-    "до заданного порога.\n\n"
+    "укажите пороговую цену: ниже текущей — сообщу о снижении, выше "
+    "текущей — сообщу о росте. Я буду регулярно проверять цену и напишу "
+    "вам, как только она дойдёт до заданного порога.\n\n"
     "Команды:\n"
     "/add — добавить товар в отслеживание\n"
     "/start — начать заново\n"
@@ -45,11 +47,12 @@ NOTHING_TO_CANCEL_TEXT: Final[str] = (
 
 BOT_DESCRIPTION: Final[str] = (
     "Бот отслеживает цены товаров Wildberries и Ozon и уведомляет, когда "
-    "цена опускается ниже заданного вами порога.\n\n" + PRICE_DISCLAIMER_FULL
+    "цена снижается или растёт до заданного вами порога.\n\n" + PRICE_DISCLAIMER_FULL
 )
 
 BOT_SHORT_DESCRIPTION: Final[str] = (
-    f"Слежу за ценой Wildberries и Ozon и сообщаю о снижении. {PRICE_DISCLAIMER_SHORT}."
+    "Слежу за ценой Wildberries и Ozon и сообщаю о её снижении или росте. "
+    f"{PRICE_DISCLAIMER_SHORT}."
 )
 
 BOT_COMMANDS: Final[list[BotCommand]] = [
@@ -110,8 +113,9 @@ ADD_FETCH_FAILURE_TEXTS: Final[dict[FetchFailureReason, str]] = {
 }
 
 ADD_PROMPT_PRICE_TEXT: Final[str] = (
-    "Укажите цену в рублях, ниже которой нужно сообщить, например 1990 "
-    "или 1990,50. Чтобы выйти, нажмите «Отмена»."
+    "Укажите пороговую цену в рублях, например 1990 или 1990,50. Если она "
+    "ниже текущей — сообщу, когда цена снизится до неё; если выше текущей — "
+    "сообщу, когда цена вырастет до неё. Чтобы выйти, нажмите «Отмена»."
 )
 
 ADD_PRICE_INVALID_TEXT: Final[str] = (
@@ -120,9 +124,21 @@ ADD_PRICE_INVALID_TEXT: Final[str] = (
     "знаков, например 1990 или 1990,50."
 )
 
+ADD_TARGET_EQUALS_TEXT: Final[str] = (
+    "Порог совпадает с текущей ценой. Укажите цену ниже или выше неё "
+    "либо нажмите «Отмена»."
+)
+
+ADD_TARGET_EQUALS_RESTART_TEXT: Final[str] = (
+    "Порог совпал с текущей ценой, поэтому отслеживание не добавлено. "
+    "Начните заново командой /add и укажите цену ниже или выше текущей."
+)
+
 ADD_STALE_TEXT: Final[str] = "Это действие устарело. Начните заново командой /add."
 
 ADD_STALE_ALERT_TEXT: Final[str] = "Кнопка устарела. Начните заново: /add"
+
+ADD_OLD_CARD_ALERT_TEXT: Final[str] = "Эта карточка устарела — подтвердите последнюю."
 
 ADD_CONFIRM_HINT_TEXT: Final[str] = (
     "Нажмите «Подтвердить», чтобы начать следить за ценой, или «Отмена»."
@@ -133,8 +149,24 @@ ADD_DUPLICATE_TEXT: Final[str] = (
     "через /add или откажитесь от добавления."
 )
 
+UNEXPECTED_ERROR_TEXT: Final[str] = (
+    "Что-то пошло не так, и действие могло не выполниться. Попробуйте ещё "
+    "раз; если ошибка повторится, повторите попытку чуть позже."
+)
+
 CONFIRM_BUTTON_TEXT: Final[str] = "Подтвердить"
 CANCEL_BUTTON_TEXT: Final[str] = "Отмена"
+
+
+def direction_phrase(direction: AlertDirection, price: int) -> str:
+    """Wording of the trigger condition for a direction (single mapping)."""
+    match direction:
+        case AlertDirection.below:
+            return f"цена станет ниже {format_price(price)}"
+        case AlertDirection.above:
+            return f"цена станет выше {format_price(price)}"
+        case _:
+            assert_never(direction)
 
 
 def product_found_text(name: str, current_price: int) -> str:
@@ -146,13 +178,15 @@ def product_found_text(name: str, current_price: int) -> str:
     )
 
 
-def confirm_text(name: str, current_price: int, target_price: int) -> str:
+def confirm_text(
+    name: str, current_price: int, target_price: int, direction: AlertDirection
+) -> str:
     """Confirmation step text (plain text, no markup)."""
     return (
         "Проверьте и подтвердите:\n"
         f"Товар: {name}\n"
         f"Текущая цена: {format_price(current_price)}\n"
-        f"Сообщу, когда цена станет ниже {format_price(target_price)}.\n"
+        f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}."
     )
 
@@ -165,10 +199,10 @@ def limit_exceeded_text(limit: int) -> str:
     )
 
 
-def added_text(name: str, target_price: int) -> str:
+def added_text(name: str, target_price: int, direction: AlertDirection) -> str:
     """Tracking added successfully (plain text, no markup)."""
     return (
         f"Отслеживание добавлено: {name}.\n"
-        f"Сообщу, когда цена станет ниже {format_price(target_price)}.\n"
+        f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}."
     )

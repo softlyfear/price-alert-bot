@@ -13,6 +13,8 @@ import itertools
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 from typing import Any
 
 import httpx
@@ -23,14 +25,21 @@ from aiogram.client.session.base import BaseSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import GetMe
 from aiogram.methods import GetUpdates
+from aiogram.methods import SendMessage
 from aiogram.methods import TelegramMethod
 from aiogram.methods.base import TelegramType
+from aiogram.types import Message
 from aiogram.types import Update
 from aiogram.types import User
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.setup import create_dispatcher
+
+if TYPE_CHECKING:
+    from loguru import Message as LogMessage
+    from loguru import Record
 
 FAKE_BOT_USER: User = User(id=1, is_bot=True, first_name="TestBot", username="test_bot")
 
@@ -50,6 +59,37 @@ async def _default_responder(method: TelegramMethod[Any]) -> Any:
     if isinstance(method, GetMe):
         return FAKE_BOT_USER
     return True
+
+
+FIRST_SENT_MESSAGE_ID = 1_000
+
+
+def sent_message_id(index: int) -> int:
+    """``message_id`` that ``send_message_responder`` gives the ``index``-th send."""
+    return FIRST_SENT_MESSAGE_ID + index
+
+
+def send_message_responder() -> Responder:
+    """Responder that answers ``SendMessage`` with a real ``Message``.
+
+    The ``n``-th ``SendMessage`` (0-based, per responder) gets
+    ``message_id == sent_message_id(n)``, as the Bot API returns the sent
+    message. Every other method gets the default result.
+    """
+    counter = itertools.count()
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, SendMessage):
+            return Message.model_validate(
+                {
+                    "message_id": sent_message_id(next(counter)),
+                    "date": 1,
+                    "chat": {"id": method.chat_id, "type": "private"},
+                }
+            )
+        return await _default_responder(method)
+
+    return responder
 
 
 class FakeTelegramSession(BaseSession):
@@ -204,25 +244,38 @@ def make_callback_update(
     chat_id: int = 1000,
     user_id: int = 1000,
     accessible: bool = True,
+    message_id: int = 5,
+    with_message: bool = True,
 ) -> Update:
     """Build an ``Update`` with an inline-button press.
 
     ``accessible=False`` makes the attached message ``date == 0``, which
-    aiogram models as an inaccessible message.
+    aiogram models as an inaccessible message. ``with_message=False`` omits
+    the message altogether (``callback.message is None``).
     """
-    return Update.model_validate(
-        {
-            "update_id": update_id,
-            "callback_query": {
-                "id": "cb-1",
-                "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
-                "chat_instance": "ci",
-                "data": data,
-                "message": {
-                    "message_id": 5,
-                    "date": 1 if accessible else 0,
-                    "chat": {"id": chat_id, "type": "private"},
-                },
-            },
+    callback: dict[str, Any] = {
+        "id": "cb-1",
+        "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
+        "chat_instance": "ci",
+        "data": data,
+    }
+    if with_message:
+        callback["message"] = {
+            "message_id": message_id,
+            "date": 1 if accessible else 0,
+            "chat": {"id": chat_id, "type": "private"},
         }
-    )
+    return Update.model_validate({"update_id": update_id, "callback_query": callback})
+
+
+@pytest.fixture
+def log_records() -> Iterator[list[Record]]:
+    """Collect every loguru record emitted during the test (all levels)."""
+    records: list[Record] = []
+
+    def sink(message: LogMessage) -> None:
+        records.append(message.record)
+
+    sink_id = logger.add(sink, level="DEBUG")
+    yield records
+    logger.remove(sink_id)
