@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from typing import Final
 from typing import cast
 
+import httpx
 from aiogram import Bot
 from aiogram import Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
@@ -31,6 +32,7 @@ from app.bot.setup import wait_for_inflight_updates
 from app.core.config import get_settings
 from app.core.database import dispose_engine
 from app.core.database import get_engine
+from app.core.database import get_sessionmaker
 from app.core.logging import setup_logging
 
 # Budget for handlers already running when shutdown starts to finish before
@@ -127,6 +129,10 @@ async def _close_bot_session(bot: Bot) -> None:
     await bot.session.close()
 
 
+async def _close_http_client(http_client: httpx.AsyncClient) -> None:
+    await http_client.aclose()
+
+
 async def _close_storage(storage: RedisStorage) -> None:
     await storage.close()
 
@@ -135,14 +141,16 @@ async def _shutdown(
     dispatcher: Dispatcher,
     polling_task: "asyncio.Task[None]",
     bot: Bot,
+    http_client: httpx.AsyncClient,
     storage: RedisStorage,
 ) -> None:
     """Tear down everything ``lifespan`` started, in the fixed order (Р6).
 
     Order: stop polling if it is still running -> wait for the polling task
-    -> wait for in-flight updates -> close the bot session -> close the FSM
-    storage -> dispose the engine last. A failing step is logged with its
-    name and does not cancel the remaining steps, so a partial failure still
+    -> wait for in-flight updates -> close the bot session -> close the shared
+    HTTP client -> close the FSM storage -> dispose the engine last. A failing
+    step is logged with its name and does not cancel the remaining steps, so a
+    partial failure still
     releases as many resources as possible; ``CancelledError`` is never
     caught here and propagates as usual (соглашение 23).
     """
@@ -151,6 +159,7 @@ async def _shutdown(
         ("wait_polling_task", lambda: _await_polling_task(polling_task)),
         ("wait_inflight_updates", lambda: _await_inflight_updates(dispatcher)),
         ("close_bot_session", lambda: _close_bot_session(bot)),
+        ("close_http_client", lambda: _close_http_client(http_client)),
         ("close_storage", lambda: _close_storage(storage)),
         ("dispose_engine", dispose_engine),
     ]
@@ -169,13 +178,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     Startup order: ``setup_logging()`` first -> settings -> a single
     ``get_engine()`` call (validates ``DB__*`` without opening a connection)
-    -> FSM storage plus a live Redis check -> ``Bot`` and dispatcher ->
-    profile -> polling task (PROJECT.md §8.3, Р6 (а)/(б)). The scheduler is
-    not started in this ticket (PAB-069).
+    -> FSM storage plus a live Redis check -> the shared ``httpx.AsyncClient``
+    (one per process, timeout from ``APP__HTTP_TIMEOUT_SECONDS``) -> ``Bot``
+    and dispatcher -> profile -> polling task (PROJECT.md §8.3, Р6 (а)/(б)).
+    The scheduler is not started in this ticket (PAB-069).
 
     A failure after the Redis check (e.g. ``create_bot`` raising
-    ``TokenValidationError``) releases the storage and the engine before
-    re-raising unchanged -- the ping-failure branch inside
+    ``TokenValidationError``) releases the HTTP client, the storage and the
+    engine before re-raising unchanged -- the ping-failure branch inside
     ``_ensure_redis_available`` already closes the storage itself, so that
     path is left out of this cleanup to avoid closing it twice.
     """
@@ -186,9 +196,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     storage = create_storage(settings)
     await _ensure_redis_available(storage)
 
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.app.HTTP_TIMEOUT_SECONDS)
+    )
     try:
         bot = create_bot(settings)
-        dispatcher = create_dispatcher(storage)
+        dispatcher = create_dispatcher(
+            storage,
+            get_sessionmaker(),
+            http_client,
+            settings.app.MAX_PRODUCTS_PER_USER,
+        )
         await configure_bot_profile(bot)
 
         polling_task: asyncio.Task[None] = asyncio.create_task(
@@ -197,6 +215,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         polling_task.add_done_callback(_log_polling_task_failure)
         app.state.polling_task = polling_task
     except BaseException:
+        await http_client.aclose()
         await storage.close()
         await dispose_engine()
         raise
@@ -204,7 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        await _shutdown(dispatcher, polling_task, bot, storage)
+        await _shutdown(dispatcher, polling_task, bot, http_client, storage)
 
 
 app = FastAPI(lifespan=lifespan)

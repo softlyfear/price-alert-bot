@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any
 from typing import Final
 
+import httpx
 from aiogram import BaseMiddleware
 from aiogram import Bot
 from aiogram import Dispatcher
@@ -20,8 +21,11 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import TelegramObject
 from loguru import logger
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot import texts
+from app.bot.middlewares.db import DbSessionMiddleware
 from app.core.config import Settings
 from app.handlers import create_root_router
 
@@ -111,9 +115,24 @@ class InFlightUpdatesTracker(BaseMiddleware):
         return True
 
 
-def create_dispatcher(storage: BaseStorage) -> Dispatcher:
-    """Build the ``Dispatcher``: routers included, in-flight updates tracked."""
-    dispatcher = Dispatcher(storage=storage)
+def create_dispatcher(
+    storage: BaseStorage,
+    session_factory: async_sessionmaker[AsyncSession],
+    http_client: httpx.AsyncClient,
+    max_products_per_user: int,
+) -> Dispatcher:
+    """Build the ``Dispatcher``: routers included, in-flight updates tracked.
+
+    ``http_client`` and ``max_products_per_user`` become workflow data (handlers
+    receive them by name); ``session_factory`` feeds ``DbSessionMiddleware``,
+    an inner update middleware that commits per update.
+    """
+    dispatcher = Dispatcher(
+        storage=storage,
+        http_client=http_client,
+        max_products_per_user=max_products_per_user,
+    )
+    dispatcher.update.middleware(DbSessionMiddleware(session_factory))
     dispatcher.include_router(create_root_router())
     tracker = InFlightUpdatesTracker()
     dispatcher.update.outer_middleware(tracker)

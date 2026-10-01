@@ -15,6 +15,7 @@ from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
@@ -26,6 +27,8 @@ from aiogram.methods import TelegramMethod
 from aiogram.methods.base import TelegramType
 from aiogram.types import Update
 from aiogram.types import User
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.setup import create_dispatcher
 
@@ -114,14 +117,19 @@ def real_dispatcher() -> Dispatcher:
     """Build a fresh real ``create_dispatcher()`` output for each test.
 
     ``app.handlers.create_root_router()`` assembles its routers via
-    factories (``app.handlers.common.create_router()``), not module-level
-    ``Router`` singletons, so ``create_dispatcher()`` may be called any
-    number of times per process -- one dispatcher (and one
-    ``MemoryStorage``) per test. ``unique_chat_id`` remains available below
-    for tests that still want a distinct ``chat_id``/``user_id`` pair, even
-    though it is no longer required for isolation.
+    factories, not module-level ``Router`` singletons, so every test gets
+    its own ``Dispatcher`` and its own ``MemoryStorage``. The session
+    factory is bound to no engine: a session that never executes a statement
+    opens no connection, so handlers that do not touch the database work
+    without one. The HTTP client is never closed here because nothing is
+    ever sent through it.
     """
-    return create_dispatcher(MemoryStorage())
+    return create_dispatcher(
+        MemoryStorage(),
+        async_sessionmaker(class_=AsyncSession),
+        httpx.AsyncClient(),
+        50,
+    )
 
 
 _chat_id_counter = itertools.count(10_000)
@@ -129,9 +137,10 @@ _chat_id_counter = itertools.count(10_000)
 
 @pytest.fixture
 def unique_chat_id() -> int:
-    """A ``chat_id``/``user_id`` distinct from every other test in the
-    session, so any test sharing ``real_dispatcher`` (and therefore its one
-    ``MemoryStorage``) can never collide on the same ``StorageKey``.
+    """A ``chat_id``/``user_id`` pair distinct from every other test's.
+
+    Isolation does not depend on it (each test has its own dispatcher and
+    storage); it just keeps identifiers distinguishable in failure output.
     """
     return next(_chat_id_counter)
 
@@ -154,6 +163,66 @@ def make_command_update(
                 "chat": {"id": chat_id, "type": "private"},
                 "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
                 "text": f"/{command}",
+            },
+        }
+    )
+
+
+def make_message_update(
+    *,
+    text: str | None = None,
+    photo: bool = False,
+    update_id: int = 1,
+    chat_id: int = 1000,
+    user_id: int | None = 1000,
+    message_id: int = 1,
+) -> Update:
+    """Build an ``Update`` with a plain text (or photo) message.
+
+    ``user_id=None`` omits ``from``, as for messages without a sender.
+    """
+    message: dict[str, Any] = {
+        "message_id": message_id,
+        "date": 0,
+        "chat": {"id": chat_id, "type": "private"},
+    }
+    if user_id is not None:
+        message["from"] = {"id": user_id, "is_bot": False, "first_name": "Test"}
+    if text is not None:
+        message["text"] = text
+    if photo:
+        message["photo"] = [
+            {"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1}
+        ]
+    return Update.model_validate({"update_id": update_id, "message": message})
+
+
+def make_callback_update(
+    data: str,
+    *,
+    update_id: int = 1,
+    chat_id: int = 1000,
+    user_id: int = 1000,
+    accessible: bool = True,
+) -> Update:
+    """Build an ``Update`` with an inline-button press.
+
+    ``accessible=False`` makes the attached message ``date == 0``, which
+    aiogram models as an inaccessible message.
+    """
+    return Update.model_validate(
+        {
+            "update_id": update_id,
+            "callback_query": {
+                "id": "cb-1",
+                "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
+                "chat_instance": "ci",
+                "data": data,
+                "message": {
+                    "message_id": 5,
+                    "date": 1 if accessible else 0,
+                    "chat": {"id": chat_id, "type": "private"},
+                },
             },
         }
     )

@@ -48,6 +48,8 @@ from aiogram.types import Message as TgMessage
 from aiogram.types import Update
 from pydantic import SecretStr
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app import main
 from app.bot.setup import _INFLIGHT_KEY
@@ -235,6 +237,7 @@ class _FakeRedisClient:
 def _make_orchestration_settings(
     *, bot_token: str = "1:orchestration-token", redis_password: str | None = None
 ) -> Settings:
+    """Settings with non-default HTTP timeout and product limit (PAB-068)."""
     return Settings(
         _env_file=None,
         db=DatabaseSettings(
@@ -256,9 +259,11 @@ def _make_orchestration_settings(
             HOST="redis-host",
             PASSWORD=SecretStr(redis_password) if redis_password is not None else None,
         ),
-        app=AppSettings(),
+        app=AppSettings(HTTP_TIMEOUT_SECONDS=7.5, MAX_PRODUCTS_PER_USER=13),
     )
 
+
+_SESSION_FACTORY = async_sessionmaker(class_=AsyncSession)
 
 StartPolling = (
     Any  # Callable[..., Awaitable[None]], kept loose: aiogram's own signature
@@ -324,8 +329,10 @@ def _patch_orchestration_factories(
     stop_polling: StartPolling | None = None,
     get_engine_calls: list[None] | None = None,
     redis_client: _FakeRedisClient | None = None,
+    dispatcher_calls: list[tuple[Any, ...]] | None = None,
 ) -> RedisStorage:
     settings = _make_orchestration_settings()
+    created = dispatcher_calls if dispatcher_calls is not None else []
     storage = RedisStorage(redis=cast(Any, redis_client or _FakeRedisClient()))
     calls = get_engine_calls if get_engine_calls is not None else []
 
@@ -337,13 +344,15 @@ def _patch_orchestration_factories(
     monkeypatch.setattr(main, "get_engine", fake_get_engine)
     monkeypatch.setattr(main, "create_storage", lambda _settings: storage)
     monkeypatch.setattr(main, "create_bot", lambda _settings: bot)
-    monkeypatch.setattr(
-        main,
-        "create_dispatcher",
-        lambda _storage: _build_bare_dispatcher(
+    monkeypatch.setattr(main, "get_sessionmaker", lambda: _SESSION_FACTORY)
+
+    def fake_create_dispatcher(_storage: Any, *rest: Any) -> Dispatcher:
+        created.append((_storage, *rest))
+        return _build_bare_dispatcher(
             _storage, start_polling=start_polling, stop_polling=stop_polling
-        ),
-    )
+        )
+
+    monkeypatch.setattr(main, "create_dispatcher", fake_create_dispatcher)
     return storage
 
 
@@ -804,6 +813,17 @@ class _FakeShutdownBot:
         self.session = _FakeShutdownBotSession(recorder, raises=raises)
 
 
+class _FakeShutdownHttpClient:
+    def __init__(self, recorder: _Recorder, *, raises: Exception | None = None) -> None:
+        self._recorder = recorder
+        self._raises = raises
+
+    async def aclose(self) -> None:
+        self._recorder.events.append("close_http_client")
+        if self._raises is not None:
+            raise self._raises
+
+
 class _FakeShutdownStorage:
     def __init__(self, recorder: _Recorder, *, raises: Exception | None = None) -> None:
         self._recorder = recorder
@@ -839,9 +859,10 @@ def _build_shutdown_doubles(
     *,
     stop_polling_raises: Exception | None = None,
     close_bot_session_raises: Exception | None = None,
+    close_http_client_raises: Exception | None = None,
     close_storage_raises: Exception | None = None,
     already_done: bool = False,
-) -> tuple[Dispatcher, asyncio.Task[None], Bot, RedisStorage]:
+) -> tuple[Dispatcher, asyncio.Task[None], Bot, httpx.AsyncClient, RedisStorage]:
     stop_event = asyncio.Event()
 
     async def polling_stub() -> None:
@@ -855,11 +876,13 @@ def _build_shutdown_doubles(
         recorder, stop_event=stop_event, raises=stop_polling_raises
     )
     bot = _FakeShutdownBot(recorder, raises=close_bot_session_raises)
+    http_client = _FakeShutdownHttpClient(recorder, raises=close_http_client_raises)
     storage = _FakeShutdownStorage(recorder, raises=close_storage_raises)
     return (
         cast(Dispatcher, dispatcher),
         polling_task,
         cast(Bot, bot),
+        cast(httpx.AsyncClient, http_client),
         cast(RedisStorage, storage),
     )
 
@@ -914,13 +937,14 @@ _EXPECTED_ORDER = [
     "wait_polling_task",
     "wait_inflight_updates",
     "close_bot_session",
+    "close_http_client",
     "close_storage",
     "dispose_engine",
 ]
 
 
 @pytest.mark.asyncio
-async def test_shutdown_runs_all_six_steps_in_the_exact_documented_order(
+async def test_shutdown_runs_all_seven_steps_in_the_exact_documented_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mutation target: swapping ``close_bot_session``/``dispose_engine``
@@ -928,10 +952,12 @@ async def test_shutdown_runs_all_six_steps_in_the_exact_documented_order(
     sequence comparison red.
     """
     recorder = _Recorder()
-    dispatcher, polling_task, bot, storage = _build_shutdown_doubles(recorder)
+    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
+        recorder
+    )
     _patch_generic_shutdown_steps(monkeypatch, recorder)
 
-    await main._shutdown(dispatcher, polling_task, bot, storage)
+    await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
 
     assert recorder.events == _EXPECTED_ORDER
 
@@ -941,13 +967,13 @@ async def test_shutdown_skips_stop_polling_when_task_already_done(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorder = _Recorder()
-    dispatcher, polling_task, bot, storage = _build_shutdown_doubles(
+    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
         recorder, already_done=True
     )
     await polling_task  # make "already done" genuinely true before _shutdown runs
     _patch_generic_shutdown_steps(monkeypatch, recorder)
 
-    await main._shutdown(dispatcher, polling_task, bot, storage)
+    await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
 
     assert "stop_polling" not in recorder.events
     assert recorder.events == _EXPECTED_ORDER[1:]
@@ -969,6 +995,8 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
         doubles_kwargs["stop_polling_raises"] = boom
     elif failing_step == "close_bot_session":
         doubles_kwargs["close_bot_session_raises"] = boom
+    elif failing_step == "close_http_client":
+        doubles_kwargs["close_http_client_raises"] = boom
     elif failing_step == "close_storage":
         doubles_kwargs["close_storage_raises"] = boom
     elif failing_step == "wait_polling_task":
@@ -978,7 +1006,7 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
     elif failing_step == "dispose_engine":
         generic_kwargs["dispose_engine_raises"] = boom
 
-    dispatcher, polling_task, bot, storage = _build_shutdown_doubles(
+    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
         recorder, **doubles_kwargs
     )
     _patch_generic_shutdown_steps(monkeypatch, recorder, **generic_kwargs)
@@ -990,11 +1018,11 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
 
     sink_id = logger.add(_sink, level="ERROR")
     try:
-        await main._shutdown(dispatcher, polling_task, bot, storage)
+        await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
     finally:
         logger.remove(sink_id)
 
-    # All six steps still ran, in order, despite the one failure.
+    # All seven steps still ran, in order, despite the one failure.
     assert recorder.events == _EXPECTED_ORDER
 
     error_records = [r for r in records if r["level"].name == "ERROR"]
@@ -1012,7 +1040,7 @@ async def test_shutdown_does_not_swallow_an_external_cancelled_error() -> None:
     propagates out of ``_shutdown`` instead of being logged and absorbed.
     """
     recorder = _Recorder()
-    dispatcher, polling_task, bot, storage = _build_shutdown_doubles(
+    dispatcher, polling_task, bot, http_client, storage = _build_shutdown_doubles(
         recorder, already_done=True
     )
     await polling_task
@@ -1023,7 +1051,7 @@ async def test_shutdown_does_not_swallow_an_external_cancelled_error() -> None:
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main, "dispose_engine", cancelling_dispose_engine)
         with pytest.raises(asyncio.CancelledError):
-            await main._shutdown(dispatcher, polling_task, bot, storage)
+            await main._shutdown(dispatcher, polling_task, bot, http_client, storage)
 
 
 # --- AC8(c)/(d): a real in-flight handler, through the whole lifespan ----
@@ -1032,7 +1060,7 @@ async def test_shutdown_does_not_swallow_an_external_cancelled_error() -> None:
 def _capture_dispatcher_factory(
     box: list[Dispatcher], *, start_polling: StartPolling, stop_polling: StartPolling
 ) -> Any:
-    def factory(storage: RedisStorage) -> Dispatcher:
+    def factory(storage: RedisStorage, *rest: Any) -> Dispatcher:
         dispatcher = _build_bare_dispatcher(
             storage, start_polling=start_polling, stop_polling=stop_polling
         )
@@ -1140,7 +1168,12 @@ async def test_in_flight_handler_through_the_real_create_dispatcher_is_tracked()
     # the handler runs, and the ping/aclose-only fake used by the
     # orchestration-level tests elsewhere in this file does not implement
     # the Redis commands that path needs.
-    dispatcher = create_dispatcher(MemoryStorage())
+    dispatcher = create_dispatcher(
+        MemoryStorage(),
+        async_sessionmaker(class_=AsyncSession),
+        httpx.AsyncClient(),
+        50,
+    )
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1237,3 +1270,98 @@ async def test_shutdown_does_not_hang_on_a_handler_slower_than_the_timeout(
     assert bot.session.closed is True  # type: ignore[attr-defined]
     warning_records = [r for r in records if r["level"].name == "WARNING"]
     assert any("Timed out" in r["message"] for r in warning_records)
+
+
+# --- PAB-068 AC7: shared httpx.AsyncClient owned by lifespan ---------------
+
+
+@pytest.fixture
+def created_http_clients(monkeypatch: pytest.MonkeyPatch) -> list[httpx.AsyncClient]:
+    """Record every ``httpx.AsyncClient`` built while the test runs."""
+    instances: list[httpx.AsyncClient] = []
+    real_client = httpx.AsyncClient
+
+    class _RecordingClient(real_client):  # type: ignore[valid-type, misc]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            instances.append(self)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _RecordingClient)
+    return instances
+
+
+@pytest.mark.asyncio
+async def test_lifespan_hands_sessionmaker_one_http_client_and_limit_to_dispatcher(
+    monkeypatch: pytest.MonkeyPatch, created_http_clients: list[httpx.AsyncClient]
+) -> None:
+    """Settings carry timeout 7.5 and limit 13 (not the defaults), so passing
+    a default or swapping arguments is visible."""
+    start_polling, stop_polling = _controlled_polling()
+    calls: list[tuple[Any, ...]] = []
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        dispatcher_calls=calls,
+    )
+
+    async with main.lifespan(main.app):
+        assert len(created_http_clients) == 1
+        client = created_http_clients[0]
+        assert client.is_closed is False
+
+    assert len(calls) == 1
+    _storage, session_factory, passed_client, max_products = calls[0]
+    assert session_factory is _SESSION_FACTORY
+    assert passed_client is client
+    assert client.timeout == httpx.Timeout(7.5)
+    assert max_products == 13
+    assert client.is_closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_factory", ["create_bot", "configure_bot_profile"])
+async def test_lifespan_closes_client_storage_and_engine_when_startup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    failing_factory: str,
+) -> None:
+    boom = RuntimeError(f"{failing_factory} boom")
+
+    def raising(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    async def raising_async(*args: Any, **kwargs: Any) -> None:
+        raise boom
+
+    storage = _patch_orchestration_factories(monkeypatch, bot=build_fake_bot())
+    monkeypatch.setattr(
+        main,
+        failing_factory,
+        raising if failing_factory == "create_bot" else raising_async,
+    )
+    dispose_calls: list[None] = []
+
+    async def fake_dispose_engine() -> None:
+        dispose_calls.append(None)
+
+    monkeypatch.setattr(main, "dispose_engine", fake_dispose_engine)
+    storage_closes: list[None] = []
+    real_close = storage.close
+
+    async def spying_close() -> None:
+        storage_closes.append(None)
+        await real_close()
+
+    monkeypatch.setattr(storage, "close", spying_close)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert len(created_http_clients) == 1
+    assert created_http_clients[0].is_closed is True
+    assert len(storage_closes) == 1
+    assert len(dispose_calls) == 1
