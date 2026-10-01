@@ -160,12 +160,17 @@ def test_create_dispatcher_can_be_called_more_than_once_per_process() -> None:
     singleton router would trigger on the second ``create_dispatcher()``
     call in one process.
     """
+    import httpx
     from aiogram.fsm.storage.memory import MemoryStorage
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from app.bot.setup import create_dispatcher
 
-    create_dispatcher(MemoryStorage())
-    create_dispatcher(MemoryStorage())  # must not raise
+    factory = async_sessionmaker(class_=AsyncSession)
+    client = httpx.AsyncClient()
+    create_dispatcher(MemoryStorage(), factory, client, 50)
+    create_dispatcher(MemoryStorage(), factory, client, 50)  # must not raise
 
 
 # --- InFlightUpdatesTracker / wait_for_inflight_updates ------------------

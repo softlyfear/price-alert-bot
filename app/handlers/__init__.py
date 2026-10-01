@@ -9,6 +9,7 @@ dialog handlers added by later tickets (Р8).
 
 from aiogram import Router
 
+from app.handlers.add_product import create_router as create_add_product_router
 from app.handlers.common import create_router as create_common_router
 
 
@@ -16,4 +17,5 @@ def create_root_router() -> Router:
     """Assemble and return the root router with every feature router included."""
     root = Router(name="root")
     root.include_router(create_common_router())
+    root.include_router(create_add_product_router())
     return root

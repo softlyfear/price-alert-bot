@@ -47,5 +47,29 @@ def test_help_text_contains_full_disclaimer() -> None:
     assert PRICE_DISCLAIMER_FULL in texts.HELP_TEXT
 
 
-def test_bot_commands_list_is_start_help_cancel_in_that_order() -> None:
-    assert [c.command for c in texts.BOT_COMMANDS] == ["start", "help", "cancel"]
+def test_bot_commands_list_is_start_add_help_cancel_in_that_order() -> None:
+    assert [c.command for c in texts.BOT_COMMANDS] == [
+        "start",
+        "add",
+        "help",
+        "cancel",
+    ]
+
+
+def test_start_and_help_texts_mention_the_add_command() -> None:
+    assert "/add" in texts.START_TEXT
+    assert "/add" in texts.HELP_TEXT
+
+
+def test_dialog_texts_with_a_price_carry_the_short_disclaimer_from_money() -> None:
+    assert PRICE_DISCLAIMER_SHORT in texts.product_found_text("Item", 199_000)
+    assert PRICE_DISCLAIMER_SHORT in texts.confirm_text("Item", 199_000, 150_000)
+    assert PRICE_DISCLAIMER_SHORT in texts.added_text("Item", 150_000)
+
+
+def test_dialog_texts_embed_the_name_verbatim_without_markup() -> None:
+    name = "<b>x*"
+
+    assert name in texts.product_found_text(name, 100)
+    assert name in texts.confirm_text(name, 100, 50)
+    assert name in texts.added_text(name, 50)
