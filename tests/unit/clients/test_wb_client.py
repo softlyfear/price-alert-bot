@@ -38,7 +38,9 @@ Removed from the попытка 1 version of this file, with reasons (AC11'):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from collections.abc import AsyncIterator
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -592,7 +594,7 @@ async def test_request_uses_new_address_and_exact_parameter_set() -> None:
     assert url.scheme == "https"
     assert url.host == "www.wildberries.ru"
     assert url.path == "/__internal/u-card/cards/v4/detail"
-    assert dict(url.params) == {
+    expected = {
         "appType": "1",
         "curr": "rub",
         "dest": "-1257786",
@@ -604,3 +606,158 @@ async def test_request_uses_new_address_and_exact_parameter_set() -> None:
         "ab_testing": "false",
         "nm": str(_ARTICLE),
     }
+    # Multiset comparison: `dict(url.params)` would collapse a repeated key.
+    assert sorted(url.params.multi_items()) == sorted(expected.items())
+
+
+# --- PAB-063: body size cap, non-2xx bodies unread, overall deadline -----
+
+
+def _capture_records() -> tuple[list[Record], int]:
+    records: list[Record] = []
+
+    def _sink(message: Message) -> None:
+        records.append(message.record)
+
+    return records, logger.add(_sink, level=0)
+
+
+def _padded_fixture(fixture_bytes: bytes, size: int) -> bytes:
+    """The real fixture followed by ASCII spaces up to exactly `size` bytes
+    (valid JSON: trailing whitespace is insignificant)."""
+    assert len(fixture_bytes) <= size
+    return fixture_bytes + b" " * (size - len(fixture_bytes))
+
+
+def test_max_body_bytes_is_one_mebibyte() -> None:
+    """AC4: the threshold named in the ticket."""
+    assert WbClient.MAX_BODY_BYTES == 1_048_576
+
+
+@pytest.mark.asyncio
+async def test_body_of_exactly_max_bytes_still_parses(fixture_bytes: bytes) -> None:
+    """AC4: the fixture padded to exactly 1 048 576 bytes yields the same
+    product as the original. Mutation `>` -> `>=` in the cap fails here."""
+    body = _padded_fixture(fixture_bytes, 1_048_576)
+    client = _client_with(_body_response(200, body))
+    async with client:
+        result = await WbClient(client).get_product_data(_ARTICLE)
+
+    assert result == MarketplaceProductData(name=_PRODUCT_NAME, price=_PRICE_KOPECKS)
+
+
+@pytest.mark.asyncio
+async def test_body_one_byte_over_max_is_bad_payload_with_single_error_log(
+    fixture_bytes: bytes,
+) -> None:
+    """AC4: 1 048 577 bytes -> `bad_payload`, exactly one ERROR record, no
+    exception escapes."""
+    body = _padded_fixture(fixture_bytes, 1_048_577)
+    client = _client_with(_body_response(200, body))
+    records, sink_id = _capture_records()
+    try:
+        async with client:
+            result = await WbClient(client).get_product_data(_ARTICLE)
+    finally:
+        logger.remove(sink_id)
+
+    assert result == MarketplaceFetchFailure(
+        reason=FetchFailureReason.bad_payload, detail="body exceeds 1048576 bytes"
+    )
+    assert len(records) == 1
+    assert records[0]["level"].name == "ERROR"
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (403, FetchFailureReason.blocked),
+        (404, FetchFailureReason.not_found),
+        (500, FetchFailureReason.transport_error),
+    ],
+)
+@pytest.mark.asyncio
+async def test_non_2xx_body_is_never_read(
+    status: int, reason: FetchFailureReason
+) -> None:
+    """AC5: the body generator is never advanced for an error status, and
+    the category is unchanged. Reading the body before the status check
+    makes the counter non-zero."""
+    yielded = 0
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal yielded
+        yielded += 1
+        yield b"x" * 100
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, content=body())
+
+    client = _client_with(handler)
+    async with client:
+        result = await WbClient(client).get_product_data(_ARTICLE)
+
+    assert yielded == 0
+    assert result == MarketplaceFetchFailure(reason=reason, detail=f"HTTP {status}")
+
+
+@pytest.mark.asyncio
+async def test_connection_drop_mid_body_is_transport_error_with_warning() -> None:
+    """AC6: one chunk, then `httpx.ReadError` -> `transport_error`,
+    `detail == "ReadError"`, one WARNING, nothing raised."""
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b'{"products":'
+        raise httpx.ReadError("reset")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body())
+
+    client = _client_with(handler)
+    records, sink_id = _capture_records()
+    try:
+        async with client:
+            result = await WbClient(client).get_product_data(_ARTICLE)
+    finally:
+        logger.remove(sink_id)
+
+    assert result == MarketplaceFetchFailure(
+        reason=FetchFailureReason.transport_error, detail="ReadError"
+    )
+    assert len(records) == 1
+    assert records[0]["level"].name == "WARNING"
+
+
+@pytest.mark.asyncio
+async def test_stalled_body_hits_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC7: one chunk, then a wait that never ends; with the deadline set to
+    0.05 s the call returns `transport_error` / `TimeoutError` with one
+    WARNING. The outer 5 s fuse turns a missing deadline into a failure
+    (its `TimeoutError` escapes this test) instead of a hang."""
+    monkeypatch.setattr(WbClient, "TIMEOUT_SECONDS", 0.05)
+    never = asyncio.Event()
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b'{"products":'
+        await never.wait()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body())
+
+    client = _client_with(handler)
+    records, sink_id = _capture_records()
+    try:
+        async with client:
+            result = await asyncio.wait_for(
+                WbClient(client).get_product_data(_ARTICLE), timeout=5
+            )
+    finally:
+        logger.remove(sink_id)
+
+    assert result == MarketplaceFetchFailure(
+        reason=FetchFailureReason.transport_error, detail="TimeoutError"
+    )
+    assert len(records) == 1
+    assert records[0]["level"].name == "WARNING"

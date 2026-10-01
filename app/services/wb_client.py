@@ -21,8 +21,12 @@ price to the requested one.
 
 Known limitation, named explicitly per the customer's product decision
 (`PROJECT.md` section 2.9): the reported price excludes personal discounts
-(WB Wallet, the `spp` "loyal customer" coefficient sent in the request) -
-the site may show the user a lower price than the bot.
+(for example WB Wallet) - the site may show the user a lower price than the
+bot.
+
+The response body is read as a stream with a size cap (`MAX_BODY_BYTES`) and
+the whole request is bounded by one deadline (`TIMEOUT_SECONDS`), see
+`PROJECT.md` section 8.2.
 
 Access remains blocked from this working environment regardless of the
 contract being known: both `www.wildberries.ru/__internal/u-card/cards/v4/detail`
@@ -36,6 +40,8 @@ verbatim as captured, with its exact effect on the returned price
 unestablished (section 2.8).
 """
 
+import asyncio
+
 import httpx
 from loguru import logger
 from pydantic import ValidationError
@@ -48,6 +54,7 @@ from app.schemas.wb import WbDetailResponse
 from app.schemas.wb import WbProduct
 from app.schemas.wb import WbSize
 from app.services.base_client import BaseMarketplaceClient
+from app.services.base_client import read_body_bounded
 
 
 def _select_wb_product(products: list[WbProduct], article: int) -> WbProduct | None:
@@ -77,6 +84,7 @@ def _select_wb_price(sizes: list[WbSize]) -> int | None:
 class WbClient(BaseMarketplaceClient):
     URL = "https://www.wildberries.ru/__internal/u-card/cards/v4/detail"
     TIMEOUT_SECONDS = 10.0
+    MAX_BODY_BYTES = 1_048_576
 
     def __init__(self, http_client: httpx.AsyncClient) -> None:
         self._http = http_client
@@ -109,14 +117,21 @@ class WbClient(BaseMarketplaceClient):
         }
 
         try:
-            r = await self._http.get(
-                self.URL,
-                params=params,
-                headers=headers,
-                timeout=self.TIMEOUT_SECONDS,
-            )
-
-            r.raise_for_status()
+            # One deadline over connect, headers and body read: httpx timeouts
+            # bound a single operation, not the whole request.
+            async with (
+                asyncio.timeout(self.TIMEOUT_SECONDS),
+                self._http.stream(
+                    "GET",
+                    self.URL,
+                    params=params,
+                    headers=headers,
+                    timeout=self.TIMEOUT_SECONDS,
+                ) as r,
+            ):
+                # Status is known from headers; a non-2xx body is never read.
+                r.raise_for_status()
+                body = await read_body_bounded(r, self.MAX_BODY_BYTES)
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             logger.warning(f"Error HTTP {status} for article: {article}")
@@ -143,9 +158,19 @@ class WbClient(BaseMarketplaceClient):
                 reason=FetchFailureReason.transport_error,
                 detail=type(e).__name__,
             )
+        except TimeoutError as e:
+            logger.warning(f"Deadline exceeded for article {article}")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.transport_error,
+                detail=type(e).__name__,
+            )
+
+        if isinstance(body, MarketplaceFetchFailure):
+            logger.error(f"Oversized body for article {article}: {body.detail}")
+            return body
 
         try:
-            parsed = WbDetailResponse.model_validate_json(r.content)
+            parsed = WbDetailResponse.model_validate_json(body)
 
             product = _select_wb_product(parsed.products, article)
             if product is None:
