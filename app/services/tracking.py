@@ -1,7 +1,6 @@
 """Tracking service: preview a product and start tracking its price."""
 
 from collections.abc import Callable
-from typing import assert_never
 
 import httpx
 from loguru import logger
@@ -19,27 +18,11 @@ from app.models.product import Product
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
-from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import UnsupportedMarketplaceError
-
-
-def _failure_level(reason: FetchFailureReason) -> str:
-    match reason:
-        case FetchFailureReason.bad_payload:
-            return "ERROR"
-        case FetchFailureReason.out_of_stock:
-            return "INFO"
-        case (
-            FetchFailureReason.blocked
-            | FetchFailureReason.transport_error
-            | FetchFailureReason.not_found
-        ):
-            return "WARNING"
-        case _:
-            assert_never(reason)
+from app.services.failure_levels import failure_log_level
 
 
 class TrackingService:
@@ -82,7 +65,7 @@ class TrackingService:
                 reason=str(result.reason),
                 marketplace=str(marketplace),
                 article=article,
-            ).log(_failure_level(result.reason), "Marketplace fetch failed")
+            ).log(failure_log_level(result.reason), "Marketplace fetch failed")
         return result
 
     async def add_tracking(
