@@ -17,6 +17,7 @@ from app.domain.money import PRICE_DISCLAIMER_FULL
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.domain.money import format_price
 from app.models.enums import AlertDirection
+from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 
 START_TEXT: Final[str] = (
@@ -24,6 +25,7 @@ START_TEXT: Final[str] = (
     "когда цена снизится или вырастет до заданного вами порога.\n\n"
     "Команды:\n"
     "/add — добавить товар в отслеживание\n"
+    "/list — мои товары и пороги\n"
     "/help — подробнее о боте\n"
     "/cancel — отменить текущее действие\n\n" + PRICE_DISCLAIMER_FULL
 )
@@ -35,6 +37,7 @@ HELP_TEXT: Final[str] = (
     "вам, как только она дойдёт до заданного порога.\n\n"
     "Команды:\n"
     "/add — добавить товар в отслеживание\n"
+    "/list — мои товары и пороги\n"
     "/start — начать заново\n"
     "/cancel — отменить текущее действие\n\n" + PRICE_DISCLAIMER_FULL
 )
@@ -58,6 +61,7 @@ BOT_SHORT_DESCRIPTION: Final[str] = (
 BOT_COMMANDS: Final[list[BotCommand]] = [
     BotCommand(command="start", description="Начать и узнать, что умеет бот"),
     BotCommand(command="add", description="Добавить товар в отслеживание"),
+    BotCommand(command="list", description="Мои товары и пороги"),
     BotCommand(command="help", description="Подробнее о том, как пользоваться ботом"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 ]
@@ -154,6 +158,36 @@ UNEXPECTED_ERROR_TEXT: Final[str] = (
     "раз; если ошибка повторится, повторите попытку чуть позже."
 )
 
+# --- /list: products, card, removal ----------------------------------------
+
+LIST_EMPTY_TEXT: Final[str] = (
+    "Вы пока ни за чем не следите. Добавьте первый товар командой /add."
+)
+
+LIST_STALE_BUTTON_ALERT_TEXT: Final[str] = (
+    "Кнопка устарела. Откройте актуальный список командой /list."
+)
+
+LIST_GONE_ALERT_TEXT: Final[str] = (
+    "Товар или порог уже не отслеживается. Откройте актуальный список командой /list."
+)
+
+LIST_ALERT_REMOVED_TEXT: Final[str] = (
+    "Порог удалён. Товар остаётся в списке — посмотреть его: /list."
+)
+
+LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT: Final[str] = (
+    "Порог удалён. Других порогов у товара не было, поэтому я перестал за ним "
+    "следить. Чтобы вернуть товар, добавьте его заново командой /add."
+)
+
+LIST_PRODUCT_REMOVED_TEXT: Final[str] = (
+    "Больше не слежу за этим товаром, его пороги удалены. Чтобы вернуть "
+    "товар, добавьте его заново командой /add."
+)
+
+STOP_TRACKING_BUTTON_TEXT: Final[str] = "Перестать следить"
+
 CONFIRM_BUTTON_TEXT: Final[str] = "Подтвердить"
 CANCEL_BUTTON_TEXT: Final[str] = "Отмена"
 
@@ -206,3 +240,57 @@ def added_text(name: str, target_price: int, direction: AlertDirection) -> str:
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}."
     )
+
+
+def marketplace_title(marketplace: Marketplace) -> str:
+    """Human-readable marketplace name (single mapping)."""
+    match marketplace:
+        case Marketplace.wb:
+            return "Wildberries"
+        case Marketplace.ozon:
+            return "Ozon"
+        case _:
+            assert_never(marketplace)
+
+
+def list_text(shown: int, total: int) -> str:
+    """Header of the product list; names the truncation when buttons are cut."""
+    head = f"Вы следите за товарами: {total}."
+    if shown < total:
+        head = f"{head} Показаны первые {shown} из {total}."
+    return (
+        f"{head}\nВыберите товар, чтобы посмотреть пороги или перестать следить.\n"
+        f"{PRICE_DISCLAIMER_SHORT}."
+    )
+
+
+def product_card_text(
+    name: str,
+    marketplace: Marketplace,
+    url: str,
+    current_price: int,
+    alerts: list[tuple[AlertDirection, int]],
+) -> str:
+    """Product card with its thresholds (plain text, no markup)."""
+    lines = [
+        name,
+        f"Маркетплейс: {marketplace_title(marketplace)}",
+        url,
+        f"Текущая цена: {format_price(current_price)}",
+        f"{PRICE_DISCLAIMER_SHORT}.",
+        "",
+    ]
+    if alerts:
+        lines.append("Пороги:")
+        lines.extend(
+            f"• Сообщу, когда {direction_phrase(direction, price)}"
+            for direction, price in alerts
+        )
+    else:
+        lines.append("Порогов нет.")
+    return "\n".join(lines)
+
+
+def remove_alert_button_text(direction: AlertDirection, price: int) -> str:
+    """Label of the button that removes one threshold."""
+    return f"Убрать порог: {direction_phrase(direction, price)}"

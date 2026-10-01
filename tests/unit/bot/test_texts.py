@@ -52,10 +52,11 @@ def test_help_text_contains_full_disclaimer() -> None:
     assert PRICE_DISCLAIMER_FULL in texts.HELP_TEXT
 
 
-def test_bot_commands_list_is_start_add_help_cancel_in_that_order() -> None:
+def test_bot_commands_list_is_start_add_list_help_cancel_in_that_order() -> None:
     assert [c.command for c in texts.BOT_COMMANDS] == [
         "start",
         "add",
+        "list",
         "help",
         "cancel",
     ]
@@ -64,6 +65,11 @@ def test_bot_commands_list_is_start_add_help_cancel_in_that_order() -> None:
 def test_start_and_help_texts_mention_the_add_command() -> None:
     assert "/add" in texts.START_TEXT
     assert "/add" in texts.HELP_TEXT
+
+
+def test_start_and_help_texts_mention_the_list_command() -> None:
+    assert "/list" in texts.START_TEXT
+    assert "/list" in texts.HELP_TEXT
 
 
 _NBSP = "\u00a0"
