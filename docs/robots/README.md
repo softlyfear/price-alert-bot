@@ -21,8 +21,20 @@
 - Технически API при этом закрыт антиботом: замер 2026-10-09 — `403` с JSON
   `incidentId`/`challengeURL` (`challenge.html`), данных товара нет.
 
-## Wildberries
+## Wildberries — `wildberries.ru.robots.txt`
 
-Снимка нет: `https://www.wildberries.ru/robots.txt` из скрипта 2026-10-09 отвечает `498`
-(страница антибота, 1 128 байт), `https://card.wb.ru/robots.txt` — `403` с пустым телом.
-Нужно сохранить файл из браузера и положить сюда как `wildberries.ru.robots.txt`.
+- Источник: `https://www.wildberries.ru/robots.txt`, 2026-10-09, сохранён заказчиком из браузера
+  и вставлен как есть.
+- Из скрипта файл недоступен: `498` (страница антибота, 1 128 байт);
+  `https://card.wb.ru/robots.txt` — `403` с пустым телом.
+
+Что значит для бота (блок `User-agent: *`):
+
+- Запрос цены идёт на `/__internal/u-card/cards/v4/detail?...` (`app/services/wb_client.py`).
+  `/__internal/` в файле не упоминается — по правилам `robots.txt` не запрещён.
+- Ссылка на товар `/catalog/<артикул>/detail.aspx` разрешена (`Allow: /catalog/*`);
+  `Disallow: /catalog/*?` касается только адресов с параметрами, бот их не строит.
+- Полностью закрыт сайт только для перечисленных качалок (`Wget`, `WebZIP`, `Teleport Pro` и т. п.);
+  бот к ним не относится. `Crawl-delay` нет.
+- Технически API при этом закрыт из рабочей среды проекта: `403` на каждой проверке
+  (`app/services/wb_client.py`, docstring модуля).
