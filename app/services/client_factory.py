@@ -4,6 +4,7 @@ import httpx
 
 from app.models.enums import Marketplace
 from app.services.base_client import BaseMarketplaceClient
+from app.services.ozon_client import OzonClient
 from app.services.wb_client import WbClient
 
 
@@ -19,4 +20,6 @@ def get_client(
 
     if marketplace is Marketplace.wb:
         return WbClient(http_client)
+    if marketplace is Marketplace.ozon:
+        return OzonClient(http_client)
     raise UnsupportedMarketplaceError(f"Unsupported marketplace: {marketplace}")

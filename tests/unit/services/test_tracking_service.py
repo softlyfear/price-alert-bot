@@ -39,6 +39,7 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
+from app.services.client_factory import UnsupportedMarketplaceError
 from app.services.client_factory import get_client
 from app.services.tracking import TrackingService
 
@@ -300,12 +301,17 @@ async def test_preview_unsupported_marketplace_is_translated_and_sends_no_http(
         requests.append(request)
         return httpx.Response(200)
 
+    def unsupported_factory(
+        marketplace: Marketplace, http_client: httpx.AsyncClient
+    ) -> BaseMarketplaceClient:
+        raise UnsupportedMarketplaceError(f"Unsupported marketplace: {marketplace}")
+
     harness = _build(monkeypatch)
     real_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     service = TrackingService(
         session=cast(AsyncSession, harness.session),
         http_client=real_http,
-        client_factory=get_client,
+        client_factory=unsupported_factory,
         max_products_per_user=_LIMIT,
     )
 
@@ -315,6 +321,48 @@ async def test_preview_unsupported_marketplace_is_translated_and_sends_no_http(
     assert excinfo.value.marketplace == "ozon"
     assert requests == []
     await real_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_preview_ozon_with_real_factory_antibot_403_is_blocked_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PAB-071 AC8: the real factory builds `OzonClient`; a 403 from the
+    (mock) network surfaces as `blocked` plus one WARNING, not as
+    `MarketplaceNotSupportedError`."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(403, json={"incidentId": "synthetic"})
+
+    harness = _build(monkeypatch)
+    real_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    service = TrackingService(
+        session=cast(AsyncSession, harness.session),
+        http_client=real_http,
+        client_factory=get_client,
+        max_products_per_user=_LIMIT,
+    )
+    records: list[Record] = []
+
+    def sink(message: Message) -> None:
+        records.append(message.record)
+
+    sink_id = logger.add(sink, level="DEBUG")
+    try:
+        result = await service.preview(_TG_USER_ID, Marketplace.ozon, 3593896354)
+    finally:
+        logger.remove(sink_id)
+        await real_http.aclose()
+
+    assert isinstance(result, MarketplaceFetchFailure)
+    assert result.reason is FetchFailureReason.blocked
+    assert [r.url.host for r in requests] == ["www.ozon.ru"]
+    service_records = [r for r in records if r["extra"].get("reason") == "blocked"]
+    assert len(service_records) == 1
+    assert service_records[0]["level"].name == "WARNING"
+    assert service_records[0]["extra"]["marketplace"] == "ozon"
 
 
 @pytest.mark.asyncio

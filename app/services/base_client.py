@@ -17,7 +17,9 @@ async def read_body_bounded(
 
     The threshold is applied to decoded bytes (`aiter_bytes`), and reading
     stops at the first chunk that crosses it, so at most `ceil(max_bytes / C) + 1`
-    chunks of size `C` are pulled and memory stays within `max_bytes + C`.
+    chunks of size `C` are pulled. Peak memory: on failure `max_bytes + C`; on
+    success up to `2 * max_bytes` (the accumulating `bytearray` plus the final
+    `bytes` copy).
     An oversized body yields `bad_payload`; `detail` names the threshold and
     never carries body bytes. `httpx` errors raised while reading are not
     caught here - the calling client classifies them. Does not log: only the
