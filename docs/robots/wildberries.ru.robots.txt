@@ -1,0 +1,191 @@
+User-agent: Yandex
+Allow: /*utm_source
+Allow: /*utm_medium
+Allow: /*utm_campaign
+Allow: /*utm_content
+Allow: /favicon.ico
+Allow: /catalog/*
+
+Allow: /brands/*
+Allow: /seller/*
+Allow: /business*
+Allow: /wbrands*
+Allow: /subscription$
+Allow: /gift/certificate$
+Allow: /promo/b2b$
+Allow: /promo/b2b*
+Allow: /promotions*
+Allow: /brandlist/all
+Allow: /wildberries/brandlist.aspx*
+Allow: /services/*
+Allow: /catalog/*?page=
+Allow: /brands/*?page=
+Allow: /seller/*?page=
+Allow: /catalog/*utm_source
+Allow: /catalog/*utm_medium
+Allow: /catalog/*utm_campaign
+Allow: /catalog/*utm_content
+
+Disallow: /eapteka
+Disallow: /seller/rivegauche
+Disallow: /realty
+Disallow: /travel/avia
+Disallow: /travel/hotel
+Disallow: /travel/impressions
+Disallow: /travel/adventure
+Disallow: /catalog/gruzovaya-dostavka
+Disallow: /catalog/ekspress-dostavka
+Disallow: /catalog/*/otzyvy
+Disallow: /brands/*%
+Disallow: /seller/*%
+Disallow: /catalog/0/search.aspx*
+Disallow: /catalog?search=*
+Disallow: /catalog/*targeturl
+Disallow: /catalog/*imtId
+Disallow: /catalog/*imt
+Disallow: /catalog/*?
+Disallow: /brands/*?
+Disallow: /seller/*?
+Disallow: /recommendation*
+
+Clean-param: sle&sort&mobile&msr&direct&cardsize&targetUrl&erid&size&_t&analyticsCode&analyticsCodeJSON&externalSource&amp&xsubject&bid&utm_source&utm_medium&utm_campaign&utm_content&search&imt&f204557&fsupplier&cardSize&trafkey&fbrand&foriginal&f2029&pagesize&season&subject&style&field&order&t&onlyWithPhoto&wb_tp&wb_bnd&fseason&action&fcolor&price&f56267&f10829&ssubject&f179792&fkind&fconsists&nocorrection&f4&f6153&priceU&f171566&fdlvr&f14221&f1180&f153974&sap&fsize&fpublisher&f23796&f85580&f124856&f124879
+
+Clean-param: &forcedMobile&f4381&f66201&f4424&xsearch&targeturl&f173659&utm_term&f22438&_ga&f189099&xfilters&xparams&xshard&f775&f1015&f48&f11&f10863&f1103&f56828&ZARINA&f128711&f132216&f60898&discount&f85571&from&f14157&f246558&f246581&f25484&brand&priceu&frommarket&f980&f6158&gclid&f19197&f354602&f141215
+
+User-agent: Googlebot
+Allow: /*utm_source
+Allow: /*utm_medium
+Allow: /*utm_campaign
+Allow: /*utm_content
+Allow: /favicon.ico
+Allow: /catalog/*
+
+Allow: /brands/*
+Allow: /seller/*
+Allow: /business*
+Allow: /wbrands*
+Allow: /subscription$
+Allow: /gift/certificate$
+Allow: /promo/b2b$
+Allow: /promo/b2b*
+Allow: /promotions*
+Allow: /brandlist/all
+Allow: /wildberries/brandlist.aspx*
+Allow: /services/*
+Allow: /catalog/*?page=
+Allow: /brands/*?page=
+Allow: /seller/*?page=
+Allow: /catalog/*utm_source
+Allow: /catalog/*utm_medium
+Allow: /catalog/*utm_campaign
+Allow: /catalog/*utm_content
+
+Disallow: /eapteka
+Disallow: /seller/rivegauche
+Disallow: /realty
+Disallow: /travel/avia
+Disallow: /travel/hotel
+Disallow: /travel/impressions
+Disallow: /travel/adventure
+Disallow: /catalog/gruzovaya-dostavka
+Disallow: /catalog/ekspress-dostavka
+Disallow: /catalog/*/otzyvy
+Disallow: /brands/*%
+Disallow: /seller/*%
+Disallow: /catalog/0/search.aspx*
+Disallow: /catalog?search=*
+Disallow: /catalog/*targeturl
+Disallow: /catalog/*imtId
+Disallow: /catalog/*imt
+Disallow: /catalog/*?
+Disallow: /brands/*?
+Disallow: /seller/*?
+Disallow: /recommendation*
+
+
+User-agent: *
+Allow: /*utm_source
+Allow: /*utm_medium
+Allow: /*utm_campaign
+Allow: /*utm_content
+Allow: /favicon.ico
+Allow: /catalog/*
+
+Allow: /brands/*
+Allow: /seller/*
+Allow: /business*
+Allow: /wbrands*
+Allow: /subscription$
+Allow: /gift/certificate$
+Allow: /promo/b2b$
+Allow: /promo/b2b*
+Allow: /promotions*
+Allow: /brandlist/all
+Allow: /wildberries/brandlist.aspx*
+Allow: /services/*
+Allow: /catalog/*?page=
+Allow: /brands/*?page=
+Allow: /seller/*?page=
+Allow: /catalog/*utm_source
+Allow: /catalog/*utm_medium
+Allow: /catalog/*utm_campaign
+Allow: /catalog/*utm_content
+
+Disallow: /eapteka
+Disallow: /seller/rivegauche
+Disallow: /realty
+Disallow: /travel/avia
+Disallow: /travel/hotel
+Disallow: /travel/impressions
+Disallow: /travel/adventure
+Disallow: /catalog/gruzovaya-dostavka
+Disallow: /catalog/ekspress-dostavka
+Disallow: /catalog/*/otzyvy
+Disallow: /brands/*%
+Disallow: /seller/*%
+Disallow: /catalog/0/search.aspx*
+Disallow: /catalog?search=*
+Disallow: /catalog/*targeturl
+Disallow: /catalog/*imtId
+Disallow: /catalog/*imt
+Disallow: /catalog/*?
+Disallow: /brands/*?
+Disallow: /seller/*?
+Disallow: /recommendation*
+
+
+User-Agent: DISCo Pump
+Disallow: /
+
+User-Agent: Wget
+Disallow: /
+
+User-Agent: WebZIP
+Disallow: /
+
+User-Agent: Teleport Pro
+Disallow: /
+
+User-Agent: WebSnake
+Disallow: /
+
+User-Agent: Offline Explorer
+Disallow: /
+
+User-Agent: Web-By-Mail
+Disallow: /
+
+User-agent: psbot
+Disallow: /
+
+User-agent: gigabot
+Disallow: /
+
+User-agent: Twiceler
+Disallow: /
+
+User-agent: NetinfoBot
+Disallow: /
+
+User-agent: ia_archiver
+Disallow: /
