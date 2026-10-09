@@ -20,6 +20,7 @@ import httpx
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import AnswerCallbackQuery
@@ -670,17 +671,72 @@ async def test_cancel_button_without_a_dialog_is_harmless(
     assert await dialog.state() is None
 
 
+_EMPTY_STATE: tuple[str | None, dict[str, Any]] = (None, {})
+_FULL_STATE: tuple[str | None, dict[str, Any]] = (
+    AddProduct.confirming.state,
+    dict(_CONFIRMING_DATA),
+)
+
+
 @pytest.mark.asyncio
-async def test_cancel_button_on_an_inaccessible_message_still_answers_the_callback(
-    dialog: _Dialog, stub: _TrackingStub
+@pytest.mark.parametrize("accessible", [True, False], ids=["message", "inaccessible"])
+@pytest.mark.parametrize("fsm", [_FULL_STATE, _EMPTY_STATE], ids=["data", "empty"])
+async def test_cancel_button_on_a_message_with_a_chat_sends_one_plain_cancel_text(
+    dialog: _Dialog,
+    stub: _TrackingStub,
+    accessible: bool,
+    fsm: tuple[str | None, dict[str, Any]],
 ) -> None:
-    await dialog.set_state(AddProduct.waiting_link.state)
+    await dialog.set_state(*fsm)
 
-    await dialog.press(CB_ADD_CANCEL, accessible=False)
+    await dialog.press(CB_ADD_CANCEL, accessible=accessible)
 
-    assert len(dialog.callback_answers) == 1
-    assert dialog.sent == []
+    assert [(m.chat_id, m.text, m.parse_mode) for m in dialog.sent] == [
+        (_CHAT, texts.CANCEL_TEXT, None)
+    ]
+    assert [(a.text, a.show_alert) for a in dialog.callback_answers] == [(None, None)]
     assert await dialog.state() is None
+    assert await dialog.data() == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fsm", [_FULL_STATE, _EMPTY_STATE], ids=["data", "empty"])
+async def test_cancel_button_without_a_message_shows_cancel_as_popup_and_sends_nothing(
+    dialog: _Dialog, stub: _TrackingStub, fsm: tuple[str | None, dict[str, Any]]
+) -> None:
+    # Without a message aiogram cannot see the chat, so the FSM key falls back
+    # to chat_id == user_id: the draft has to live under that key.
+    key = StorageKey(bot_id=dialog.bot.id, chat_id=_USER, user_id=_USER)
+    await dialog.dispatcher.storage.set_state(key, fsm[0])
+    await dialog.dispatcher.storage.set_data(key, dict(fsm[1]))
+
+    await dialog.press(CB_ADD_CANCEL, with_message=False)
+
+    assert [(a.text, a.show_alert) for a in dialog.callback_answers] == [
+        (texts.CANCEL_TEXT, True)
+    ]
+    assert dialog.sent == []
+    assert await dialog.dispatcher.storage.get_state(key) is None
+    assert await dialog.dispatcher.storage.get_data(key) == {}
+
+
+@pytest.mark.asyncio
+async def test_cancel_clears_state_before_send_so_send_failure_keeps_no_draft() -> None:
+    storage = MemoryStorage()
+    key = StorageKey(bot_id=1, chat_id=_CHAT, user_id=_USER)
+    await storage.set_state(key, AddProduct.confirming.state)
+    await storage.set_data(key, dict(_CONFIRMING_DATA))
+    state = FSMContext(storage=storage, key=key)
+    callback = MagicMock()
+    callback.answer = AsyncMock()
+    callback.message = MagicMock(spec=Message)
+    callback.message.answer = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+    with pytest.raises(RuntimeError, match="telegram down"):
+        await _handler("on_cancel")(callback, state)
+
+    assert await storage.get_state(key) is None
+    assert await storage.get_data(key) == {}
 
 
 # --- direction (PAB-072) ----------------------------------------------------
