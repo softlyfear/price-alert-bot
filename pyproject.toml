@@ -133,6 +133,7 @@ type = "forbidden"
 source_modules = [
     "app.services.base_client",
     "app.services.wb_client",
+    "app.services.ozon_client",
     "app.services.client_factory",
 ]
 forbidden_modules = [
