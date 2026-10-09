@@ -42,6 +42,7 @@ from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.links import parse_product_ref
 from app.domain.money import rubles_to_kopecks
 from app.domain.thresholds import choose_direction
+from app.handlers.callback_reply import reply_to_callback
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
@@ -101,11 +102,9 @@ def _failure_text(reason: FetchFailureReason) -> str:
 
 
 async def _finish(callback: CallbackQuery, state: FSMContext, text: str) -> None:
-    """Clear the dialog and report the outcome, answering the callback."""
+    """Clear the dialog, then report the outcome through the single exit point."""
     await state.clear()
-    await callback.answer()
-    if isinstance(callback.message, Message):
-        await callback.message.answer(text, parse_mode=None)
+    await reply_to_callback(callback, text)
 
 
 def create_router() -> Router:

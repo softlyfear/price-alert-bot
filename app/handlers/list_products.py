@@ -14,7 +14,6 @@ from aiogram import F
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery
-from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 
 from app.bot import texts
@@ -27,29 +26,9 @@ from app.bot.keyboards import product_card_keyboard
 from app.bot.keyboards import product_list_keyboard
 from app.domain.links import build_product_url
 from app.handlers.add_product import TrackingServiceMiddleware
+from app.handlers.callback_reply import reply_to_callback as _reply
 from app.services.tracking import AlertRemoval
 from app.services.tracking import TrackingService
-
-
-async def _reply(
-    callback: CallbackQuery,
-    text: str,
-    *,
-    reply_markup: InlineKeyboardMarkup | None = None,
-    alert_text: str | None = None,
-) -> None:
-    """Answer the callback exactly once and deliver the outcome to the user.
-
-    A message that still has a chat (accessible or not) gets a new message in
-    that chat; with no message at all the outcome is shown as a popup alert
-    (``alert_text`` if given, else ``text``).
-    """
-    message = callback.message
-    if message is None:
-        await callback.answer(alert_text or text, show_alert=True)
-        return
-    await callback.answer()
-    await message.answer(text, reply_markup=reply_markup, parse_mode=None)
 
 
 def create_router() -> Router:
