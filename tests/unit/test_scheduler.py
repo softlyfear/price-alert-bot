@@ -378,6 +378,183 @@ async def test_cancellation_during_a_check_propagates_and_is_not_counted_as_fail
     assert [r for r in records if r["level"].name in {"ERROR", "INFO"}] == []
 
 
+def _summaries(records: list[Record]) -> list[Record]:
+    """Pass-summary records: the only ones carrying a ``products`` field."""
+    return [r for r in records if "products" in r["extra"]]
+
+
+async def _raise_unrequested_cancel_on_first(
+    product_id: int, session: _FakeSession
+) -> None:
+    # Raised directly: nobody called ``task.cancel()``, so ``cancelling() == 0``.
+    if product_id == 1:
+        raise asyncio.CancelledError
+
+
+async def _request_cancel_on_first(product_id: int, session: _FakeSession) -> None:
+    if product_id == 1:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        await asyncio.sleep(0)  # the pending cancel surfaces at this await
+
+
+@pytest.mark.asyncio
+async def test_unrequested_cancellation_in_a_check_does_not_stop_the_remaining_products(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC1 (а, б, г). Mutation: ``cancelling()`` condition -> always re-raise."""
+    world = _World(monkeypatch, [1, 2, 3])
+    service = _FakeService(_raise_unrequested_cancel_on_first)
+    task = asyncio.create_task(_run_pass(world, service.as_service(), concurrency=1))
+    await asyncio.wait_for(task, _WAIT)
+
+    assert not task.cancelled()
+    assert service.checked == [1, 2, 3]
+    # sessions[0] is the id query; 1..3 are products 1..3.
+    assert world.sessions[1].outcome == "rollback"
+    assert world.sessions[1].closed is True
+    assert world.sessions[2].outcome == "commit"
+    assert world.sessions[3].outcome == "commit"
+
+
+@pytest.mark.asyncio
+async def test_unrequested_cancellation_is_logged_once_as_error_with_product_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC1 (в). Mutation: drop the ``logger`` call in the ``CancelledError`` branch."""
+    world = _World(monkeypatch, [1, 2, 3])
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(
+                world,
+                _FakeService(_raise_unrequested_cancel_on_first).as_service(),
+                concurrency=1,
+            ),
+            _WAIT,
+        )
+    finally:
+        logger.remove(sink_id)
+
+    errors = [r for r in records if r["level"].name == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0]["extra"]["product_id"] == 1
+    exception = errors[0]["exception"]
+    assert exception is not None
+    assert exception.type is asyncio.CancelledError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ids", "concurrency", "expected"),
+    [
+        ([1, 2, 3], 1, {"products": 3, "checked": 3, "failures": 1}),
+        ([1, 2, 3, 4, 5], 2, {"products": 5, "checked": 5, "failures": 1}),
+    ],
+)
+async def test_unrequested_cancellation_is_counted_as_a_failure_in_an_info_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    ids: list[int],
+    concurrency: int,
+    expected: dict[str, int],
+) -> None:
+    """AC1 (д). Mutation: ``checked += 1`` only on success; or the branch not
+    counting the failure."""
+    world = _World(monkeypatch, ids)
+    service = _FakeService(_raise_unrequested_cancel_on_first)
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(world, service.as_service(), concurrency=concurrency), _WAIT
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert sorted(service.checked) == ids
+    summaries = _summaries(records)
+    assert len(summaries) == 1
+    assert summaries[0]["level"].name == "INFO"
+    assert summaries[0]["extra"] == expected
+
+
+@pytest.mark.asyncio
+async def test_requested_cancellation_inside_a_check_ends_the_worker_without_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC2 (б), cell C4. Mutation: ``cancelling()`` condition -> always a product
+    failure (product 2 would be checked and an ``ERROR`` with ``product_id``
+    logged)."""
+    world = _World(monkeypatch, [1, 2, 3])
+    service = _FakeService(_request_cancel_on_first)
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(world, service.as_service(), concurrency=1), _WAIT
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert service.checked == [1]
+    assert world.sessions[1].outcome == "rollback"
+    assert world.sessions[1].closed is True
+    assert [
+        r for r in records if r["level"].name == "ERROR" and "product_id" in r["extra"]
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_pass_with_a_vanished_worker_logs_one_error_summary_and_no_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC3 (г), cell C4. Mutation: summary level always ``INFO``."""
+    world = _World(monkeypatch, [1, 2, 3])
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(
+                world,
+                _FakeService(_request_cancel_on_first).as_service(),
+                concurrency=1,
+            ),
+            _WAIT,
+        )
+    finally:
+        logger.remove(sink_id)
+
+    summaries = _summaries(records)
+    assert len(summaries) == 1
+    assert summaries[0]["level"].name == "ERROR"
+    assert summaries[0]["extra"] == {"products": 3, "checked": 0, "failures": 0}
+    assert [r for r in records if r["level"].name == "INFO"] == []
+
+
+@pytest.mark.asyncio
+async def test_stopped_pass_logs_info_summary_counting_only_started_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC3 (в). Mutations: ``checked`` counted as ``products``; level ``ERROR``
+    when the pass was stopped."""
+    world = _World(monkeypatch, [1, 2, 3, 4, 5])
+    stop_event = asyncio.Event()
+
+    async def body(product_id: int, session: _FakeSession) -> None:
+        stop_event.set()
+
+    records, sink_id = _capture()
+    try:
+        await _run_pass(
+            world, _FakeService(body).as_service(), concurrency=1, stop_event=stop_event
+        )
+    finally:
+        logger.remove(sink_id)
+
+    summaries = _summaries(records)
+    assert len(summaries) == 1
+    assert summaries[0]["level"].name == "INFO"
+    assert summaries[0]["extra"] == {"products": 5, "checked": 1, "failures": 0}
+
+
 @pytest.mark.asyncio
 async def test_pass_logs_one_info_with_product_and_failure_counts(
     monkeypatch: pytest.MonkeyPatch,
@@ -396,8 +573,7 @@ async def test_pass_logs_one_info_with_product_and_failure_counts(
 
     infos = [r for r in records if r["level"].name == "INFO"]
     assert len(infos) == 1
-    assert infos[0]["extra"]["products"] == 3
-    assert infos[0]["extra"]["failures"] == 1
+    assert infos[0]["extra"] == {"products": 3, "checked": 3, "failures": 1}
 
 
 @pytest.mark.asyncio
@@ -415,7 +591,7 @@ async def test_pass_over_no_products_checks_nothing_and_logs_zero_counts(
     assert service.checked == []
     assert len(world.sessions) == 1
     assert [r["extra"] for r in records if r["level"].name == "INFO"] == [
-        {"products": 0, "failures": 0}
+        {"products": 0, "checked": 0, "failures": 0}
     ]
 
 
