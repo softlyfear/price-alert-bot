@@ -123,7 +123,7 @@ db-downgrade:
 	uv run python -m alembic downgrade -1
 
 docker-build:
-	docker build -t wb-alert-bot .
+	docker build -t price-alert-bot .
 
 docker-up:
 	docker compose up -d
