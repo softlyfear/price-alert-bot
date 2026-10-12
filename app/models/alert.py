@@ -34,7 +34,9 @@ class Alert(Base, TimestampMixin):
     product_id: Mapped[int] = mapped_column(
         ForeignKey("products.id", ondelete="CASCADE"), index=True
     )
-    target_price: Mapped[int] = mapped_column(CheckConstraint("target_price >= 0"))
+    target_price: Mapped[int] = mapped_column(
+        CheckConstraint("target_price >= 0", name="ck_alerts_target_price_non_negative")
+    )
     direction: Mapped[AlertDirection] = mapped_column(Enum(AlertDirection))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

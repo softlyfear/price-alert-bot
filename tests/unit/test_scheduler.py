@@ -498,6 +498,7 @@ async def test_requested_cancellation_inside_a_check_ends_the_worker_without_a_f
     assert service.checked == [1]
     assert world.sessions[1].outcome == "rollback"
     assert world.sessions[1].closed is True
+    assert len(_summaries(records)) == 1
     assert [
         r for r in records if r["level"].name == "ERROR" and "product_id" in r["extra"]
     ] == []
