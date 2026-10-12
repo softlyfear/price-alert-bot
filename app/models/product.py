@@ -33,9 +33,15 @@ class Product(Base, TimestampMixin):
     marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace))
     article: Mapped[int] = mapped_column(BigInteger)
     product_name: Mapped[str] = mapped_column()
-    current_price: Mapped[int] = mapped_column(CheckConstraint("current_price >= 0"))
+    current_price: Mapped[int] = mapped_column(
+        CheckConstraint(
+            "current_price >= 0", name="ck_products_current_price_non_negative"
+        )
+    )
     previous_price: Mapped[int | None] = mapped_column(
-        CheckConstraint("previous_price >= 0")
+        CheckConstraint(
+            "previous_price >= 0", name="ck_products_previous_price_non_negative"
+        )
     )
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
