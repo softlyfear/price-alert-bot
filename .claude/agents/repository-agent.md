@@ -77,7 +77,7 @@ uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run
 
 ## Что запрещено
 
-- `git commit`, `git push`, `git checkout`, `git reset` — коммитит оркестратор.
+- `git commit`, `git push`, `git checkout`, `git reset`, `git stash` — коммитит оркестратор; `git stash` переписывает в рабочем дереве незакоммиченную работу других агентов, для сверки с HEAD есть `git diff HEAD` и `git show HEAD:<path>`.
 - `rm -rf`, `sudo`, разрушительные операции, применение миграций к чужой БД.
 - Секреты в коде.
 - Выдумывать вывод инструментов.

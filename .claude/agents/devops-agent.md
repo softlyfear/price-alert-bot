@@ -90,7 +90,7 @@ uv run ruff check .; uv run ruff format --check .; uv run mypy app tests; uv run
 
 ## Что запрещено
 
-- `git commit`, `git push`, `git checkout`, `git reset` — коммитит оркестратор.
+- `git commit`, `git push`, `git checkout`, `git reset`, `git stash` — коммитит оркестратор; `git stash` переписывает в рабочем дереве незакоммиченную работу других агентов, для сверки с HEAD есть `git diff HEAD` и `git show HEAD:<path>`.
 - `rm -rf`, `sudo`, `docker system prune`, удаление томов с данными.
 - Секреты в `Dockerfile`, `docker-compose.yml`, `Makefile`, CI-конфигурации и в образе.
 - Публикация портов БД наружу без явного требования тикета.
