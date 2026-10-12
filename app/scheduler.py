@@ -41,14 +41,25 @@ async def _check_one(
 ) -> bool:
     """Check one product in its own session and transaction; ``True`` on success.
 
-    ``begin()`` commits on a clean exit and rolls back on an exception. Only
-    ``Exception`` is caught: ``CancelledError`` is a ``BaseException`` and
-    propagates after the transaction is rolled back.
+    ``begin()`` commits on a clean exit and rolls back on an exception; the
+    handlers sit outside the ``async with``, so the transaction is rolled back
+    and the session closed before they run. Any ``Exception`` is a product
+    failure. A ``CancelledError`` is a product failure too when nobody asked the
+    current task to cancel (``Task.cancelling() == 0``): it came from code below
+    and, left alone, would silently kill the worker, because ``TaskGroup`` does
+    not treat a cancelled child as an error. When ``cancelling() >= 1`` the
+    cancellation was requested and propagates unchanged.
     """
     try:
         async with sessionmaker() as session, session.begin():
             await price_service.check_product(product_id, session)
     except Exception:
+        logger.bind(product_id=product_id).exception("Product check failed")
+        return False
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is None or task.cancelling():
+            raise
         logger.bind(product_id=product_id).exception("Product check failed")
         return False
     return True
@@ -68,30 +79,47 @@ async def run_price_check_pass(
     tasks rather than one per product. Taking the next id involves no ``await``,
     so the shared iterator needs no lock. Once ``stop_event`` is set no new
     product is started.
+
+    Writes exactly one summary record per completed pass (none when the pass is
+    cancelled or the id query fails) with three fields: ``products`` -- ids
+    loaded; ``checked`` -- checks that ended with an outcome, success or a
+    failure counted in ``failures``; ``failures`` -- checks that failed with an
+    ``Exception`` or an unrequested ``CancelledError``. Always
+    ``failures <= checked <= products``. The level is ``INFO`` when
+    ``checked == products`` or ``stop_event`` is set at summary time, otherwise
+    ``ERROR``: a worker vanished (for example a cancellation requested from
+    inside a check, which is propagated and not counted) and the pass is
+    incomplete.
     """
     product_ids = await _load_product_ids(sessionmaker)
     if product_ids is None:
         return
 
     pending: Iterator[int] = iter(product_ids)
+    checked = 0
     failures = 0
 
     async def worker() -> None:
-        nonlocal failures
+        nonlocal checked, failures
         while not stop_event.is_set():
             product_id = next(pending, None)
             if product_id is None:
                 return
             if not await _check_one(price_service, sessionmaker, product_id):
                 failures += 1
+            checked += 1
 
     async with asyncio.TaskGroup() as group:
         for _ in range(min(concurrency, len(product_ids))):
             group.create_task(worker())
 
-    logger.info(
-        "Price check pass finished: products={products} failures={failures}",
+    complete = checked == len(product_ids) or stop_event.is_set()
+    logger.log(
+        "INFO" if complete else "ERROR",
+        "Price check pass finished: products={products} checked={checked} "
+        "failures={failures}",
         products=len(product_ids),
+        checked=checked,
         failures=failures,
     )
 
