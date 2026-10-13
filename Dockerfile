@@ -31,8 +31,9 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Unprivileged numeric user; /app stays root-owned and read-only for it.
-RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+# Unprivileged regular user (not a system one) with a fixed UID; its home is
+# declared as /nonexistent and not created, nothing writes there.
+RUN useradd --uid 10001 --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin app
 
 WORKDIR /app
 
@@ -40,6 +41,10 @@ COPY --from=builder /app/.venv /app/.venv
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY app ./app
+
+# Normalize modes so the image does not depend on the umask of the build host:
+# readable by everyone, writable by root only. .venv is left as built.
+RUN chmod -R u=rwX,go=rX /app/app /app/alembic /app/alembic.ini
 
 USER 10001
 

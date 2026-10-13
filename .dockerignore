@@ -8,5 +8,6 @@
 
 # Re-exclusions go after the allows (the last matching rule wins).
 **/.env*
+**/*.env
 **/__pycache__
 **/*.py[cod]

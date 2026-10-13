@@ -44,7 +44,7 @@ help:
 	@echo ""
 	@echo "$(GREEN)Cleanup:$(NC)"
 	@echo "  clean          — Remove caches"
-	@echo "  clean-all      — Remove caches + venv + volumes"
+	@echo "  clean-all      — Remove caches + venv (docker volumes are kept)"
 
 install:
 	@echo "$(GREEN)==> Installing dependencies...$(NC)"
@@ -58,7 +58,7 @@ update:
 run:
 	@if [ -d "alembic" ] || [ -f "alembic.ini" ]; then \
 		echo "$(BLUE)==> Applying migrations...$(NC)"; \
-		uv run python -m alembic upgrade head || echo "$(YELLOW)Migration skipped$(NC)"; \
+		uv run python -m alembic upgrade head; \
 	fi
 	uv run uvicorn app.main:app --reload
 
@@ -125,14 +125,23 @@ db-downgrade:
 docker-build:
 	docker build -t price-alert-bot .
 
+# The env file (default .env) is used for interpolation and as env_file of app and migrate:
+#   make docker-up ENV_FILE=/path/to/file
+ENV_FILE ?= .env
+export ENV_FILE
+COMPOSE := docker compose --env-file $(ENV_FILE)
+
+# build -> stop app -> up -d: a bare `up -d` would re-run migrate while app is alive.
 docker-up:
-	docker compose up -d
+	$(COMPOSE) build
+	$(COMPOSE) stop app
+	$(COMPOSE) up -d
 
 docker-down:
-	docker compose down
+	$(COMPOSE) down
 
 docker-logs:
-	docker compose logs -f
+	$(COMPOSE) logs -f
 
 docker-restart: docker-down docker-up
 
@@ -143,4 +152,3 @@ clean:
 
 clean-all: clean
 	rm -rf .venv
-	docker compose down -v 2>/dev/null || true
