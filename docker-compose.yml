@@ -1,0 +1,137 @@
+# Production-like stack: PostgreSQL + Redis + one-shot migrations + the bot.
+#
+# Start and update ONLY with `make docker-up` (build -> stop app -> up -d):
+# a bare `docker compose up -d` re-runs the finished `migrate` service on every
+# call, even while `app` is running, and migrations must not run under a live bot.
+#
+# Environment: one file outside git, `.env` in the repo root by default,
+# another path via `make docker-up ENV_FILE=/path/to/file`. The same file is
+# used for interpolation (`--env-file`) and as `env_file` of app and migrate.
+# Variables the stack needs from it: DB__USER, DB__PASSWORD, DB__NAME (required
+# here), plus everything the application settings require (see .env.example).
+# No secret value lives in this file.
+#
+# Limits:
+# - compose and pydantic-settings parse values with `$`, `#`, quotes and spaces
+#   differently; keep secrets within [A-Za-z0-9_-] or verify them by a run.
+# - `docker compose config` and `docker inspect` print environment values:
+#   treat their output as a secret.
+# - Redis has no password and no published port: it is reachable only inside the
+#   project network (do not set REDIS__PASSWORD for this stack).
+# - Docker does not restart an `unhealthy` container (see PAB-078).
+# - No service publishes a port. If an API or admin UI appears, publish it on
+#   127.0.0.1 only.
+# - One replica of app (no deploy/scale): polling and scheduler are single-instance.
+
+name: price-alert-bot
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB__USER:?DB__USER is required in the environment file}
+      POSTGRES_PASSWORD: ${DB__PASSWORD:?DB__PASSWORD is required in the environment file}
+      POSTGRES_DB: ${DB__NAME:?DB__NAME is required in the environment file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4.11-alpine
+    restart: unless-stopped
+    volumes:
+      # Default RDB snapshots land in /data: FSM states survive down/up.
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    logging: *default-logging
+
+  # One-shot: brings the schema to head, then exits. app starts only after exit code 0.
+  migrate:
+    image: price-alert-bot
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      DB__HOST: postgres
+      DB__PORT: "5432"
+      REDIS__HOST: redis
+      REDIS__PORT: "6379"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    image: price-alert-bot
+    build:
+      context: .
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      DB__HOST: postgres
+      DB__PORT: "5432"
+      REDIS__HOST: redis
+      REDIS__PORT: "6379"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Shutdown budgets in app/main.py are sequential: 30 (in-flight updates)
+    # + 45 (scheduler stop) + 5 (scheduler cancel) = 80 s, plus 20 s for steps
+    # without a budget. Recompute if a constant changes or the app spawns processes.
+    # `init` stays off: uvicorn is PID 1 and exits 0 on SIGTERM (143 under init).
+    stop_grace_period: 100s
+    healthcheck:
+      # 200 only; 503 (polling or scheduler dead) raises and fails the check.
+      # python:slim has no curl/wget, so the standard library does the request.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Measured start to "Application startup complete": 2.4-4.4 s (3 restarts and
+      # a first start, no real Telegram token); 20 s leaves a margin of ~4.5x for a
+      # slower host or a real Telegram handshake. Failures inside it are not counted.
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    logging: *default-logging
+
+volumes:
+  pgdata:
+  redisdata:
