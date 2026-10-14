@@ -15,6 +15,9 @@ import pytest
 
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
+from app.schemas.marketplace import MarketplaceFetchResult
+from app.schemas.marketplace import MarketplaceProductData
+from app.services.base_client import BaseMarketplaceClient
 from app.services.base_client import read_body_bounded
 
 _CHUNK = 65_536
@@ -117,3 +120,76 @@ async def test_httpx_error_during_read_is_not_swallowed() -> None:
 
     with pytest.raises(httpx.ReadError):
         await read_body_bounded(response, 100)
+
+
+# --- default batch method (PAB-081 AC1) ---------------------------------------
+
+
+class _Recorder(BaseMarketplaceClient):
+    """A client without a batch API: it only knows ``get_product_data``."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def get_product_data(self, article: int) -> MarketplaceFetchResult:
+        self.calls.append(article)
+        if article < 0:
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.not_found, detail=f"gone {article}"
+            )
+        return MarketplaceProductData(name=f"item {article}", price=article * 100)
+
+
+def test_default_batch_size_is_one() -> None:
+    """A client that does not override it is asked for one article at a time."""
+    assert BaseMarketplaceClient.batch_size == 1
+    assert _Recorder.batch_size == 1
+
+
+@pytest.mark.asyncio
+async def test_default_batch_fetches_each_distinct_article_once_in_input_order() -> (
+    None
+):
+    """AC1. Mutations: no dedup (``a`` fetched twice); sorted order."""
+    client = _Recorder()
+
+    results = await client.get_products_data([30, 10, 30])
+
+    assert client.calls == [30, 10]
+    assert list(results) == [30, 10]
+    assert results == {
+        30: MarketplaceProductData(name="item 30", price=3000),
+        10: MarketplaceProductData(name="item 10", price=1000),
+    }
+
+
+@pytest.mark.asyncio
+async def test_default_batch_of_nothing_is_an_empty_dict_without_calls() -> None:
+    """AC1. Mutation: a fetch for a placeholder article."""
+    client = _Recorder()
+
+    assert await client.get_products_data([]) == {}
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_default_batch_keeps_a_failure_under_its_own_article() -> None:
+    """AC1: a marked failure is a value of its key and does not hide the rest."""
+    client = _Recorder()
+
+    results = await client.get_products_data([-1, 2])
+
+    assert results == {
+        -1: MarketplaceFetchFailure(
+            reason=FetchFailureReason.not_found, detail="gone -1"
+        ),
+        2: MarketplaceProductData(name="item 2", price=200),
+    }
+
+
+@pytest.mark.asyncio
+async def test_default_batch_accepts_any_sequence_not_only_a_list() -> None:
+    """The signature is ``Sequence[int]``; a tuple works."""
+    results = await _Recorder().get_products_data((4, 5))
+
+    assert set(results) == {4, 5}
