@@ -2496,7 +2496,7 @@ async def _fail_startup_at_get_me(
         loop_calls=scheduler_calls,
     )
     monkeypatch.setattr(main, "dispose_engine", fake_dispose_engine)
-    monkeypatch.setattr(main, "setup_logging", lambda: None)
+    monkeypatch.setattr(main, "setup_logging", lambda **_kwargs: None)
     for name in ("polling_task", "scheduler_task"):
         with contextlib.suppress(AttributeError, KeyError):
             delattr(main.app.state, name)
@@ -2753,13 +2753,13 @@ async def test_broken_http_answer_leaks_no_token_secret_through_any_channel(
     )
 
     # The real ``setup_logging`` runs inside ``lifespan`` and drops every
-    # handler, so the capturing sink is added right after it.
+    # handler, so the capturing sink is added right after each call.
     real_setup = setup_logging
     captured: list[list[Record]] = []
     sink_ids: list[int] = []
 
-    def setup_then_capture() -> None:
-        real_setup()
+    def setup_then_capture(**kwargs: Any) -> None:
+        real_setup(**kwargs)
         records, sink_id = _capture_records("DEBUG")
         captured.append(records)
         sink_ids.append(sink_id)
@@ -2772,9 +2772,12 @@ async def test_broken_http_answer_leaks_no_token_secret_through_any_channel(
                 pytest.fail("lifespan must not yield when getMe fails")
     finally:
         for sink_id in sink_ids:
-            logger.remove(sink_id)
+            # The first sink dies with the second ``setup_logging`` call.
+            with contextlib.suppress(ValueError):
+                logger.remove(sink_id)
     raised = exc_info.value
-    logged = captured[0]
+    # ``lifespan`` calls ``setup_logging`` twice; only the last sink survives.
+    logged = captured[-1]
 
     # Positive controls: the marker is really present in what was injected, the
     # record reached stderr, and only the secret was cut from the text.
@@ -2793,3 +2796,146 @@ async def test_broken_http_answer_leaks_no_token_secret_through_any_channel(
         assert marker not in str(record["extra"])
         assert all(marker not in str(v) for v in record["extra"].values())
     assert marker not in "".join(traceback.format_exception(raised))
+
+
+# --- PAB-083: the token reaches no log channel (AC6) -----------------------
+
+_PAB083_MARKER = "secret-part-marker-pab083"
+
+
+def _telegram_error_carrying_token(token: str) -> TelegramNetworkError:
+    """``TelegramNetworkError`` whose text and ``__cause__`` carry the token URL."""
+    url = URL(f"https://api.telegram.org/bot{token}/getUpdates")
+    cause = aiohttp.ClientResponseError(
+        aiohttp.RequestInfo(
+            url=url,
+            method="POST",
+            headers=CIMultiDictProxy(CIMultiDict()),
+            real_url=url,
+        ),
+        (),
+        status=200,
+        message="Attempt to decode JSON with unexpected mimetype",
+    )
+    error = TelegramNetworkError(
+        method=GetUpdates(), message=f"{type(cause).__name__}: {cause}"
+    )
+    error.__cause__ = cause
+    return error
+
+
+@pytest.mark.asyncio
+async def test_polling_task_death_record_has_the_token_cut_out_of_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AC6 (a): the real ``setup_logging`` runs inside ``lifespan``."""
+    token = f"7:{_PAB083_MARKER}"
+    injected = _telegram_error_carrying_token(token)
+
+    async def dying_polling(*args: Any, **kwargs: Any) -> None:
+        raise injected
+
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(token=token),
+        start_polling=dying_polling,
+        settings=_make_orchestration_settings(bot_token=token),
+    )
+    async with main.lifespan(main.app):
+        await asyncio.wait({main.app.state.polling_task})
+
+    err = capsys.readouterr().err
+    # Positive controls: the marker really is in what was raised, the record
+    # reached stderr, and only the secret part was replaced.
+    assert _PAB083_MARKER in str(injected)
+    assert _PAB083_MARKER in str(injected.__cause__)
+    assert "Polling task terminated unexpectedly" in err
+    assert "bot7:***/getUpdates" in err
+    assert _PAB083_MARKER not in err
+
+
+@pytest.mark.asyncio
+async def test_aiogram_failed_to_fetch_updates_record_has_the_token_cut(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AC6 (b): the real ``Dispatcher.start_polling`` logs through stdlib
+    ``logging`` (aiogram's ``dispatcher`` logger); the interceptor carries the
+    record into the redacting sink.
+    """
+    from loguru import logger
+
+    token = f"7:{_PAB083_MARKER}"
+    injected = _telegram_error_carrying_token(token)
+    logged = asyncio.Event()
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, GetUpdates):
+            raise injected
+        if isinstance(method, GetMe):
+            return FAKE_BOT_USER
+        return True
+
+    def _sink(message: Any) -> None:
+        if "Failed to fetch updates" in message.record["message"]:
+            logged.set()
+
+    bot = build_fake_bot(token=token, responder=responder, preset_me=False)
+    _patch_orchestration_factories(
+        monkeypatch, bot=bot, settings=_make_orchestration_settings(bot_token=token)
+    )
+    cm = main.lifespan(main.app)
+    await cm.__aenter__()
+    # Added after startup: ``setup_logging`` removes every loguru handler, and
+    # the polling task has not had a chance to run yet.
+    sink_id = logger.add(_sink, level="ERROR")
+    try:
+        await asyncio.wait_for(logged.wait(), timeout=5)
+    finally:
+        try:
+            await cm.__aexit__(None, None, None)
+        finally:
+            logger.remove(sink_id)
+
+    lines = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if "Failed to fetch updates" in line
+    ]
+    assert lines, "positive control: the aiogram record must reach stderr"
+    first = lines[0]
+    assert " | ERROR    | " in first
+    assert "Failed to fetch updates - TelegramNetworkError: " in first
+    assert "bot7:***/getUpdates" in first
+    assert all(_PAB083_MARKER not in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_token_secret_is_registered_before_the_first_request_to_the_session(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AC6 (c): a record written while the session answers ``getMe`` already
+    has the secret cut, so the second ``setup_logging`` precedes the request.
+    """
+    from loguru import logger
+
+    token = f"7:{_PAB083_MARKER}"
+    seen: list[type[TelegramMethod[Any]]] = []
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        seen.append(type(method))
+        if isinstance(method, GetMe):
+            logger.info(f"probe inside getMe {_PAB083_MARKER}")
+            return FAKE_BOT_USER
+        return True
+
+    bot = build_fake_bot(token=token, responder=responder, preset_me=False)
+    _patch_orchestration_factories(
+        monkeypatch, bot=bot, settings=_make_orchestration_settings(bot_token=token)
+    )
+    async with main.lifespan(main.app):
+        pass
+
+    err = capsys.readouterr().err
+    assert seen[0] is GetMe  # positive control: the probe ran, and first
+    assert "probe inside getMe ***" in err
+    assert _PAB083_MARKER not in err

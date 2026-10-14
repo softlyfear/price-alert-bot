@@ -9,17 +9,20 @@ extended tracebacks) and a regression guard for convention 20 - both
 must reach the printed line through ``{extra}``.
 """
 
+import logging
 import os
 import re
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from loguru import logger
 
+from app.core.logging import _InterceptHandler
 from app.core.logging import setup_logging
 
 
@@ -344,3 +347,304 @@ def test_fixture_restores_no_handler_when_loguru_autoinit_disabled() -> None:
     assert exit_code == 0, result.stdout + result.stderr
     assert before == 0
     assert after == before
+
+
+# --- PAB-083: one redacting sink for loguru, stdlib logging and uvicorn ----
+
+_MARKER = "secret-part-marker-pab083"
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_LINE = re.compile(
+    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \| (?P<level>\S+ *) \| "
+    r"(?P<name>[\w.]+):(?P<func>\w+):(?P<line>\d+) \| (?P<message>.*) \| \{.*\}$"
+)
+
+
+def _emit_message() -> None:
+    logger.info(f"around {_MARKER} text")
+
+
+def _emit_bound_extra() -> None:
+    logger.bind(token=_MARKER).info("around text")
+
+
+def _emit_exception_object_in_extra() -> None:
+    exc = RuntimeError(f"failure {_MARKER}")
+    logger.bind(error_type="RuntimeError").error(
+        "task died: {exc}", exc=exc
+    )  # the _log_task_failure shape
+    logger.bind(exc=exc).info("around text")
+
+
+def _emit_exception_text_in_traceback() -> None:
+    try:
+        raise RuntimeError(f"failure {_MARKER}")
+    except RuntimeError:
+        logger.exception("around text")
+
+
+def _emit_cause_in_traceback() -> None:
+    try:
+        try:
+            raise ValueError(f"cause {_MARKER}")
+        except ValueError as cause:
+            raise RuntimeError("outer failure") from cause
+    except RuntimeError:
+        logger.exception("around text")
+
+
+# (id, emitter, text outside the marker that must survive the cut)
+_FORMS: list[tuple[str, Callable[[], None], str]] = [
+    ("message", _emit_message, "around"),
+    ("bound_extra", _emit_bound_extra, "'token': '***'"),
+    ("exception_object_in_extra", _emit_exception_object_in_extra, "task died"),
+    ("exception_text", _emit_exception_text_in_traceback, "RuntimeError: failure ***"),
+    ("exception_cause", _emit_cause_in_traceback, "ValueError: cause ***"),
+]
+_FORM_PARAMS = [pytest.param(emit, keep, id=name) for name, emit, keep in _FORMS]
+
+
+@pytest.mark.parametrize(("emit", "keep"), _FORM_PARAMS)
+def test_secret_is_cut_from_every_part_of_the_record(
+    capsys: pytest.CaptureFixture[str], emit: Callable[[], None], keep: str
+) -> None:
+    setup_logging(redact=[_MARKER])
+    emit()
+    err = capsys.readouterr().err
+    # Positive controls: the record was written, the mask and the text around
+    # the secret survived, and there is no ANSI colouring on a non-tty.
+    assert keep in err
+    assert _ANSI.search(err) is None
+    assert _MARKER not in err
+
+
+@pytest.mark.parametrize(("emit", "keep"), _FORM_PARAMS)
+def test_control_cell_without_secrets_keeps_the_marker_in_output(
+    capsys: pytest.CaptureFixture[str], emit: Callable[[], None], keep: str
+) -> None:
+    """Proves the probe forms really carry the marker (no vacuous 'absent')."""
+    setup_logging()
+    emit()
+    err = capsys.readouterr().err
+    assert keep.replace("***", _MARKER) in err
+    assert "***" not in err
+
+
+def test_empty_redact_value_inserts_no_mask(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging(redact=[""])
+    logger.info("plain message text")
+    err = capsys.readouterr().err
+    assert "plain message text" in err
+    assert "***" not in err
+
+
+def test_empty_value_does_not_disable_a_real_secret_next_to_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging(redact=["", _MARKER])
+    logger.info(f"around {_MARKER} text")
+    err = capsys.readouterr().err
+    assert "around *** text" in err
+    assert _MARKER not in err
+
+
+def _root_interceptors() -> list[logging.Handler]:
+    return [h for h in logging.getLogger().handlers if isinstance(h, _InterceptHandler)]
+
+
+def test_two_calls_leave_one_loguru_handler_one_interceptor_and_one_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root_before = list(logging.getLogger().handlers)
+    setup_logging()
+    setup_logging(redact=[_MARKER])
+    assert len(logger._core.handlers) == 1  # type: ignore[attr-defined]
+    assert len(_root_interceptors()) == 1
+    assert len(logging.getLogger().handlers) == len(root_before) + 1
+
+    logging.getLogger("aiogram.dispatcher").error("stdlib %s", _MARKER)
+    logger.error(f"loguru {_MARKER}")
+    err = capsys.readouterr().err
+    lines = err.splitlines()
+    assert len(lines) == 2
+    assert "stdlib ***" in lines[0]
+    assert "loguru ***" in lines[1]
+    assert _MARKER not in err
+
+
+def test_last_call_defines_the_state_a_call_without_secrets_cuts_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging(redact=[_MARKER])
+    setup_logging()
+    logger.info(f"around {_MARKER} text")
+    err = capsys.readouterr().err
+    assert f"around {_MARKER} text" in err
+    assert len(_root_interceptors()) == 1
+
+
+def test_interceptor_keeps_foreign_root_handlers_and_root_level(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    root = logging.getLogger()
+    level_before = root.level
+    foreign = logging.NullHandler()
+    root.addHandler(foreign)
+    try:
+        assert caplog.handler in root.handlers  # positive control
+        setup_logging(redact=[_MARKER])
+        logging.getLogger("aiogram.dispatcher").error("canary %s", "visible")
+        assert foreign in root.handlers
+        assert caplog.handler in root.handlers
+        assert "canary visible" in caplog.text
+        assert root.level == level_before
+    finally:
+        root.removeHandler(foreign)
+
+
+def test_stdlib_error_is_one_line_in_the_loguru_format_without_secret(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging(redact=[_MARKER])
+    logging.getLogger("aiogram.dispatcher").error(
+        "Failed to fetch updates - %s: %s", "TelegramNetworkError", f"url {_MARKER}"
+    )
+    err = capsys.readouterr().err
+    lines = err.splitlines()
+    assert len(lines) == 1
+    match = _LINE.match(lines[0])
+    assert match is not None, lines[0]
+    assert match["level"].strip() == "ERROR"
+    assert match["name"] == __name__
+    assert match["func"] == (
+        "test_stdlib_error_is_one_line_in_the_loguru_format_without_secret"
+    )
+    assert match["message"] == "Failed to fetch updates - TelegramNetworkError: url ***"
+    assert _MARKER not in err
+
+
+def test_stdlib_warning_passes_but_info_and_debug_are_dropped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    probe = logging.getLogger("pab083.level-probe")
+    probe.setLevel(logging.DEBUG)  # the logger lets all through: the handler decides
+    try:
+        setup_logging()
+        probe.debug("debug text")
+        probe.info("info text")
+        probe.warning("warning text")
+    finally:
+        probe.setLevel(logging.NOTSET)
+    err = capsys.readouterr().err
+    assert "warning text" in err
+    assert "info text" not in err
+    assert "debug text" not in err
+
+
+def test_stdlib_exc_info_traceback_is_cut(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging(redact=[_MARKER])
+    try:
+        raise RuntimeError(f"failure {_MARKER}")
+    except RuntimeError:
+        logging.getLogger("aiogram.dispatcher").error("handler failed", exc_info=True)
+    err = capsys.readouterr().err
+    assert "handler failed" in err
+    assert "RuntimeError: failure ***" in err
+    assert "Traceback" in err
+    assert _MARKER not in err
+
+
+def test_stdlib_braces_in_external_text_are_printed_as_is(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging()
+    logging.getLogger("aiogram.dispatcher").error("bad {x} {0} {} %s", "{y}")
+    err = capsys.readouterr().err
+    assert "bad {x} {0} {} {y}" in err
+
+
+def test_stdlib_record_with_a_level_unknown_to_loguru_is_logged_by_number(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Level 35 is named ``Level 35`` by stdlib, loguru has no such name."""
+    setup_logging()
+    logging.getLogger("pab083.custom").log(35, "custom level text")
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 1
+    assert "Level 35" in lines[0]
+    assert "custom level text" in lines[0]
+
+
+def test_uvicorn_logger_has_one_interceptor_instead_of_its_own_handlers() -> None:
+    uvicorn_logger = logging.getLogger("uvicorn")
+    uvicorn_logger.addHandler(logging.StreamHandler())
+    uvicorn_logger.propagate = False
+    setup_logging()
+    assert len(uvicorn_logger.handlers) == 1
+    assert isinstance(uvicorn_logger.handlers[0], _InterceptHandler)
+    assert uvicorn_logger.propagate is False
+    setup_logging()
+    assert len(uvicorn_logger.handlers) == 1
+
+
+def test_uvicorn_propagate_is_forced_off() -> None:
+    uvicorn_logger = logging.getLogger("uvicorn")
+    uvicorn_logger.propagate = True
+    setup_logging()
+    assert uvicorn_logger.propagate is False
+
+
+def test_uvicorn_error_traceback_text_and_exc_info_are_cut_one_line_each(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    setup_logging(redact=[_MARKER])
+    error_logger = logging.getLogger("uvicorn.error")
+    error_logger.error(f"Traceback (most recent call last): boom {_MARKER}")
+    try:
+        raise RuntimeError(f"startup {_MARKER}")
+    except RuntimeError as exc:
+        error_logger.error("Exception in 'lifespan' protocol", exc_info=exc)
+    err = capsys.readouterr().err
+    assert len(re.findall(r"^\d{4}-", err, flags=re.MULTILINE)) == 2
+    assert "boom ***" in err
+    assert "Exception in 'lifespan' protocol" in err
+    assert "RuntimeError: startup ***" in err
+    assert _MARKER not in err
+
+
+def test_uvicorn_access_logger_is_left_untouched() -> None:
+    access = logging.getLogger("uvicorn.access")
+    sentinel = logging.NullHandler()
+    access.addHandler(sentinel)
+    access.propagate = False
+    before = (list(access.handlers), access.propagate, access.level)
+    setup_logging(redact=[_MARKER])
+    after = (list(access.handlers), access.propagate, access.level)
+    assert sentinel in access.handlers  # positive control: state is non-trivial
+    assert after == before
+
+
+def test_stdlib_state_fixture_removes_interceptors_and_restores_uvicorn() -> None:
+    """Witness for the conftest fixture (AC7): drives it through ``__wrapped__``."""
+    from tests.conftest import _restore_stdlib_logging_state
+
+    uvicorn_logger = logging.getLogger("uvicorn")
+    handlers_before = list(uvicorn_logger.handlers)
+    propagate_before = uvicorn_logger.propagate
+    root_before = list(logging.getLogger().handlers)
+
+    gen = _restore_stdlib_logging_state.__wrapped__()  # type: ignore[attr-defined]
+    next(gen)
+    setup_logging()
+    assert len(_root_interceptors()) == 1  # positive control: state was mutated
+    uvicorn_logger.propagate = True
+    with pytest.raises(StopIteration):
+        next(gen)
+
+    assert _root_interceptors() == []
+    assert logging.getLogger().handlers == root_before
+    assert uvicorn_logger.handlers == handlers_before
+    assert uvicorn_logger.propagate is propagate_before

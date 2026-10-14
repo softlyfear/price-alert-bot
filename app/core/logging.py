@@ -5,7 +5,10 @@ Nothing runs at import time; the caller decides when logging becomes
 active (see PAB-033 for the intended call site in ``app.main``).
 """
 
+import inspect
+import logging
 import sys
+from collections.abc import Collection
 
 from loguru import logger
 
@@ -16,10 +19,60 @@ _LOG_FORMAT = (
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
     "<level>{message}</level> | {extra}"
 )
+_REDACTED = "***"
 
 
-def setup_logging() -> None:
+class _InterceptHandler(logging.Handler):
+    """Forward standard ``logging`` records into loguru.
+
+    The class identifies our own handlers on repeated ``setup_logging``
+    calls, so they are replaced instead of duplicated.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = inspect.currentframe(), 0
+        while frame is not None and (
+            depth == 0 or frame.f_code.co_filename == logging.__file__
+        ):
+            frame = frame.f_back
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
+
+
+def _install_interceptors() -> None:
+    """Route the root and ``uvicorn`` stdlib loggers into loguru.
+
+    The root handler is limited to ``WARNING`` (the threshold of
+    ``logging.lastResort``) and the root level is left alone, as are foreign
+    root handlers. ``uvicorn`` gets the interceptor instead of its own
+    handlers, ``propagate`` stays ``False``; ``uvicorn.access`` is untouched.
+    """
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if isinstance(h, _InterceptHandler)]:
+        root.removeHandler(handler)
+    root_handler = _InterceptHandler(level=logging.WARNING)
+    root.addHandler(root_handler)
+
+    uvicorn_logger = logging.getLogger("uvicorn")
+    uvicorn_logger.handlers = [_InterceptHandler()]
+    uvicorn_logger.propagate = False
+
+
+def setup_logging(*, redact: Collection[str] = ()) -> None:
     """Configure the root loguru logger for the process.
+
+    Every record, from loguru and from standard ``logging`` (``WARNING`` and
+    above on the root logger, everything ``uvicorn`` emits), goes through one
+    sink that replaces each non-empty value of ``redact`` with ``***`` in the
+    finished text: message, ``{extra}`` and traceback alike. Empty values are
+    ignored (replacing ``""`` would insert the mask between all characters).
+    The state is set by the last call.
 
     Removes every handler currently registered - this covers both the
     default ``stderr`` handler that loguru installs on import (id 0)
@@ -38,11 +91,21 @@ def setup_logging() -> None:
     the process with exactly one handler, without relying on a module
     level flag to distinguish the first call from later ones.
     """
+    secrets = tuple(value for value in redact if value)
+
+    def sink(message: str) -> None:
+        text = str(message)
+        for secret in secrets:
+            text = text.replace(secret, _REDACTED)
+        sys.stderr.write(text)
+
     logger.remove()
     logger.add(
-        sys.stderr,
+        sink,
+        colorize=False,
         level=_LOG_LEVEL,
         format=_LOG_FORMAT,
         backtrace=False,
         diagnose=False,
     )
+    _install_interceptors()
