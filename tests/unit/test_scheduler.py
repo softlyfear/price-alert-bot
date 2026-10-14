@@ -13,6 +13,7 @@ import asyncio
 import inspect
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import TYPE_CHECKING
@@ -37,6 +38,7 @@ from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
 from app.scheduler import price_check_loop
 from app.scheduler import run_price_check_pass
+from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.notification import NotificationService
@@ -85,11 +87,25 @@ class _FakeSession:
         return None
 
 
+def _price_of(article: int) -> MarketplaceProductData:
+    """The result a fake fetch returns for ``article``: unique per article."""
+    return MarketplaceProductData(name=f"item {article}", price=article)
+
+
 class _World:
     """Everything the scheduler touches, with the observations tests need."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, ids: list[int]) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        ids: list[int],
+        *,
+        specs: dict[int, tuple[Marketplace, int]] | None = None,
+    ) -> None:
         self.ids = ids
+        # ``id -> (marketplace, article)``; by default every product is a WB one
+        # with an article of its own, so each product is a distinct unit of work.
+        self.specs = specs or {i: (Marketplace.wb, 1000 + i) for i in ids}
         self.sessions: list[_FakeSession] = []
         self.select_calls = 0
         self.select_error: Exception | None = None
@@ -115,23 +131,75 @@ class _World:
                 world.select_done.set()
                 if world.select_error is not None:
                     raise world.select_error
-                return [Product(id=i) for i in world.ids]
+                return [
+                    Product(
+                        id=i,
+                        marketplace=world.specs[i][0],
+                        article=world.specs[i][1],
+                    )
+                    for i in world.ids
+                ]
 
         monkeypatch.setattr(scheduler, "ProductRepository", _FakeProductRepository)
 
+    def open_sessions(self) -> int:
+        return sum(1 for session in self.sessions if not session.closed)
+
+
+type _FetchBody = Callable[
+    [Marketplace, list[int]], Awaitable[dict[int, MarketplaceFetchResult] | None]
+]
+
 
 class _FakeService:
-    """``check_product`` with a pluggable body; records ids and the session."""
+    """The three methods the scheduler calls on ``PriceService``.
+
+    ``batch_size`` is a per-marketplace table (default 1: every product is its
+    own batch). ``fetch_prices`` records its calls and answers every requested
+    article with ``_price_of(article)`` unless ``fetch_body`` returns a dict of
+    its own (or raises). ``apply_result`` records the product id, the result and
+    the session, then runs the pluggable ``body``.
+    """
 
     def __init__(
         self,
         body: Callable[[int, _FakeSession], Awaitable[None]] | None = None,
+        *,
+        fetch_body: _FetchBody | None = None,
+        sizes: dict[Marketplace, int] | None = None,
+        size_errors: dict[Marketplace, Exception] | None = None,
     ) -> None:
         self.checked: list[int] = []
+        self.fetches: list[tuple[Marketplace, list[int]]] = []
+        self.applied: dict[int, MarketplaceFetchResult] = {}
+        self.apply_sessions: list[_FakeSession] = []
         self._body = body
+        self._fetch_body = fetch_body
+        self._sizes = sizes or {}
+        self._size_errors = size_errors or {}
 
-    async def check_product(self, product_id: int, session: _FakeSession) -> None:
+    def batch_size(self, marketplace: Marketplace) -> int:
+        if marketplace in self._size_errors:
+            raise self._size_errors[marketplace]
+        return self._sizes.get(marketplace, 1)
+
+    async def fetch_prices(
+        self, marketplace: Marketplace, articles: Sequence[int]
+    ) -> dict[int, MarketplaceFetchResult]:
+        requested = list(articles)
+        self.fetches.append((marketplace, requested))
+        if self._fetch_body is not None:
+            custom = await self._fetch_body(marketplace, requested)
+            if custom is not None:
+                return custom
+        return {article: _price_of(article) for article in requested}
+
+    async def apply_result(
+        self, product_id: int, result: MarketplaceFetchResult, session: _FakeSession
+    ) -> None:
         self.checked.append(product_id)
+        self.applied[product_id] = result
+        self.apply_sessions.append(session)
         if self._body is not None:
             await self._body(product_id, session)
 
@@ -167,7 +235,7 @@ async def _run_pass(
 async def test_failing_product_is_rolled_back_logged_with_id_and_does_not_stop_the_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """6(а). Mutation: remove the ``except Exception`` isolation in ``_check_one``."""
+    """6(а). Mutation: remove the ``except Exception`` isolation in ``_apply_one``."""
     world = _World(monkeypatch, [101, 102])
 
     async def body(product_id: int, session: _FakeSession) -> None:
@@ -230,9 +298,11 @@ async def test_naive_triggered_at_isolates_that_product_and_the_rest_are_process
     user_repo = MagicMock(spec=UserRepository)
     user_repo.get_by_id.return_value = User(id=1, tg_user_id=5, tg_username="u")
     client = MagicMock(spec=BaseMarketplaceClient)
-    client.get_product_data.return_value = MarketplaceProductData(
-        name="Товар", price=100000
-    )
+    client.batch_size = 1
+    client.get_products_data.side_effect = lambda articles: {
+        article: MarketplaceProductData(name="Товар", price=100000)
+        for article in articles
+    }
     notification = MagicMock(spec=NotificationService)
     service = PriceService(
         notification_service=cast(NotificationService, notification),
@@ -349,7 +419,7 @@ async def test_stop_event_set_mid_pass_prevents_starting_remaining_products(
 async def test_cancellation_during_a_check_propagates_and_is_not_counted_as_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """6(ж), convention 23. Mutation: ``except BaseException`` in ``_check_one``
+    """6(ж), convention 23. Mutation: ``except BaseException`` in ``_apply_one``
     (the cancel would be logged as a product failure and the next product
     started)."""
     world = _World(monkeypatch, [1, 2, 3])
@@ -712,3 +782,496 @@ async def test_loop_with_stop_event_already_set_runs_no_pass(
 def test_loop_is_a_coroutine_function_and_the_old_name_is_gone() -> None:
     assert inspect.iscoroutinefunction(price_check_loop)
     assert not hasattr(scheduler, "price_price_check_loop")
+
+
+# --- batches (PAB-081 AC4) ---------------------------------------------------
+
+
+def _assert_summary(
+    records: list[Record], *, products: int, checked: int, failures: int, level: str
+) -> None:
+    """Exactly one summary with the given counts, the level, and the invariant."""
+    summaries = _summaries(records)
+    assert len(summaries) == 1
+    assert summaries[0]["level"].name == level
+    assert summaries[0]["extra"] == {
+        "products": products,
+        "checked": checked,
+        "failures": failures,
+    }
+    assert failures <= checked <= products
+
+
+def _errors(records: list[Record]) -> list[Record]:
+    return [r for r in records if r["level"].name == "ERROR" and not _summaries([r])]
+
+
+@pytest.mark.asyncio
+async def test_250_wb_products_are_fetched_in_three_batches_and_applied_one_by_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(а). Mutations: ``batch_size`` ignored (250 fetches); one session for the
+    whole batch; ``apply_result`` skipped for the tail batch."""
+    ids = list(range(1, 251))
+    world = _World(monkeypatch, ids)
+    service = _FakeService(sizes={Marketplace.wb: 100})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=1)
+    finally:
+        logger.remove(sink_id)
+
+    assert [(m, len(a)) for m, a in service.fetches] == [
+        (Marketplace.wb, 100),
+        (Marketplace.wb, 100),
+        (Marketplace.wb, 50),
+    ]
+    requested = [article for _, articles in service.fetches for article in articles]
+    assert sorted(requested) == [1000 + i for i in ids]
+    assert sorted(service.checked) == ids
+    # Each product got the result of its own article.
+    assert all(service.applied[i] == _price_of(1000 + i) for i in ids)
+    # One id-query session plus one session per product, each a committed
+    # transaction and none shared.
+    assert len(world.sessions) == 251
+    assert len({id(s) for s in service.apply_sessions}) == 250
+    assert all(s.outcome == "commit" and s.closed for s in service.apply_sessions)
+    _assert_summary(records, products=250, checked=250, failures=0, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_products_sharing_an_article_are_fetched_once_and_both_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(б). Mutation: no merge of equal articles (the article is requested twice)."""
+    world = _World(
+        monkeypatch,
+        [1, 2, 3],
+        specs={
+            1: (Marketplace.wb, 777),
+            2: (Marketplace.wb, 777),
+            3: (Marketplace.wb, 888),
+        },
+    )
+    service = _FakeService(sizes={Marketplace.wb: 100})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=1)
+    finally:
+        logger.remove(sink_id)
+
+    assert service.fetches == [(Marketplace.wb, [777, 888])]
+    assert service.applied == {1: _price_of(777), 2: _price_of(777), 3: _price_of(888)}
+    # ``products`` counts products, not articles.
+    _assert_summary(records, products=3, checked=3, failures=0, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_equal_article_numbers_of_different_marketplaces_are_not_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(а). Mutation: group by article only (one fetch, one marketplace lost)."""
+    world = _World(
+        monkeypatch,
+        [1, 2, 3],
+        specs={
+            1: (Marketplace.wb, 5),
+            2: (Marketplace.ozon, 5),
+            3: (Marketplace.wb, 6),
+        },
+    )
+    service = _FakeService(sizes={Marketplace.wb: 100, Marketplace.ozon: 1})
+    await _run_pass(world, service.as_service(), concurrency=1)
+
+    assert service.fetches == [(Marketplace.wb, [5, 6]), (Marketplace.ozon, [5])]
+    assert sorted(service.checked) == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_ozon_products_are_single_article_batches_within_the_concurrency_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(в). Mutations: Ozon batched together; the cap dropped or off by one."""
+    ids = list(range(1, 8))
+    world = _World(monkeypatch, ids, specs={i: (Marketplace.ozon, 50 + i) for i in ids})
+    running = 0
+    peak = 0
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        for _ in range(5):
+            await asyncio.sleep(0)  # yield to the other workers, no real delay
+        running -= 1
+        return None
+
+    service = _FakeService(fetch_body=fetch_body, sizes={Marketplace.ozon: 1})
+    await _run_pass(world, service.as_service(), concurrency=2)
+
+    assert sorted(len(a) for _, a in service.fetches) == [1] * 7
+    assert peak == 2
+    assert sorted(service.checked) == ids
+
+
+@pytest.mark.asyncio
+async def test_failed_batch_fetch_fails_every_product_of_that_batch_and_logs_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(г). Mutations: the failure not counted; one log record per product; a
+    failed batch aborting the neighbouring one."""
+    world = _World(monkeypatch, [1, 2, 3, 4])  # articles 1001..1004, batches of 2
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        if 1001 in articles:
+            raise RuntimeError("boom")
+        return None
+
+    service = _FakeService(fetch_body=fetch_body, sizes={Marketplace.wb: 2})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=1)
+    finally:
+        logger.remove(sink_id)
+
+    assert service.checked == [3, 4]
+    # Id query plus the two applied products only: nothing opened for 1 and 2.
+    assert len(world.sessions) == 3
+    errors = _errors(records)
+    assert len(errors) == 1
+    assert errors[0]["extra"] == {"marketplace": "wb", "batch_size": 2}
+    _assert_summary(records, products=4, checked=4, failures=2, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_unrequested_cancellation_in_fetch_fails_the_batch_and_the_worker_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(е). Mutation: ``cancelling()`` condition in ``fetch`` -> always re-raise
+    (the worker dies silently, the next batch is never fetched)."""
+    world = _World(monkeypatch, [1, 2, 3])
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        if articles == [1001]:
+            raise asyncio.CancelledError  # nobody called ``cancel()``
+        return None
+
+    service = _FakeService(fetch_body=fetch_body)
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(world, service.as_service(), concurrency=1), _WAIT
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert service.checked == [2, 3]
+    errors = _errors(records)
+    assert len(errors) == 1
+    assert errors[0]["extra"] == {"marketplace": "wb", "batch_size": 1}
+    _assert_summary(records, products=3, checked=3, failures=1, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_requested_cancellation_inside_fetch_ends_the_worker_without_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(е). Mutation: ``cancelling()`` condition in ``fetch`` -> always a batch
+    failure (batch 2 would be fetched and an ``ERROR`` logged)."""
+    world = _World(monkeypatch, [1, 2, 3])
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        await asyncio.sleep(0)  # the pending cancel surfaces at this await
+        return None
+
+    service = _FakeService(fetch_body=fetch_body)
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(world, service.as_service(), concurrency=1), _WAIT
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert len(service.fetches) == 1
+    assert service.checked == []
+    assert _errors(records) == []
+    _assert_summary(records, products=3, checked=0, failures=0, level="ERROR")
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_pass_during_a_fetch_propagates_and_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(е), convention 23. Mutation: ``except BaseException`` around the fetch."""
+    world = _World(monkeypatch, [1, 2])
+    started = asyncio.Event()
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        started.set()
+        await asyncio.Event().wait()
+        return None
+
+    service = _FakeService(fetch_body=fetch_body)
+    records, sink_id = _capture()
+    task = asyncio.create_task(_run_pass(world, service.as_service(), concurrency=1))
+    try:
+        await asyncio.wait_for(started.wait(), _WAIT)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        logger.remove(sink_id)
+
+    assert task.cancelled()
+    assert len(service.fetches) == 1
+    assert [r for r in records if r["level"].name in {"ERROR", "INFO"}] == []
+
+
+@pytest.mark.asyncio
+async def test_failing_apply_of_one_product_leaves_its_batch_neighbours_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(д). Mutations: failure not counted; failure aborting the rest of the
+    batch; one transaction for the whole batch."""
+    world = _World(monkeypatch, [1, 2, 3])
+
+    async def body(product_id: int, session: _FakeSession) -> None:
+        if product_id == 2:
+            raise RuntimeError("boom")
+
+    service = _FakeService(body, sizes={Marketplace.wb: 100})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=1)
+    finally:
+        logger.remove(sink_id)
+
+    assert len(service.fetches) == 1
+    assert service.checked == [1, 2, 3]
+    assert [s.outcome for s in service.apply_sessions] == [
+        "commit",
+        "rollback",
+        "commit",
+    ]
+    errors = _errors(records)
+    assert len(errors) == 1
+    assert errors[0]["extra"]["product_id"] == 2
+    _assert_summary(records, products=3, checked=3, failures=1, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_article_missing_from_the_fetch_result_fails_only_its_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing-key branch. Mutation: the lookup moved out of the ``try`` (the
+    ``KeyError`` kills the worker and the rest of the batch is lost)."""
+    world = _World(monkeypatch, [1, 2, 3])
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        return {a: _price_of(a) for a in articles if a != 1002}
+
+    service = _FakeService(fetch_body=fetch_body, sizes={Marketplace.wb: 100})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=1)
+    finally:
+        logger.remove(sink_id)
+
+    assert service.checked == [1, 3]  # ``apply_result`` is never reached for 2
+    errors = _errors(records)
+    assert len(errors) == 1
+    assert errors[0]["extra"]["product_id"] == 2
+    exception = errors[0]["exception"]
+    assert exception is not None
+    assert exception.type is KeyError
+    _assert_summary(records, products=3, checked=3, failures=1, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_batch_size_failure_fails_that_marketplace_and_the_others_are_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(г) analogue. Mutations: ``batch_size`` exception unhandled (the pass
+    dies); the skipped products not counted; no log record."""
+    world = _World(
+        monkeypatch,
+        [1, 2, 3],
+        specs={
+            1: (Marketplace.ozon, 10),
+            2: (Marketplace.wb, 20),
+            3: (Marketplace.ozon, 30),
+        },
+    )
+    service = _FakeService(
+        sizes={Marketplace.wb: 100},
+        size_errors={Marketplace.ozon: LookupError("no client")},
+    )
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=2)
+    finally:
+        logger.remove(sink_id)
+
+    assert service.fetches == [(Marketplace.wb, [20])]
+    assert service.checked == [2]
+    errors = _errors(records)
+    assert len(errors) == 1
+    assert errors[0]["extra"] == {"marketplace": "ozon"}
+    exception = errors[0]["exception"]
+    assert exception is not None
+    assert exception.type is LookupError
+    _assert_summary(records, products=3, checked=3, failures=2, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_pass_where_every_batch_size_fails_starts_no_worker_and_counts_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero batches. Mutation: ``min(concurrency, len(batches))`` -> ``concurrency``
+    (idle workers are harmless, but the summary base ``checked`` must still be
+    the skipped products)."""
+    world = _World(monkeypatch, [1, 2])
+    service = _FakeService(size_errors={Marketplace.wb: LookupError("no client")})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(world, service.as_service(), concurrency=3)
+    finally:
+        logger.remove(sink_id)
+
+    assert service.fetches == []
+    _assert_summary(records, products=2, checked=2, failures=2, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_no_session_is_open_during_fetch_and_exactly_one_during_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(з). Mutation: fetch inside the apply session (open count 1 at fetch)."""
+    world = _World(monkeypatch, [1, 2, 3])
+    open_at_fetch: list[int] = []
+    open_at_apply: list[int] = []
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        open_at_fetch.append(world.open_sessions())
+        return None
+
+    async def body(product_id: int, session: _FakeSession) -> None:
+        open_at_apply.append(world.open_sessions())
+
+    service = _FakeService(body, fetch_body=fetch_body, sizes={Marketplace.wb: 2})
+    await _run_pass(world, service.as_service(), concurrency=1)
+
+    assert open_at_fetch == [0, 0]  # two batches
+    assert open_at_apply == [1, 1, 1]  # positive control: the counter does see one
+
+
+@pytest.mark.asyncio
+async def test_stop_event_set_mid_batch_applies_no_more_products_and_takes_no_new_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(ж). Mutations: drop the per-product ``stop_event`` check; drop the
+    per-batch one."""
+    world = _World(monkeypatch, [1, 2, 3, 4, 5])
+    stop_event = asyncio.Event()
+
+    async def body(product_id: int, session: _FakeSession) -> None:
+        stop_event.set()
+
+    service = _FakeService(body, sizes={Marketplace.wb: 3})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(
+            world, service.as_service(), concurrency=1, stop_event=stop_event
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert len(service.fetches) == 1
+    assert service.checked == [1]
+    _assert_summary(records, products=5, checked=1, failures=0, level="INFO")
+
+
+@pytest.mark.asyncio
+async def test_stop_event_set_during_a_fetch_applies_nothing_from_that_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4(ж). Mutation: the ``stop_event`` check only before taking a batch."""
+    world = _World(monkeypatch, [1, 2])
+    stop_event = asyncio.Event()
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        stop_event.set()
+        return None
+
+    service = _FakeService(fetch_body=fetch_body, sizes={Marketplace.wb: 100})
+    records, sink_id = _capture()
+    try:
+        await _run_pass(
+            world, service.as_service(), concurrency=1, stop_event=stop_event
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert len(service.fetches) == 1
+    assert service.checked == []
+    _assert_summary(records, products=2, checked=0, failures=0, level="INFO")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "exception_type"),
+    [
+        (RuntimeError("boom"), RuntimeError),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+    ],
+    ids=["exception", "unrequested_cancellation"],
+)
+async def test_batch_fetch_failure_record_carries_the_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    exception_type: type[BaseException],
+) -> None:
+    """4(г), PAB-073 convention: the failure record names the exception type, as
+    the per-product record does. Mutation: none needed - ``logger.exception`` in
+    ``fetch`` runs after the ``except`` block, so the record has no exception."""
+    world = _World(monkeypatch, [1])
+
+    async def fetch_body(
+        marketplace: Marketplace, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult] | None:
+        raise failure
+
+    service = _FakeService(fetch_body=fetch_body)
+    records, sink_id = _capture()
+    try:
+        await asyncio.wait_for(
+            _run_pass(world, service.as_service(), concurrency=1), _WAIT
+        )
+    finally:
+        logger.remove(sink_id)
+
+    errors = _errors(records)
+    assert len(errors) == 1
+    exception = errors[0]["exception"]
+    assert exception is not None
+    assert exception.type is exception_type

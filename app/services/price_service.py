@@ -1,6 +1,7 @@
 """Price servise."""
 
 from collections.abc import Callable
+from collections.abc import Sequence
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -11,10 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.product import Product
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
 from app.schemas.marketplace import MarketplaceFetchFailure
+from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.base_client import BaseMarketplaceClient
 from app.services.failure_levels import failure_log_level
 from app.services.notification import NotificationService
@@ -43,20 +46,49 @@ class PriceService:
         self._http_client = http_client
         self._alert_cooldown = timedelta(seconds=alert_cooldown_seconds)
 
+    def batch_size(self, marketplace: Marketplace) -> int:
+        """Return how many articles one batch request of the marketplace holds."""
+
+        return self._client_factory(marketplace, self._http_client).batch_size
+
+    async def fetch_prices(
+        self, marketplace: Marketplace, articles: Sequence[int]
+    ) -> dict[int, MarketplaceFetchResult]:
+        """Fetch prices for articles in one batch; network only, no session.
+
+        `UnsupportedMarketplaceError` from the factory is not caught: it is a
+        configuration error, isolated per batch by the scheduler.
+        """
+
+        client = self._client_factory(marketplace, self._http_client)
+        return await client.get_products_data(articles)
+
+    async def apply_result(
+        self,
+        product_id: int,
+        result: MarketplaceFetchResult,
+        session: AsyncSession,
+    ) -> None:
+        """Apply an already fetched result to a product and send alerts.
+
+        A product deleted since the batch was loaded is a no-op.
+        """
+
+        product = await self._product_repo_factory(session).get_by_id(product_id)
+        if product is None:
+            return
+        await self._apply(product, result, session)
+
     async def check_product(self, product_id: int, session: AsyncSession) -> None:
         """Check product and send alerts.
 
         `triggered_at` is never assigned here: `NotificationService.send_alert`
         is the sole writer, and only after a confirmed delivery
         (PROJECT.md section 2.5). This method only reads it for the cooldown
-        gate below.
+        gate in `_apply`.
         """
 
-        product_repo = self._product_repo_factory(session)
-        alert_repo = self._alert_repo_factory(session)
-        user_repo = self._user_repo_factory(session)
-
-        product = await product_repo.get_by_id(product_id)
+        product = await self._product_repo_factory(session).get_by_id(product_id)
         if product is None:
             return
 
@@ -68,6 +100,18 @@ class PriceService:
         # one product's failure from the rest of the pass.
         client = self._client_factory(product.marketplace, self._http_client)
         market_data = await client.get_product_data(product.article)
+        await self._apply(product, market_data, session)
+
+    async def _apply(
+        self,
+        product: Product,
+        market_data: MarketplaceFetchResult,
+        session: AsyncSession,
+    ) -> None:
+        """Write a fetch result to the loaded product and notify (no commit)."""
+
+        alert_repo = self._alert_repo_factory(session)
+        user_repo = self._user_repo_factory(session)
         now_utc = datetime.now(UTC)
 
         if isinstance(market_data, MarketplaceFetchFailure):

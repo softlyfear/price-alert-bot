@@ -2,6 +2,8 @@
 
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Sequence
+from typing import ClassVar
 
 import httpx
 
@@ -39,6 +41,10 @@ async def read_body_bounded(
 class BaseMarketplaceClient(ABC):
     """Base implementation for any Marketplace."""
 
+    # Largest number of articles one `get_products_data` call should receive;
+    # the scheduler cuts its work into batches of this size (PROJECT.md 2.12).
+    batch_size: ClassVar[int] = 1
+
     @abstractmethod
     async def get_product_data(self, article: int) -> MarketplaceFetchResult:
         """Get name and price for a tracked product.
@@ -50,3 +56,18 @@ class BaseMarketplaceClient(ABC):
         the caller, are both contract violations.
         """
         raise NotImplementedError
+
+    async def get_products_data(
+        self, articles: Sequence[int]
+    ) -> dict[int, MarketplaceFetchResult]:
+        """Get name and price for several articles, keyed by article.
+
+        Same contract as `get_product_data`: every distinct requested article
+        is a key, each value is data or a marked failure, nothing escapes.
+        The default fetches distinct articles one by one in input order, so a
+        client without a batch API (Ozon) needs no override.
+        """
+        results: dict[int, MarketplaceFetchResult] = {}
+        for article in dict.fromkeys(articles):
+            results[article] = await self.get_product_data(article)
+        return results

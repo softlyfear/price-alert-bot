@@ -23,6 +23,7 @@ identity map knows nothing about writes made by the scheduler's sessions.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 from typing import cast
 
@@ -34,8 +35,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.models.enums import Marketplace
 from app.models.product import Product
 from app.scheduler import run_price_check_pass
+from app.schemas.marketplace import FetchFailureReason
+from app.schemas.marketplace import MarketplaceFetchFailure
+from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.price_service import PriceService
 from tests.integration.repositories.conftest import make_alert
 from tests.integration.repositories.conftest import make_product
@@ -51,13 +56,33 @@ _WRITTEN_NAME = "written by the check"
 
 
 class _WritingService:
-    """``check_product`` that writes the product's row and fails on the 2nd call."""
+    """``apply_result`` that writes the product's row and fails on the 2nd call.
+
+    ``batch_size`` and ``fetch_prices`` complete the scheduler's protocol: one
+    batch holds every seeded product, and the fetch answers every requested
+    article.
+    """
 
     def __init__(self, failure: BaseException) -> None:
         self._failure = failure
         self.order: list[int] = []
+        self.fetch_calls = 0
 
-    async def check_product(self, product_id: int, session: AsyncSession) -> None:
+    def batch_size(self, marketplace: Marketplace) -> int:
+        return 100
+
+    async def fetch_prices(
+        self, marketplace: Marketplace, articles: Sequence[int]
+    ) -> dict[int, MarketplaceFetchResult]:
+        self.fetch_calls += 1
+        failure = MarketplaceFetchFailure(
+            reason=FetchFailureReason.not_found, detail="stub"
+        )
+        return dict.fromkeys(articles, failure)
+
+    async def apply_result(
+        self, product_id: int, result: MarketplaceFetchResult, session: AsyncSession
+    ) -> None:
         self.order.append(product_id)
         await session.execute(
             update(Product)
@@ -105,7 +130,7 @@ async def test_failed_check_rolls_back_only_its_own_write_on_postgresql(
     failure: BaseException,
     exception_type: type[BaseException],
 ) -> None:
-    """Mutation: remove ``session.begin()`` from ``_check_one`` (the failed
+    """Mutation: remove ``session.begin()`` from ``_apply_one`` (the failed
     product's flushed write would stay, or the neighbours' would be lost)."""
     ids = await _seed_three_products(db_session)
     connection = db_session.bind
@@ -136,6 +161,8 @@ async def test_failed_check_rolls_back_only_its_own_write_on_postgresql(
     finally:
         logger.remove(sink_id)
 
+    # Positive control of the batch: one fetch for all three products.
+    assert service.fetch_calls == 1
     assert set(service.order) == ids
     first, failed, third = service.order
     names = await _names(db_session, ids)

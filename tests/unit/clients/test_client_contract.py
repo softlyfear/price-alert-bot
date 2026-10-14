@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Callable
+from pathlib import Path
 from typing import NamedTuple
 
 import httpx
@@ -24,6 +25,7 @@ import pytest
 
 from app.schemas.marketplace import FetchFailureReason as R
 from app.schemas.marketplace import MarketplaceFetchFailure
+from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.ozon_client import OzonClient
 from app.services.wb_client import WbClient
@@ -135,3 +137,62 @@ def test_only_the_named_cells_diverge_between_clients() -> None:
         "redirect-loop",
         "498-always",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+async def test_ozon_batch_default_gives_each_article_the_single_path_category(
+    case: _Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PAB-081 AC1: ``OzonClient`` has no batch API and inherits the default;
+    the same trigger puts every requested article into the Ozon column's
+    category (literal from the matrix, not recomputed)."""
+    if case.short_deadline:
+        monkeypatch.setattr(OzonClient, "TIMEOUT_SECONDS", 0.05)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(case.make_handler(OzonClient))
+    ) as http:
+        results = await asyncio.wait_for(
+            OzonClient(http).get_products_data([3593896354, 1]), timeout=10
+        )
+
+    assert set(results) == {3593896354, 1}
+    for result in results.values():
+        assert isinstance(result, MarketplaceFetchFailure)
+        assert result.reason is case.ozon
+
+
+def test_ozon_batch_size_is_one_and_wb_is_one_hundred() -> None:
+    """PAB-081: Ozon keeps one article per request, WB takes a hundred."""
+    assert OzonClient.batch_size == 1
+    assert WbClient.batch_size == 100
+
+
+def _ozon_fixture() -> bytes:
+    path = Path(__file__).resolve().parent.parent.parent / "fixtures" / "ozon"
+    return (path / "entrypoint_3593896354.json").read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_ozon_batch_default_on_the_real_fixture_is_one_request_per_article() -> (
+    None
+):
+    """PAB-081 AC1: the real capture (page price 495 rub, no Ozon card) through the
+    inherited default; the repeated article is requested once."""
+    fixture = _ozon_fixture()
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=fixture)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        results = await OzonClient(http).get_products_data([3593896354, 3593896354])
+
+    assert len(seen) == 1
+    assert results == {
+        3593896354: MarketplaceProductData(
+            name="Лонгслив тельняшка длинный рукав 1 шт", price=49500
+        )
+    }
