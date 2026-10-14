@@ -5,9 +5,15 @@ build a ``Bot`` and does not touch the network (PROJECT.md §8.3, Р9). Every
 object with a lifetime -- the bot, the dispatcher, the FSM storage, the
 polling task -- is created inside ``lifespan`` and torn down there too, so
 ``uvicorn app.main:app`` stays importable with an empty environment.
+
+A background task (polling, scheduler) dying before shutdown starts makes the
+process send itself SIGTERM, so it exits through the normal ``_shutdown`` and
+the restart policy of the stack revives it.
 """
 
 import asyncio
+import os
+import signal
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -90,6 +96,45 @@ def _log_polling_task_failure(task: "asyncio.Task[None]") -> None:
 def _log_scheduler_task_failure(task: "asyncio.Task[None]") -> None:
     """Log a died scheduler task exactly once (PAB-069, Р3)."""
     _log_task_failure(task, "Scheduler")
+
+
+def _request_process_termination() -> None:
+    """Send SIGTERM to this very process; the only place in ``app`` that signals.
+
+    The signal takes the same path as an operator's stop: uvicorn leaves
+    ``lifespan`` and ``_shutdown`` runs. Tests replace this function by name.
+    """
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+class _BackgroundDeathWatch:
+    """Per-``lifespan`` guard: a task dying before shutdown ends the process.
+
+    One instance lives for one ``lifespan`` pass, so two passes in one process
+    stay independent. ``stopping`` is set before the first shutdown step; a
+    task finishing after that (normal return, timeout cancel) asks for nothing.
+    At most one termination request is made, however many tasks die.
+    """
+
+    def __init__(self) -> None:
+        self.stopping = False
+        self._requested = False
+
+    def task_done(self, task: "asyncio.Task[None]", label: str) -> None:
+        """Done-callback: log CRITICAL and request termination, once."""
+        if self.stopping or self._requested:
+            return
+        self._requested = True
+        if task.cancelled():
+            outcome = "cancelled"
+        elif task.exception() is not None:
+            outcome = "failed"
+        else:
+            outcome = "returned"
+        logger.bind(background_task=label, outcome=outcome).critical(
+            "Background task died before shutdown; terminating the process"
+        )
+        _request_process_termination()
 
 
 async def _ensure_redis_available(storage: RedisStorage) -> None:
@@ -299,6 +344,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     unchanged. The ping-failure branch inside ``_ensure_redis_available``
     already closes the storage itself, so that path is left out of this
     cleanup to avoid closing it twice.
+
+    A background task (polling, scheduler) finishing for any reason before
+    shutdown begins makes ``_BackgroundDeathWatch`` log one ``CRITICAL`` record
+    and send SIGTERM to the process, so it leaves through the usual
+    ``_shutdown``; the restart policy then brings the stack back up.
     """
     setup_logging()
     settings = get_settings()
@@ -308,6 +358,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     storage = create_storage(settings)
     await _ensure_redis_available(storage)
 
+    watch = _BackgroundDeathWatch()
     bot: Bot | None = None
     http_client: httpx.AsyncClient | None = None
     try:
@@ -337,6 +388,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
         )
         polling_task.add_done_callback(_log_polling_task_failure)
+        polling_task.add_done_callback(lambda t: watch.task_done(t, "Polling"))
         app.state.polling_task = polling_task
 
         stop_event = asyncio.Event()
@@ -350,14 +402,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             )
         )
         scheduler_task.add_done_callback(_log_scheduler_task_failure)
+        scheduler_task.add_done_callback(lambda t: watch.task_done(t, "Scheduler"))
         app.state.scheduler_task = scheduler_task
     except BaseException:
+        watch.stopping = True
         await _cleanup_failed_startup(bot, http_client, storage)
         raise
 
     try:
         yield
     finally:
+        watch.stopping = True
         await _shutdown(
             dispatcher,
             polling_task,

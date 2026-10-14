@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import signal
 import subprocess
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -1747,6 +1750,8 @@ async def test_lifespan_registers_the_failure_callback_on_the_scheduler_task(
     finally:
         logger.remove(sink_id)
 
+    # The sink also receives the PAB-078 CRITICAL record; this test is about ERROR.
+    records = [r for r in records if r["level"].name == "ERROR"]
     assert len(records) == 1
     assert records[0]["extra"]["error_type"] == "RuntimeError"
     assert "Scheduler" in records[0]["message"]
@@ -1979,3 +1984,427 @@ async def test_lifespan_warns_once_when_concurrency_reaches_the_pool_capacity(
     assert len(lines) == 1
     assert f"MARKETPLACE_CONCURRENCY={concurrency}" in lines[0]
     assert f"POOL_SIZE + MAX_OVERFLOW={pool_size + max_overflow}" in lines[0]
+
+
+# --- PAB-078: a dead background task ends the process (Р1-Р7; AC1-AC7) -----
+
+_REAL_REQUEST_PROCESS_TERMINATION = main._request_process_termination
+
+
+class _TerminationSpy:
+    """Recording stand-in for the ``_request_process_termination`` seam.
+
+    ``critical_at_call`` holds, for every call, how many CRITICAL records
+    already existed at that moment (the record must precede the request).
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.critical_at_call: list[int] = []
+        self.records: list[Record] = []
+
+    def __call__(self) -> None:
+        self.calls += 1
+        self.critical_at_call.append(_count_level(self.records, "CRITICAL"))
+
+
+def _count_level(records: list[Record], level: str) -> int:
+    return len(_of_level(records, level))
+
+
+def _of_level(records: list[Record], level: str) -> list[Record]:
+    return [r for r in records if r["level"].name == level]
+
+
+@pytest.fixture(autouse=True)
+def termination_spy(monkeypatch: pytest.MonkeyPatch) -> _TerminationSpy:
+    """Replace the SIGTERM seam for EVERY test of this module (AC8).
+
+    Only the AC7 test puts the real function back; any other test reaching it
+    would kill the test runner without a report.
+    """
+    spy = _TerminationSpy()
+    monkeypatch.setattr(main, "_request_process_termination", spy)
+    return spy
+
+
+@contextlib.asynccontextmanager
+async def _lifespan_watched(spy: _TerminationSpy) -> AsyncIterator[list[Record]]:
+    """Drive the real ``lifespan`` with a sink for ERROR and above.
+
+    The sink is added after startup because ``setup_logging()`` removes every
+    handler; the tasks have not run yet at that point (no suspension since
+    their creation), so no record can be missed.
+    """
+    from loguru import logger
+
+    cm = main.lifespan(main.app)
+    await cm.__aenter__()
+    records, sink_id = _capture_records("ERROR")
+    spy.records = records
+    try:
+        yield records
+    finally:
+        try:
+            await cm.__aexit__(None, None, None)
+        finally:
+            logger.remove(sink_id)
+
+
+def _background_behaviour(
+    outcome: str, marker: str, gate: asyncio.Event | None = None
+) -> StartPolling:
+    """A task body that dies with ``outcome`` (``failed``/``returned``/
+    ``cancelled``; the last one waits to be cancelled by the test)."""
+
+    async def run(*args: Any, **kwargs: Any) -> None:
+        if gate is not None:
+            await gate.wait()
+        if outcome == "failed":
+            raise RuntimeError(marker)
+        if outcome == "returned":
+            return
+        await asyncio.Event().wait()
+
+    return run
+
+
+class _CellResult(NamedTuple):
+    records: list[Record]
+    stop_polling_calls: list[None]
+
+
+_OUTCOMES = ("failed", "returned", "cancelled")
+_CELLS = [
+    (which, outcome) for which in ("Polling", "Scheduler") for outcome in _OUTCOMES
+]
+_MARKER = "death-marker-7731"
+
+
+def _alive_polling() -> tuple[StartPolling, StartPolling, list[None]]:
+    release = asyncio.Event()
+    stop_calls: list[None] = []
+
+    async def start_polling(*args: Any, **kwargs: Any) -> None:
+        await release.wait()
+
+    async def stop_polling(*args: Any, **kwargs: Any) -> None:
+        stop_calls.append(None)
+        release.set()
+
+    return start_polling, stop_polling, stop_calls
+
+
+async def _run_cell(
+    monkeypatch: pytest.MonkeyPatch, spy: _TerminationSpy, which: str, outcome: str
+) -> _CellResult:
+    """One task dies with ``outcome`` before ``lifespan`` exits; the other lives."""
+    start_polling, stop_polling, stop_calls = _alive_polling()
+    scheduler_loop: StartPolling | None = None
+    if which == "Polling":
+        start_polling = _background_behaviour(outcome, _MARKER)
+    else:
+        scheduler_loop = _background_behaviour(outcome, _MARKER)
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        scheduler_loop=scheduler_loop,
+    )
+    async with _lifespan_watched(spy) as records:
+        task = (
+            main.app.state.polling_task
+            if which == "Polling"
+            else main.app.state.scheduler_task
+        )
+        if outcome == "cancelled":
+            task.cancel()
+        await asyncio.wait({task})
+    return _CellResult(records, stop_calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("which", "outcome"), _CELLS)
+async def test_dead_background_task_requests_process_termination_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+    termination_spy: _TerminationSpy,
+    which: str,
+    outcome: str,
+) -> None:
+    """Mutations: drop the second ``add_done_callback`` of either task; treat
+    only an exception as death (``returned``/``cancelled`` ignored)."""
+    await _run_cell(monkeypatch, termination_spy, which, outcome)
+
+    assert termination_spy.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("which", "outcome"), _CELLS)
+async def test_death_is_logged_critical_with_task_and_outcome_before_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+    termination_spy: _TerminationSpy,
+    which: str,
+    outcome: str,
+) -> None:
+    """Mutations: wrong ``label`` or ``outcome`` branch; log after the request
+    instead of before it; log at another level."""
+    result = await _run_cell(monkeypatch, termination_spy, which, outcome)
+
+    critical = _of_level(result.records, "CRITICAL")
+    assert len(critical) == 1
+    assert critical[0]["extra"]["background_task"] == which
+    assert critical[0]["extra"]["outcome"] == outcome
+    assert termination_spy.critical_at_call == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", ["Polling", "Scheduler"])
+async def test_failed_death_keeps_exception_text_out_of_critical_but_in_the_error(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy, which: str
+) -> None:
+    """Mutation: put ``exc`` into the CRITICAL message or ``extra``; remove or
+    duplicate the existing ERROR record."""
+    result = await _run_cell(monkeypatch, termination_spy, which, "failed")
+
+    errors = _of_level(result.records, "ERROR")
+    assert len(errors) == 1
+    assert errors[0]["extra"]["error_type"] == "RuntimeError"
+    assert _MARKER in errors[0]["message"]  # positive control of the channel
+    critical = _of_level(result.records, "CRITICAL")[0]
+    assert _MARKER not in critical["message"]
+    assert _MARKER not in repr(critical["extra"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["Polling", "Scheduler"])
+async def test_both_tasks_dead_requests_once_and_names_the_first_to_die(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy, first: str
+) -> None:
+    """Mutations: drop the ``_requested`` guard (two calls); report the last
+    task; hard-code the label. The second task is held until the first one is
+    observed done, so the order is not a scheduling accident."""
+    gate = asyncio.Event()
+    first_body = _background_behaviour("failed", _MARKER)
+    second_body = _background_behaviour("returned", _MARKER, gate)
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=first_body if first == "Polling" else second_body,
+        scheduler_loop=first_body if first == "Scheduler" else second_body,
+    )
+    async with _lifespan_watched(termination_spy) as records:
+        first_task = (
+            main.app.state.polling_task
+            if first == "Polling"
+            else main.app.state.scheduler_task
+        )
+        second_task = (
+            main.app.state.scheduler_task
+            if first == "Polling"
+            else main.app.state.polling_task
+        )
+        await asyncio.wait({first_task})
+        gate.set()
+        await asyncio.wait({second_task})
+
+    critical = _of_level(records, "CRITICAL")
+    assert termination_spy.calls == 1
+    assert len(critical) == 1
+    assert critical[0]["extra"]["background_task"] == first
+    assert critical[0]["extra"]["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_clean_shutdown_with_both_tasks_alive_requests_nothing(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy
+) -> None:
+    """Mutation: do not set ``watch.stopping`` before ``_shutdown`` -- polling
+    returns after ``stop_polling`` and the scheduler after ``stop_event``."""
+    start_polling, stop_polling, _ = _alive_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+    async with _lifespan_watched(termination_spy) as records:
+        assert not main.app.state.polling_task.done()
+        assert not main.app.state.scheduler_task.done()
+
+    assert main.app.state.polling_task.done()
+    assert main.app.state.scheduler_task.done()
+    assert termination_spy.calls == 0
+    assert _count_level(records, "CRITICAL") == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_exception_after_stop_event_requests_nothing(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy
+) -> None:
+    """Mutation: same as above (flag not set before ``_shutdown``); the
+    existing ERROR record must stay."""
+
+    async def failing_after_stop(*args: Any, **kwargs: Any) -> None:
+        await kwargs["stop_event"].wait()
+        raise RuntimeError(_MARKER)
+
+    start_polling, stop_polling, _ = _alive_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        scheduler_loop=failing_after_stop,
+    )
+    async with _lifespan_watched(termination_spy) as records:
+        pass
+
+    assert termination_spy.calls == 0
+    assert _count_level(records, "CRITICAL") == 0
+    errors = _of_level(records, "ERROR")
+    assert len(errors) == 1
+    assert errors[0]["extra"]["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_cancelled_by_the_stop_timeout_requests_nothing(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy
+) -> None:
+    """Mutation: flag set only after ``_shutdown`` returns -- the timeout
+    cancel would count as a death."""
+    monkeypatch.setattr(main, "_SCHEDULER_STOP_TIMEOUT_SECONDS", 0.05)
+    start_polling, stop_polling, _ = _alive_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        scheduler_loop=_background_behaviour("cancelled", _MARKER),
+    )
+    async with _lifespan_watched(termination_spy) as records:
+        pass
+
+    assert main.app.state.scheduler_task.cancelled()
+    assert termination_spy.calls == 0
+    assert _count_level(records, "CRITICAL") == 0
+
+
+@pytest.mark.asyncio
+async def test_two_lifespan_passes_each_request_termination_once(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy
+) -> None:
+    """Mutation: keep ``_requested``/``stopping`` at module level -- the second
+    pass would stay silent."""
+    for expected_calls in (1, 2):
+        _patch_orchestration_factories(
+            monkeypatch,
+            bot=build_fake_bot(),
+            start_polling=_background_behaviour("returned", _MARKER),
+        )
+        async with _lifespan_watched(termination_spy):
+            await asyncio.wait({main.app.state.polling_task})
+        assert termination_spy.calls == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_exit_after_a_termination_request_runs_the_ordinary_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    termination_spy: _TerminationSpy,
+    created_http_clients: list[httpx.AsyncClient],
+) -> None:
+    """Mutation: skip or short-circuit ``_shutdown`` after a request; cancel the
+    scheduler instead of signalling ``stop_event``."""
+    stop_calls: list[None] = []
+
+    async def stop_polling(*args: Any, **kwargs: Any) -> None:
+        stop_calls.append(None)
+
+    loop_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    bot = build_fake_bot()
+    storage = _patch_orchestration_factories(
+        monkeypatch,
+        bot=bot,
+        start_polling=_background_behaviour("returned", _MARKER),
+        stop_polling=stop_polling,
+        loop_calls=loop_calls,
+    )
+    dispose_calls: list[None] = []
+
+    async def fake_dispose_engine() -> None:
+        dispose_calls.append(None)
+
+    monkeypatch.setattr(main, "dispose_engine", fake_dispose_engine)
+
+    async with _lifespan_watched(termination_spy):
+        await asyncio.wait({main.app.state.polling_task})
+        assert termination_spy.calls == 1
+        stop_event = loop_calls[0][1]["stop_event"]
+        assert not stop_event.is_set()
+
+    assert stop_calls == []
+    assert stop_event.is_set()
+    assert main.app.state.scheduler_task.done()
+    assert not main.app.state.scheduler_task.cancelled()
+    assert bot.session.closed is True  # type: ignore[attr-defined]
+    assert created_http_clients[0].is_closed is True
+    assert cast(_FakeRedisClient, storage.redis).aclose_calls == 1
+    assert dispose_calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_after_polling_began_does_not_request_termination(
+    monkeypatch: pytest.MonkeyPatch, termination_spy: _TerminationSpy
+) -> None:
+    """Mutation: drop ``watch.stopping = True`` in the ``except BaseException``
+    branch -- the already created polling task finishes during/after cleanup
+    and would be taken for a death."""
+    _patch_orchestration_factories(
+        monkeypatch, bot=build_fake_bot(), start_polling=_finish_immediately
+    )
+
+    def raising_loop(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("scheduler could not be created")
+
+    monkeypatch.setattr(main, "price_check_loop", raising_loop)
+
+    with pytest.raises(RuntimeError, match="scheduler could not be created"):
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+    await asyncio.wait({main.app.state.polling_task})
+
+    assert main.app.state.polling_task.done()
+    assert termination_spy.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_real_termination_seam_delivers_exactly_one_sigterm_to_this_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC7: the only test that sends a real signal. A Python-level handler runs
+    after control returns to the event loop, hence the single yield. Mutations:
+    another signal number; a second ``os.kill``; no signal at all."""
+    monkeypatch.setattr(
+        main, "_request_process_termination", _REAL_REQUEST_PROCESS_TERMINATION
+    )
+    received: list[int] = []
+
+    def handler(signum: int, frame: object) -> None:
+        received.append(signum)
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        assert received == []
+        # Positive control of the channel: a direct kill reaches the handler.
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(0)
+        assert received == [signal.SIGTERM]
+        received.clear()
+
+        main._request_process_termination()
+        await asyncio.sleep(0)
+
+        assert received == [signal.SIGTERM]
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert signal.getsignal(signal.SIGTERM) is previous
