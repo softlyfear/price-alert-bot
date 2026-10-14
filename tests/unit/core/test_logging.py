@@ -648,3 +648,102 @@ def test_stdlib_state_fixture_removes_interceptors_and_restores_uvicorn() -> Non
     assert logging.getLogger().handlers == root_before
     assert uvicorn_logger.handlers == handlers_before
     assert uvicorn_logger.propagate is propagate_before
+
+
+# --- PAB-084: a malformed stdlib record must not raise into the caller -----
+
+_FALLBACK_TEXT = "Unformattable stdlib log record from"
+
+
+@pytest.fixture
+def _bare_root_logger() -> Iterator[Callable[[], None]]:
+    """Give tests a callable that detaches pytest's own root handlers.
+
+    pytest attaches its capture handlers at the start of the call phase, after
+    fixtures ran, so the detaching has to happen inside the test body. Those
+    handlers format records too and would themselves raise on a malformed one,
+    hiding what the interceptor does. Teardown restores the root handler list.
+    """
+    root = logging.getLogger()
+    saved = list(root.handlers)
+
+    def detach() -> None:
+        root.handlers[:] = []
+
+    try:
+        yield detach
+    finally:
+        root.handlers[:] = saved
+
+
+def _record_starts(err: str) -> list[str]:
+    return re.findall(r"^\d{4}-.*$", err, flags=re.MULTILINE)
+
+
+@pytest.mark.parametrize("logger_name", ["x", "uvicorn.error"])
+def test_malformed_stdlib_record_gives_one_fallback_error_without_secret(
+    _bare_root_logger: Callable[[], None],
+    capsys: pytest.CaptureFixture[str],
+    logger_name: str,
+) -> None:
+    _bare_root_logger()
+    setup_logging(redact=[_MARKER])
+    stdlib_logger = logging.getLogger(logger_name)
+
+    stdlib_logger.error("%s %s", _MARKER)  # two placeholders, one argument
+    stdlib_logger.error("next record %s", "fine")
+
+    err = capsys.readouterr().err
+    starts = _record_starts(err)
+    assert len(starts) == 2
+    match = _LINE.match(starts[0])
+    assert match is not None, starts[0]
+    assert match["level"].strip() == "ERROR"
+    assert match["message"] == f"{_FALLBACK_TEXT} {logger_name}: TypeError"
+    assert "TypeError" in err
+    assert "next record fine" in starts[1]  # positive control: output still works
+    assert _MARKER not in err
+    assert "Logging error" not in err  # Handler.handleError output is absent
+
+
+def test_fallback_record_does_not_echo_the_message_or_parse_braces_in_names(
+    _bare_root_logger: Callable[[], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _bare_root_logger()
+    setup_logging()
+    odd_name = "pab084.{0}{x}{}"
+
+    logging.getLogger(odd_name).error("leak_{x} {} {0} %d", "not-a-number")
+
+    err = capsys.readouterr().err
+    starts = _record_starts(err)
+    assert len(starts) == 1
+    assert f"{_FALLBACK_TEXT} {odd_name}: TypeError" in starts[0]
+    assert "leak_" not in err
+    assert "not-a-number" not in err
+
+
+class _StopNotAnException(BaseException):
+    """Stands for ``KeyboardInterrupt``-like exceptions outside ``Exception``."""
+
+
+class _ExplodingMessage:
+    def __str__(self) -> str:
+        raise _StopNotAnException
+
+
+def test_base_exception_outside_exception_reaches_the_caller_without_fallback(
+    _bare_root_logger: Callable[[], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _bare_root_logger()
+    setup_logging()
+    stdlib_logger = logging.getLogger("x")
+
+    with pytest.raises(_StopNotAnException):
+        stdlib_logger.error(_ExplodingMessage())
+
+    assert capsys.readouterr().err == ""
+    stdlib_logger.error("alive after")  # positive control: the sink still works
+    assert "alive after" in capsys.readouterr().err

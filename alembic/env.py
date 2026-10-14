@@ -14,7 +14,10 @@ settings = get_settings()
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.db.DATABASE_URL)
+# Config.set_main_option goes through configparser interpolation, which rejects
+# the "%" of a percent-encoded URL (special characters in user or password), so
+# "%" is doubled; get_main_option/get_section hand back the original string.
+config.set_main_option("sqlalchemy.url", settings.db.DATABASE_URL.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

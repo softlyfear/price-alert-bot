@@ -27,6 +27,19 @@ class _InterceptHandler(logging.Handler):
 
     The class identifies our own handlers on repeated ``setup_logging``
     calls, so they are replaced instead of duplicated.
+
+    ``Handler.handle`` calls ``emit`` unguarded, so a malformed record (for
+    example a ``%s`` format with too few arguments) must not raise into the
+    code that logged it. On ``Exception`` one fallback ``ERROR`` record goes
+    through loguru, hence through the sink's secret filter. It carries only
+    the stdlib logger name and the error type, as ``{}`` arguments (never
+    parsed as a template), plus the error's own traceback. The record's
+    ``msg``/``args`` are not echoed: ``Handler.handleError`` would print them
+    raw to ``stderr``, bypassing the filter. Known limitation: the fallback
+    record does not carry the original ``record.exc_info`` when it was passed
+    explicitly outside an ``except`` block (inside one, the original error
+    is kept by the ``During handling...`` exception chain).
+    ``BaseException`` subclasses outside ``Exception`` propagate.
     """
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -40,9 +53,16 @@ class _InterceptHandler(logging.Handler):
         ):
             frame = frame.f_back
             depth += 1
-        logger.opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+        try:
+            logger.opt(depth=depth, exception=record.exc_info).log(
+                level, record.getMessage()
+            )
+        except Exception as error:
+            logger.opt(depth=depth, exception=error).error(
+                "Unformattable stdlib log record from {}: {}",
+                record.name,
+                type(error).__name__,
+            )
 
 
 def _install_interceptors() -> None:
