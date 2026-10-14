@@ -46,7 +46,6 @@ from app.handlers.callback_reply import reply_to_callback
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
-from app.services.client_factory import get_client
 from app.services.tracking import TrackingService
 
 _KEY_MARKETPLACE = "marketplace"
@@ -64,9 +63,9 @@ _MAX_TEXT_LENGTH = 4096
 class TrackingServiceMiddleware(BaseMiddleware):
     """Build ``TrackingService`` for the update -- the single assembly point.
 
-    Needs ``session`` (from ``DbSessionMiddleware``) plus ``http_client`` and
-    ``max_products_per_user`` (dispatcher workflow data) in ``data``; hands
-    the service to the handler as ``tracking``.
+    Needs ``session`` (from ``DbSessionMiddleware``) plus ``http_client``,
+    ``max_products_per_user`` and ``client_factory`` (dispatcher workflow data)
+    in ``data``; hands the service to the handler as ``tracking``.
     """
 
     async def __call__(
@@ -81,7 +80,7 @@ class TrackingServiceMiddleware(BaseMiddleware):
         data["tracking"] = TrackingService(
             session=session,
             http_client=http_client,
-            client_factory=get_client,
+            client_factory=data["client_factory"],
             max_products_per_user=data["max_products_per_user"],
         )
         return await handler(event, data)

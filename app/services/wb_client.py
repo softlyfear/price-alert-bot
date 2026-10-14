@@ -28,8 +28,15 @@ The response body is read as a stream with a size cap (`MAX_BODY_BYTES`) and
 the whole request is bounded by one deadline (`TIMEOUT_SECONDS`), see
 `PROJECT.md` section 8.2.
 
-Access remains blocked from this working environment regardless of the
-contract being known: both `www.wildberries.ru/__internal/u-card/cards/v4/detail`
+Access is by the anti-bot token (`PROJECT.md` section 2.12): every request
+carries the pair from a `WbAccessProvider` (`app/services/wb_access.py`). `498`
+means the token is spent - the pair is invalidated and the request repeated
+once with a fresh one; a second `498` is `blocked`. `403` with a pair also
+invalidates it and is `blocked` without a repeat; a provider refusal is
+`blocked` without any request to WB.
+
+Direct access (no token) remains blocked from this working environment:
+both `www.wildberries.ru/__internal/u-card/cards/v4/detail`
 (used below) and the former `card.wb.ru/cards/v4/detail` answer HTTP 403 on
 every independent check made for this project, most recently 2026-09-23
 (`PROJECT.md` section 2.6). Two request parameters remain named assumptions
@@ -55,6 +62,9 @@ from app.schemas.wb import WbProduct
 from app.schemas.wb import WbSize
 from app.services.base_client import BaseMarketplaceClient
 from app.services.base_client import read_body_bounded
+from app.services.wb_access import WbAccess
+from app.services.wb_access import WbAccessProvider
+from app.services.wb_access import WbAccessUnavailable
 
 
 def _select_wb_product(products: list[WbProduct], article: int) -> WbProduct | None:
@@ -81,13 +91,20 @@ def _select_wb_price(sizes: list[WbSize]) -> int | None:
     return min(prices)
 
 
+class _TokenRejected:
+    """Marker: WB answered 498 - the pair is spent (not a fetch failure yet)."""
+
+
 class WbClient(BaseMarketplaceClient):
     URL = "https://www.wildberries.ru/__internal/u-card/cards/v4/detail"
     TIMEOUT_SECONDS = 10.0
     MAX_BODY_BYTES = 1_048_576
 
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, http_client: httpx.AsyncClient, access: WbAccessProvider
+    ) -> None:
         self._http = http_client
+        self._access = access
 
     async def get_product_data(self, article: int) -> MarketplaceFetchResult:
         """Fetch name and price for a single WB article.
@@ -95,8 +112,40 @@ class WbClient(BaseMarketplaceClient):
         Returns either `MarketplaceProductData` or a `MarketplaceFetchFailure`
         marking one of `blocked`, `not_found`, `transport_error`,
         `bad_payload` or `out_of_stock` - never `None`, never an exception
-        escaping to the caller (`BaseMarketplaceClient` contract).
+        escaping to the caller (`BaseMarketplaceClient` contract). At most two
+        HTTP requests and two provider `get` calls per article.
         """
+
+        attempt = 0
+        while True:
+            attempt += 1
+            access = await self._access.get()
+            if isinstance(access, WbAccessUnavailable):
+                logger.warning(
+                    f"WB access unavailable for article {article}: {access.stage}"
+                )
+                return MarketplaceFetchFailure(
+                    reason=FetchFailureReason.blocked,
+                    detail=f"WB access unavailable: {access.stage}",
+                )
+            body = await self._request(article, access)
+            if not isinstance(body, _TokenRejected):
+                if isinstance(body, MarketplaceFetchFailure):
+                    return body
+                return self._parse(article, body)
+            await self._access.invalidate(access)
+            if attempt == 2:
+                logger.warning(f"Token rejected twice (HTTP 498) for article {article}")
+                return MarketplaceFetchFailure(
+                    reason=FetchFailureReason.blocked,
+                    detail="HTTP 498",
+                )
+            logger.info(f"Token rejected (HTTP 498) for article {article}, retrying")
+
+    async def _request(
+        self, article: int, access: WbAccess
+    ) -> bytes | MarketplaceFetchFailure | _TokenRejected:
+        """One HTTP request with `access`; a failure is returned, not raised."""
 
         params: dict[str, str | int | bool] = {
             "appType": 1,
@@ -114,6 +163,7 @@ class WbClient(BaseMarketplaceClient):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
             "Accept-Language": "ru-RU,ru;q=0.9",
+            **access.request_headers(),
         }
 
         try:
@@ -135,7 +185,16 @@ class WbClient(BaseMarketplaceClient):
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             logger.warning(f"Error HTTP {status} for article: {article}")
-            if status in (403, 429):
+            if status == 498:
+                return _TokenRejected()
+            if status == 403:
+                # A pair that draws 403 is spoiled: drop it, no repeat.
+                await self._access.invalidate(access)
+                return MarketplaceFetchFailure(
+                    reason=FetchFailureReason.blocked,
+                    detail=f"HTTP {status}",
+                )
+            if status == 429:
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.blocked,
                     detail=f"HTTP {status}",
@@ -168,10 +227,21 @@ class WbClient(BaseMarketplaceClient):
         if isinstance(body, MarketplaceFetchFailure):
             logger.error(f"Oversized body for article {article}: {body.detail}")
             return body
+        return body
 
+    def _parse(self, article: int, body: bytes) -> MarketplaceFetchResult:
+        """Validate the payload and pick the product and its price."""
         try:
             parsed = WbDetailResponse.model_validate_json(body)
 
+            if not parsed.products:
+                # Fact (`PROJECT.md` section 2.8): an unknown article is
+                # `200` with `products == []`.
+                logger.warning(f"Empty products for article {article} - not found")
+                return MarketplaceFetchFailure(
+                    reason=FetchFailureReason.not_found,
+                    detail="empty products",
+                )
             product = _select_wb_product(parsed.products, article)
             if product is None:
                 logger.error(f"No product with id == article {article} in payload")

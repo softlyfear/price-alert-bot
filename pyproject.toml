@@ -11,6 +11,7 @@ dependencies = [
     "fastapi==0.135.1",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
+    "playwright==1.64.0",
     "pydantic>=2.12.5",
     "pydantic-settings==2.13.1",
     "redis>=7.3.0",
@@ -135,6 +136,8 @@ source_modules = [
     "app.services.wb_client",
     "app.services.ozon_client",
     "app.services.client_factory",
+    "app.services.wb_access",
+    "app.services.wb_browser",
 ]
 forbidden_modules = [
     "app.repositories",
@@ -182,4 +185,14 @@ forbidden_modules = [
     "app.handlers",
     "app.services",
     "app.repositories",
+]
+
+[[tool.importlinter.contracts]]
+name = "L6: playwright is imported only by the WB browser module"
+type = "protected"
+protected_modules = [
+    "playwright",
+]
+allowed_importers = [
+    "app.services.wb_browser",
 ]

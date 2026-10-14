@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import os
 import signal
 import subprocess
 import sys
 import traceback
 from collections.abc import AsyncIterator
+from collections.abc import Awaitable
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,15 +78,23 @@ from app.core.config import BotSecret
 from app.core.config import DatabaseSettings
 from app.core.config import RedisSettings
 from app.core.config import Settings
+from app.core.config import WbSettings
 from app.core.logging import setup_logging
+from app.models.enums import Marketplace
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
-from app.services.client_factory import get_client
+from app.schemas.marketplace import FetchFailureReason
+from app.schemas.marketplace import MarketplaceFetchFailure
 from app.services.notification import NotificationService
+from app.services.wb_access import BrowserWbAccessProvider
+from app.services.wb_access import WbAccessStage
+from app.services.wb_access import WbAccessUnavailable
 from tests.unit.conftest import FAKE_BOT_USER
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_command_update
+from tests.unit.wb_access_stub import StubWbAccess
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -97,6 +107,7 @@ _SETTINGS_PREFIX_MODELS = (
     ("TG__", BotSecret),
     ("REDIS__", RedisSettings),
     ("APP__", AppSettings),
+    ("WB__", WbSettings),
 )
 
 
@@ -293,6 +304,13 @@ def _make_orchestration_settings(
             SCHEDULER_INTERVAL_SECONDS=777,
             ALERT_COOLDOWN_SECONDS=4321,
             MARKETPLACE_CONCURRENCY=concurrency,
+        ),
+        wb=WbSettings(
+            TOKEN_TIMEOUT_SECONDS=11.0,
+            FAILURE_PAUSE_SECONDS=222.0,
+            LAUNCH_BUDGET=4,
+            LAUNCH_WINDOW_SECONDS=333.0,
+            BROWSER_SANDBOX=True,
         ),
     )
 
@@ -907,6 +925,28 @@ class _FakeShutdownDispatcher:
             raise self._raises
 
 
+class _FakeShutdownWbAccess:
+    """The WB access provider's ``aclose``: records, optionally fails or hangs."""
+
+    def __init__(
+        self,
+        recorder: _Recorder,
+        *,
+        raises: Exception | None = None,
+        hangs: bool = False,
+    ) -> None:
+        self._recorder = recorder
+        self._raises = raises
+        self._hangs = hangs
+
+    async def aclose(self) -> None:
+        self._recorder.events.append("close_wb_access")
+        if self._raises is not None:
+            raise self._raises
+        if self._hangs:
+            await asyncio.Event().wait()
+
+
 class _RecordingStopEvent(asyncio.Event):
     """The scheduler's ``stop_event``; ``set()`` records the first step."""
 
@@ -930,6 +970,7 @@ class _ShutdownDoubles(NamedTuple):
     bot: Bot
     http_client: httpx.AsyncClient
     storage: RedisStorage
+    wb_access: BrowserWbAccessProvider
 
     async def shutdown(self) -> None:
         await main._shutdown(*self)
@@ -943,6 +984,8 @@ def _build_shutdown_doubles(
     close_bot_session_raises: Exception | None = None,
     close_http_client_raises: Exception | None = None,
     close_storage_raises: Exception | None = None,
+    close_wb_access_raises: Exception | None = None,
+    close_wb_access_hangs: bool = False,
     already_done: bool = False,
     scheduler_ignores_stop: bool = False,
     scheduler_dies_with: Exception | None = None,
@@ -973,6 +1016,9 @@ def _build_shutdown_doubles(
     bot = _FakeShutdownBot(recorder, raises=close_bot_session_raises)
     http_client = _FakeShutdownHttpClient(recorder, raises=close_http_client_raises)
     storage = _FakeShutdownStorage(recorder, raises=close_storage_raises)
+    wb_access = _FakeShutdownWbAccess(
+        recorder, raises=close_wb_access_raises, hangs=close_wb_access_hangs
+    )
     return _ShutdownDoubles(
         cast(Dispatcher, dispatcher),
         polling_task,
@@ -981,6 +1027,7 @@ def _build_shutdown_doubles(
         cast(Bot, bot),
         cast(httpx.AsyncClient, http_client),
         cast(RedisStorage, storage),
+        cast(BrowserWbAccessProvider, wb_access),
     )
 
 
@@ -1045,6 +1092,7 @@ def _patch_generic_shutdown_steps(
 
 _EXPECTED_ORDER = [
     "signal_scheduler_stop",
+    "close_wb_access",
     "stop_polling",
     "wait_polling_task",
     "wait_inflight_updates",
@@ -1057,13 +1105,15 @@ _EXPECTED_ORDER = [
 
 
 @pytest.mark.asyncio
-async def test_shutdown_runs_all_nine_steps_in_the_exact_documented_order(
+async def test_shutdown_runs_all_ten_steps_in_the_exact_documented_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mutation targets: swapping ``close_bot_session``/``dispose_engine``
     (PAB-067); moving ``wait_scheduler_task`` after ``close_bot_session`` or
     before ``wait_inflight_updates``; moving ``signal_scheduler_stop`` off the
-    first place (PAB-069, Р3) -- each turns this exact comparison red.
+    first place (PAB-069, Р3); moving ``close_wb_access`` off the second place
+    (PAB-079: right after ``signal_scheduler_stop``, before polling stops) --
+    each turns this exact comparison red.
     """
     recorder = _Recorder()
     doubles = _build_shutdown_doubles(recorder)
@@ -1111,6 +1161,8 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
         doubles_kwargs["signal_scheduler_stop_raises"] = boom
     elif failing_step == "stop_polling":
         doubles_kwargs["stop_polling_raises"] = boom
+    elif failing_step == "close_wb_access":
+        doubles_kwargs["close_wb_access_raises"] = boom
     elif failing_step == "close_bot_session":
         doubles_kwargs["close_bot_session_raises"] = boom
     elif failing_step == "close_http_client":
@@ -1140,7 +1192,7 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
     finally:
         logger.remove(sink_id)
 
-    # All nine steps still ran, in order, despite the one failure.
+    # All ten steps still ran, in order, despite the one failure.
     assert recorder.events == _EXPECTED_ORDER
 
     error_records = [r for r in records if r["level"].name == "ERROR"]
@@ -1421,6 +1473,7 @@ async def test_in_flight_handler_through_the_real_create_dispatcher_is_tracked()
         async_sessionmaker(class_=AsyncSession),
         httpx.AsyncClient(),
         50,
+        stub_client_factory(),
     )
 
     started = asyncio.Event()
@@ -1560,7 +1613,7 @@ async def test_lifespan_hands_sessionmaker_one_http_client_and_limit_to_dispatch
         assert client.is_closed is False
 
     assert len(calls) == 1
-    _storage, session_factory, passed_client, max_products = calls[0]
+    _storage, session_factory, passed_client, max_products, _factory = calls[0]
     assert session_factory is _SESSION_FACTORY
     assert passed_client is client
     assert client.timeout == httpx.Timeout(7.5)
@@ -1631,6 +1684,7 @@ async def test_lifespan_builds_services_then_polling_then_scheduler_with_setting
     events: list[str] = []
     price_service_kwargs: list[dict[str, Any]] = []
     notification_bots: list[Bot] = []
+    dispatcher_calls: list[tuple[Any, ...]] = []
     real_notification_service = NotificationService
 
     def recording_notification(bot: Bot) -> Any:
@@ -1674,6 +1728,7 @@ async def test_lifespan_builds_services_then_polling_then_scheduler_with_setting
         start_polling=start_polling,
         stop_polling=stop_polling,
         scheduler_loop=recording_loop,
+        dispatcher_calls=dispatcher_calls,
     )
     monkeypatch.setattr(main, "NotificationService", recording_notification)
     monkeypatch.setattr(main, "PriceService", _RecordingPriceService)
@@ -1696,7 +1751,8 @@ async def test_lifespan_builds_services_then_polling_then_scheduler_with_setting
     assert kwargs["product_repo_factory"] is ProductRepository
     assert kwargs["alert_repo_factory"] is AlertRepository
     assert kwargs["user_repo_factory"] is UserRepository
-    assert kwargs["client_factory"] is get_client
+    # PAB-079: one factory object serves the scheduler and the dispatcher.
+    assert kwargs["client_factory"] is dispatcher_calls[0][4]
     assert isinstance(kwargs["notification_service"], real_notification_service)
 
     (loop_args, loop_kwargs), *rest = loop_calls
@@ -1836,6 +1892,7 @@ class _CleanupProbe:
         self.events: list[str] = []
         self.storage = _patch_orchestration_factories(monkeypatch, bot=bot)
         self.failing = failing
+        self._wrap(BrowserWbAccessProvider, "aclose", "close_wb_access", monkeypatch)
         self._wrap(bot.session, "close", "close_bot_session")
         self._wrap(httpx.AsyncClient, "aclose", "close_http_client", monkeypatch)
         self._wrap(self.storage, "close", "close_storage", monkeypatch)
@@ -1869,6 +1926,7 @@ class _CleanupProbe:
 
 
 _ALL_CLEANUP_STEPS = [
+    "close_wb_access",
     "close_bot_session",
     "close_http_client",
     "close_storage",
@@ -2939,3 +2997,231 @@ async def test_token_secret_is_registered_before_the_first_request_to_the_sessio
     assert seen[0] is GetMe  # positive control: the probe ran, and first
     assert "probe inside getMe ***" in err
     assert _PAB083_MARKER not in err
+
+
+# --- PAB-079: WB access provider wiring (AC8) --------------------------------
+
+
+class _SpyProvider(StubWbAccess):
+    """Refuses every ``get``; records constructor arguments and ``aclose``."""
+
+    def __init__(
+        self,
+        fetch_token: Callable[[], Awaitable[str]],
+        *,
+        sink: list[_SpyProvider],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(WbAccessUnavailable(WbAccessStage.closed, "spy"))
+        self.fetch_token = fetch_token
+        self.kwargs = kwargs
+        self.aclose_calls = 0
+        sink.append(self)
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _WbAccessSpy:
+    """Replaces ``main.BrowserWbAccessProvider`` and ``main.fetch_wb_token``.
+
+    ``fetch_calls`` records the ``sandbox`` argument of each real-fetcher call
+    made through the lambda ``lifespan`` hands to the provider.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.instances: list[_SpyProvider] = []
+        self.fetch_calls: list[bool] = []
+
+        async def fake_fetch_wb_token(*, sandbox: bool) -> str:
+            self.fetch_calls.append(sandbox)
+            return "spy-token"
+
+        monkeypatch.setattr(
+            main,
+            "BrowserWbAccessProvider",
+            functools.partial(_SpyProvider, sink=self.instances),
+        )
+        monkeypatch.setattr(main, "fetch_wb_token", fake_fetch_wb_token)
+
+
+@pytest.fixture
+def wb_spy(monkeypatch: pytest.MonkeyPatch) -> _WbAccessSpy:
+    return _WbAccessSpy(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_builds_one_wb_provider_from_wb_settings_without_fetching(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy
+) -> None:
+    """AC8: one provider per process, configured by the ``WB__`` settings
+    (non-default values 11 / 222 / 4 / 333 / sandbox on, so a default is
+    visible); startup runs no acquisition; the fetcher it receives calls
+    ``fetch_wb_token`` with the sandbox setting."""
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert len(wb_spy.instances) == 1
+        assert wb_spy.fetch_calls == []  # lazy: nothing fetched at startup
+        provider = wb_spy.instances[0]
+        assert await provider.fetch_token() == "spy-token"
+
+    assert wb_spy.fetch_calls == [True]
+    assert provider.kwargs == {
+        "token_timeout_seconds": 11.0,
+        "failure_pause_seconds": 222.0,
+        "launch_budget": 4,
+        "launch_window_seconds": 333.0,
+    }
+    assert len(wb_spy.instances) == 1
+
+
+@pytest.mark.asyncio
+async def test_lifespan_shares_one_factory_bound_to_the_provider(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy
+) -> None:
+    """AC8: ``create_dispatcher`` and ``PriceService`` get the very same
+    factory object, and it builds WB clients over the process's provider:
+    a WB client from it asks that provider for access, an Ozon one does not."""
+    dispatcher_calls: list[tuple[Any, ...]] = []
+    price_service_kwargs: list[dict[str, Any]] = []
+
+    class _RecordingPriceService:
+        def __init__(self, **kwargs: Any) -> None:
+            price_service_kwargs.append(kwargs)
+
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        dispatcher_calls=dispatcher_calls,
+    )
+    monkeypatch.setattr(main, "PriceService", _RecordingPriceService)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        factory = dispatcher_calls[0][4]
+        assert price_service_kwargs[0]["client_factory"] is factory
+        provider = wb_spy.instances[0]
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(403))
+        ) as http:
+            wb_result = await factory(Marketplace.wb, http).get_product_data(1)
+            assert provider.get_calls == 1
+            await factory(Marketplace.ozon, http).get_product_data(1)
+            assert provider.get_calls == 1
+
+    assert wb_result == MarketplaceFetchFailure(
+        reason=FetchFailureReason.blocked, detail="WB access unavailable: closed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_the_wb_provider_exactly_once_on_exit(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy
+) -> None:
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert wb_spy.instances[0].aclose_calls == 0
+
+    assert wb_spy.instances[0].aclose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_closes_the_wb_provider_when_it_was_created(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy
+) -> None:
+    """AC8, after creation: a failure later in startup closes the provider
+    (and the exception still reaches the caller)."""
+    boom = RuntimeError("create_bot boom")
+
+    def raising(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    _patch_orchestration_factories(monkeypatch, bot=build_fake_bot())
+    monkeypatch.setattr(main, "create_bot", raising)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert len(wb_spy.instances) == 1
+    assert wb_spy.instances[0].aclose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_does_not_close_a_provider_that_was_never_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC8, before creation: the provider constructor fails, so the cleanup
+    closes the HTTP client, storage and engine but has no provider to close
+    (no ``close_wb_access`` step, no logged failed step)."""
+    boom = RuntimeError("provider boom")
+
+    def failing_provider(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    probe = _CleanupProbe(monkeypatch, build_fake_bot())
+    monkeypatch.setattr(main, "BrowserWbAccessProvider", failing_provider)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert probe.events == ["close_http_client", "close_storage", "dispose_engine"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_goes_on_when_closing_the_wb_provider_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC8: the step has a bounded budget; a provider that never finishes
+    ``aclose`` costs one logged ``TimeoutError`` for ``close_wb_access`` and
+    the remaining steps still run in order (budget shortened to 0.05 s)."""
+    from loguru import logger
+
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(recorder, close_wb_access_hangs=True)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    monkeypatch.setattr(main, "_WB_ACCESS_CLOSE_TIMEOUT_SECONDS", 0.05)
+    records: list[Record] = []
+
+    def _sink(message: Message) -> None:
+        records.append(message.record)
+
+    sink_id = logger.add(_sink, level="ERROR")
+    try:
+        await asyncio.wait_for(doubles.shutdown(), timeout=5)
+    finally:
+        logger.remove(sink_id)
+
+    assert recorder.events == _EXPECTED_ORDER
+    assert [r["extra"]["shutdown_step"] for r in records] == ["close_wb_access"]
+    assert records[0]["extra"]["error_type"] == "TimeoutError"
+
+
+def test_shutdown_budgets_are_30_45_5_and_wb_close_10_seconds() -> None:
+    """AC8: the earlier budgets are unchanged; the new one is 10 s."""
+    assert main._INFLIGHT_UPDATES_TIMEOUT_SECONDS == 30.0
+    assert main._SCHEDULER_STOP_TIMEOUT_SECONDS == 45.0
+    assert main._SCHEDULER_CANCEL_TIMEOUT_SECONDS == 5.0
+    assert main._WB_ACCESS_CLOSE_TIMEOUT_SECONDS == 10.0

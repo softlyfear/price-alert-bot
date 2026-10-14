@@ -13,6 +13,7 @@ the restart policy of the stack revives it. Telegram is checked with one
 """
 
 import asyncio
+import functools
 import os
 import signal
 from collections.abc import AsyncGenerator
@@ -49,6 +50,8 @@ from app.scheduler import price_check_loop
 from app.services.client_factory import get_client
 from app.services.notification import NotificationService
 from app.services.price_service import PriceService
+from app.services.wb_access import BrowserWbAccessProvider
+from app.services.wb_browser import fetch_wb_token
 
 # Budget for handlers already running when shutdown starts to finish before
 # the bot session closes under them (PROJECT.md §8.3, Р6 (в)/(г)). No env
@@ -69,6 +72,9 @@ _INFLIGHT_UPDATES_TIMEOUT_SECONDS: Final[float] = 30.0
 _SCHEDULER_STOP_TIMEOUT_SECONDS: Final[float] = 45.0
 # How long to wait for a scheduler task to actually finish after ``cancel()``.
 _SCHEDULER_CANCEL_TIMEOUT_SECONDS: Final[float] = 5.0
+# Budget for the WB access provider to cancel a running token fetch and close
+# the browser (PAB-079); the browser is closed inside the fetch's own cleanup.
+_WB_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
 def _log_task_failure(task: "asyncio.Task[None]", label: str) -> None:
@@ -272,6 +278,10 @@ async def _close_http_client(http_client: httpx.AsyncClient) -> None:
     await http_client.aclose()
 
 
+async def _close_wb_access(wb_access: BrowserWbAccessProvider) -> None:
+    await asyncio.wait_for(wb_access.aclose(), _WB_ACCESS_CLOSE_TIMEOUT_SECONDS)
+
+
 async def _close_storage(storage: RedisStorage) -> None:
     await storage.close()
 
@@ -299,20 +309,23 @@ async def _shutdown(
     bot: Bot,
     http_client: httpx.AsyncClient,
     storage: RedisStorage,
+    wb_access: BrowserWbAccessProvider,
 ) -> None:
     """Tear down everything ``lifespan`` started, in the fixed order (Р6, Р3).
 
-    Order: signal the scheduler to stop -> stop polling if it is still running
-    -> wait for the polling task -> wait for in-flight updates -> wait for the
-    scheduler (bounded; it uses the bot and the HTTP client) -> close the bot
-    session -> close the shared HTTP client -> close the FSM storage -> dispose
-    the engine last. A failing step is logged with its name and does not cancel
-    the remaining steps, so a partial failure still releases as many resources
-    as possible.
+    Order: signal the scheduler to stop -> close the WB access provider
+    (PAB-079; an in-flight check then gets an honest ``blocked``) -> stop
+    polling if it is still running -> wait for the polling task -> wait for
+    in-flight updates -> wait for the scheduler (bounded; it uses the bot and
+    the HTTP client) -> close the bot session -> close the shared HTTP client
+    -> close the FSM storage -> dispose the engine last. A failing step is
+    logged with its name and does not cancel the remaining steps, so a partial
+    failure still releases as many resources as possible.
     """
     await _run_steps(
         [
             ("signal_scheduler_stop", lambda: _signal_scheduler_stop(stop_event)),
+            ("close_wb_access", lambda: _close_wb_access(wb_access)),
             (
                 "stop_polling",
                 lambda: _stop_polling_if_running(dispatcher, polling_task),
@@ -329,14 +342,19 @@ async def _shutdown(
 
 
 async def _cleanup_failed_startup(
-    bot: Bot | None, http_client: httpx.AsyncClient | None, storage: RedisStorage
+    bot: Bot | None,
+    http_client: httpx.AsyncClient | None,
+    storage: RedisStorage,
+    wb_access: BrowserWbAccessProvider | None = None,
 ) -> None:
     """Release whatever startup managed to create, each step isolated.
 
-    ``bot`` and ``http_client`` are ``None`` when their constructor did not
-    finish; such a resource is skipped rather than touched.
+    ``bot``, ``http_client`` and ``wb_access`` are ``None`` when their
+    constructor did not finish; such a resource is skipped rather than touched.
     """
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+    if wb_access is not None:
+        steps.append(("close_wb_access", lambda: _close_wb_access(wb_access)))
     if bot is not None:
         steps.append(("close_bot_session", lambda: _close_bot_session(bot)))
     if http_client is not None:
@@ -406,10 +424,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     watch = _BackgroundDeathWatch()
     bot: Bot | None = None
     http_client: httpx.AsyncClient | None = None
+    wb_access: BrowserWbAccessProvider | None = None
     try:
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(settings.app.HTTP_TIMEOUT_SECONDS)
         )
+        # Lazy: no browser starts until the first WB price check needs a token.
+        wb_access = BrowserWbAccessProvider(
+            lambda: fetch_wb_token(sandbox=settings.wb.BROWSER_SANDBOX),
+            token_timeout_seconds=settings.wb.TOKEN_TIMEOUT_SECONDS,
+            failure_pause_seconds=settings.wb.FAILURE_PAUSE_SECONDS,
+            launch_budget=settings.wb.LAUNCH_BUDGET,
+            launch_window_seconds=settings.wb.LAUNCH_WINDOW_SECONDS,
+        )
+        client_factory = functools.partial(get_client, wb_access=wb_access)
         bot = create_bot(settings)
         setup_logging(redact=[bot.token.partition(":")[2]])
         await _ensure_telegram_available(bot)
@@ -419,13 +447,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             sessionmaker,
             http_client,
             settings.app.MAX_PRODUCTS_PER_USER,
+            client_factory,
         )
         price_service = PriceService(
             notification_service=NotificationService(bot),
             product_repo_factory=ProductRepository,
             alert_repo_factory=AlertRepository,
             user_repo_factory=UserRepository,
-            client_factory=get_client,
+            client_factory=client_factory,
             http_client=http_client,
             alert_cooldown_seconds=settings.app.ALERT_COOLDOWN_SECONDS,
         )
@@ -453,7 +482,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.scheduler_task = scheduler_task
     except BaseException:
         watch.stopping = True
-        await _cleanup_failed_startup(bot, http_client, storage)
+        await _cleanup_failed_startup(bot, http_client, storage, wb_access)
         raise
 
     try:
@@ -468,6 +497,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             bot,
             http_client,
             storage,
+            wb_access,
         )
 
 

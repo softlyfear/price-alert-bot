@@ -28,6 +28,8 @@ from app.bot import texts
 from app.bot.middlewares.db import DbSessionMiddleware
 from app.core.config import Settings
 from app.handlers import create_root_router
+from app.models.enums import Marketplace
+from app.services.base_client import BaseMarketplaceClient
 
 _INFLIGHT_KEY: Final[str] = "inflight_updates_tracker"
 
@@ -120,17 +122,20 @@ def create_dispatcher(
     session_factory: async_sessionmaker[AsyncSession],
     http_client: httpx.AsyncClient,
     max_products_per_user: int,
+    client_factory: Callable[[Marketplace, httpx.AsyncClient], BaseMarketplaceClient],
 ) -> Dispatcher:
     """Build the ``Dispatcher``: routers included, in-flight updates tracked.
 
-    ``http_client`` and ``max_products_per_user`` become workflow data (handlers
-    receive them by name); ``session_factory`` feeds ``DbSessionMiddleware``,
-    an inner update middleware that commits per update.
+    ``http_client``, ``max_products_per_user`` and ``client_factory`` become
+    workflow data (handlers and middlewares receive them by name);
+    ``session_factory`` feeds ``DbSessionMiddleware``, an inner update
+    middleware that commits per update.
     """
     dispatcher = Dispatcher(
         storage=storage,
         http_client=http_client,
         max_products_per_user=max_products_per_user,
+        client_factory=client_factory,
     )
     dispatcher.update.middleware(DbSessionMiddleware(session_factory))
     dispatcher.include_router(create_root_router())

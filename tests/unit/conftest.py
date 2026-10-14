@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.setup import create_dispatcher
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Message as LogMessage
@@ -169,6 +170,7 @@ def real_dispatcher() -> Dispatcher:
         async_sessionmaker(class_=AsyncSession),
         httpx.AsyncClient(),
         50,
+        stub_client_factory(),
     )
 
 

@@ -33,6 +33,7 @@ from app.core.config import Settings
 from app.domain.money import PRICE_DISCLAIMER_FULL
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from tests.unit.conftest import build_fake_bot
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -169,8 +170,10 @@ def test_create_dispatcher_can_be_called_more_than_once_per_process() -> None:
 
     factory = async_sessionmaker(class_=AsyncSession)
     client = httpx.AsyncClient()
-    create_dispatcher(MemoryStorage(), factory, client, 50)
-    create_dispatcher(MemoryStorage(), factory, client, 50)  # must not raise
+    client_factory = stub_client_factory()
+    create_dispatcher(MemoryStorage(), factory, client, 50, client_factory)
+    # must not raise
+    create_dispatcher(MemoryStorage(), factory, client, 50, client_factory)
 
 
 # --- InFlightUpdatesTracker / wait_for_inflight_updates ------------------
