@@ -106,6 +106,27 @@ class AppSettings(BaseModel):
     HTTP_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=60, allow_inf_nan=False)
 
 
+class WbSettings(BaseModel):
+    """Wildberries antibot token acquisition through a browser (PAB-079, Р12).
+
+    None of these values are secrets; the defaults are the measured numbers.
+    BROWSER_SANDBOX is off by default: on hosts that restrict unprivileged
+    user namespaces the Chromium sandbox does not start.
+    """
+
+    TOKEN_TIMEOUT_SECONDS: float = Field(
+        default=30.0, gt=0, le=120, allow_inf_nan=False
+    )
+    FAILURE_PAUSE_SECONDS: float = Field(
+        default=300.0, gt=0, le=3600, allow_inf_nan=False
+    )
+    LAUNCH_BUDGET: int = Field(default=8, ge=1, le=100)
+    LAUNCH_WINDOW_SECONDS: float = Field(
+        default=900.0, gt=0, le=86400, allow_inf_nan=False
+    )
+    BROWSER_SANDBOX: bool = False
+
+
 class Settings(BaseSettings):
     """All settings for import."""
 
@@ -113,6 +134,7 @@ class Settings(BaseSettings):
     tg: BotSecret
     redis: RedisSettings
     app: AppSettings = Field(default_factory=AppSettings)
+    wb: WbSettings = Field(default_factory=WbSettings)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

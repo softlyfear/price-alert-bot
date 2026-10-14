@@ -48,13 +48,13 @@ from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
-from app.services.client_factory import get_client
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
 from tests.unit.conftest import make_message_update
 from tests.unit.conftest import send_message_responder
 from tests.unit.conftest import sent_message_id
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Record
@@ -950,6 +950,7 @@ async def test_commit_failure_after_a_successful_confirm_adds_the_error_text(
         async_sessionmaker(class_=_CommitFails),
         httpx.AsyncClient(),
         50,
+        stub_client_factory(),
     )
     dialog = _Dialog(dispatcher, build_fake_bot(responder=send_message_responder()))
     await _at_confirming(dialog)
@@ -973,8 +974,13 @@ async def test_tracking_service_is_assembled_from_session_and_workflow_data(
     stub: _TrackingStub,
 ) -> None:
     http_client = httpx.AsyncClient()
+    factory = stub_client_factory()
     dispatcher = create_dispatcher(
-        MemoryStorage(), async_sessionmaker(class_=AsyncSession), http_client, 17
+        MemoryStorage(),
+        async_sessionmaker(class_=AsyncSession),
+        http_client,
+        17,
+        factory,
     )
     bot = build_fake_bot()
 
@@ -991,7 +997,8 @@ async def test_tracking_service_is_assembled_from_session_and_workflow_data(
         assert isinstance(kwargs["session"], AsyncSession)
         assert kwargs["http_client"] is http_client
         assert kwargs["max_products_per_user"] == 17
-        assert kwargs["client_factory"] is get_client
+        # PAB-079: the factory comes from the dispatcher data, not an import.
+        assert kwargs["client_factory"] is factory
     await http_client.aclose()
 
 

@@ -27,6 +27,7 @@ from app.schemas.marketplace import MarketplaceFetchFailure
 from app.services.base_client import BaseMarketplaceClient
 from app.services.ozon_client import OzonClient
 from app.services.wb_client import WbClient
+from tests.unit.wb_access_stub import StubWbAccess
 
 _Handler = Callable[[httpx.Request], httpx.Response]
 _ClientClass = type[WbClient] | type[OzonClient]
@@ -93,8 +94,11 @@ _CASES = [
     _Case("deadline", _stalled_body, R.transport_error, R.transport_error, True),
     _Case("body-over-threshold", _oversized_body, R.bad_payload, R.bad_payload),
     _Case("non-json-200", _not_json, R.bad_payload, R.bad_payload),
-    # The one explicit divergence: see the module docstring.
+    # Explicit divergences: see the module docstring. `498` is WB's spent
+    # anti-bot token (PAB-079): the WB client repeats once, then `blocked`;
+    # Ozon has no such status, so it falls into its unlisted-4xx bucket.
     _Case("redirect-loop", _redirect_loop, R.transport_error, R.blocked),
+    _Case("498-always", _status(498), R.blocked, R.transport_error),
 ]
 
 
@@ -112,14 +116,22 @@ async def test_same_trigger_gives_the_expected_category(
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(case.make_handler(client_class))
     ) as http:
-        client: BaseMarketplaceClient = client_class(http)
+        client: BaseMarketplaceClient = (
+            WbClient(http, StubWbAccess())
+            if client_class is WbClient
+            else OzonClient(http)
+        )
         result = await asyncio.wait_for(client.get_product_data(article), timeout=10)
 
     assert isinstance(result, MarketplaceFetchFailure)
     assert result.reason is expected
 
 
-def test_only_the_redirect_loop_diverges_between_clients() -> None:
-    """Guard of the matrix itself: a second divergence must be a conscious,
-    reviewed edit of this test, not a quiet column change."""
-    assert [c.id for c in _CASES if c.wb is not c.ozon] == ["redirect-loop"]
+def test_only_the_named_cells_diverge_between_clients() -> None:
+    """Guard of the matrix itself: a further divergence must be a conscious,
+    reviewed edit of this test, not a quiet column change. PAB-079 added
+    `498-always` (a WB-only anti-bot status)."""
+    assert [c.id for c in _CASES if c.wb is not c.ozon] == [
+        "redirect-loop",
+        "498-always",
+    ]

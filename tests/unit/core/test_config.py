@@ -1,5 +1,8 @@
 """Tests for app.core.config.
 
+PAB-079 added ``WbSettings`` (``WB__*``): defaults, boundaries and the
+whole-prefix environment clearing are covered at the end of this file.
+
 Pairs with PAB-004 (RedisSettings, AppSettings), PAB-052 (SecretStr fields,
 hide_input_in_errors) and, for DatabaseSettings.DATABASE_URL, code that has
 existed unchanged and uncovered since the start of the project.
@@ -57,6 +60,7 @@ neutralises the same dotenv source through ``Settings.model_config`` for
 the duration of the test.
 """
 
+from pathlib import Path
 from urllib.parse import unquote
 from urllib.parse import urlsplit
 
@@ -71,6 +75,7 @@ from app.core.config import BotSecret
 from app.core.config import DatabaseSettings
 from app.core.config import RedisSettings
 from app.core.config import Settings
+from app.core.config import WbSettings
 from app.core.config import get_settings
 
 # A password containing every special character named by the ticket
@@ -573,6 +578,7 @@ _SETTINGS_PREFIX_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("TG__", BotSecret),
     ("REDIS__", RedisSettings),
     ("APP__", AppSettings),
+    ("WB__", WbSettings),
 )
 
 
@@ -745,3 +751,185 @@ def test_settings_builds_from_explicit_values_across_all_sections() -> None:
     assert settings.app.MAX_PRODUCTS_PER_USER == 33
     assert settings.app.MARKETPLACE_CONCURRENCY == 4
     assert settings.app.HTTP_TIMEOUT_SECONDS == 12.5
+
+
+# --- PAB-079: WbSettings (WB__*) ----------------------------------------------
+
+
+def test_wb_settings_defaults_are_the_measured_numbers() -> None:
+    """Literals of `PROJECT.md` section 2.12 Р12, not read from the model."""
+    wb = WbSettings()
+
+    assert wb.TOKEN_TIMEOUT_SECONDS == 30.0
+    assert wb.FAILURE_PAUSE_SECONDS == 300.0
+    assert wb.LAUNCH_BUDGET == 8
+    assert wb.LAUNCH_WINDOW_SECONDS == 900.0
+    assert wb.BROWSER_SANDBOX is False
+
+
+_WB_FLOAT_BOUNDS = [
+    ("TOKEN_TIMEOUT_SECONDS", 120),
+    ("FAILURE_PAUSE_SECONDS", 3600),
+    ("LAUNCH_WINDOW_SECONDS", 86400),
+]
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+def test_wb_float_field_accepts_smallest_positive_and_upper_bound(
+    field: str, upper: int
+) -> None:
+    assert getattr(WbSettings.model_validate({field: 0.001}), field) == 0.001
+    assert getattr(WbSettings.model_validate({field: upper}), field) == float(upper)
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+@pytest.mark.parametrize(
+    ("bad_offset", "error_type"),
+    [(None, "greater_than"), (1, "less_than_equal")],
+    ids=["zero", "above-upper"],
+)
+def test_wb_float_field_rejects_zero_and_above_the_upper_bound(
+    field: str, upper: int, bad_offset: int | None, error_type: str
+) -> None:
+    value = 0 if bad_offset is None else upper + bad_offset
+
+    with pytest.raises(ValidationError) as excinfo:
+        WbSettings.model_validate({field: value})
+
+    assert [(e["type"], e["loc"]) for e in excinfo.value.errors()] == [
+        (error_type, (field,))
+    ]
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+def test_wb_float_field_rejects_negative_value(field: str, upper: int) -> None:
+    with pytest.raises(ValidationError):
+        WbSettings.model_validate({field: -1})
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+@pytest.mark.parametrize(
+    "value",
+    [float("inf"), float("-inf"), float("nan"), "inf", "nan", "1e400"],
+    ids=["inf", "-inf", "nan", "str-inf", "str-nan", "str-1e400"],
+)
+def test_wb_float_field_rejects_non_finite_values(
+    field: str, upper: int, value: float | str
+) -> None:
+    """Agreement 12: ``gt``/``le`` alone do not reject infinity; ``'1e400'``
+    overflows to ``inf`` inside ``float()``."""
+    with pytest.raises(ValidationError) as excinfo:
+        WbSettings.model_validate({field: value})
+
+    assert [e["type"] for e in excinfo.value.errors()] == ["finite_number"]
+
+
+@pytest.mark.parametrize(
+    ("value", "accepted"),
+    [(-1, False), (0, False), (1, True), (8, True), (100, True), (101, False)],
+)
+def test_wb_launch_budget_boundaries(value: int, accepted: bool) -> None:
+    if accepted:
+        assert value == WbSettings(LAUNCH_BUDGET=value).LAUNCH_BUDGET
+        return
+    with pytest.raises(ValidationError) as excinfo:
+        WbSettings(LAUNCH_BUDGET=value)
+    assert [e["loc"] for e in excinfo.value.errors()] == [("LAUNCH_BUDGET",)]
+
+
+def test_wb_launch_budget_rejects_a_fractional_value() -> None:
+    with pytest.raises(ValidationError):
+        WbSettings(LAUNCH_BUDGET=1.5)  # type: ignore[arg-type]
+
+
+def test_settings_without_wb_variables_uses_wb_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``WB__*`` anywhere: the section still exists with its defaults, so
+    the bot starts with an old `.env`."""
+    _delenv_settings_prefix_space(monkeypatch)
+
+    settings = Settings(
+        _env_file=None,
+        db=_make_db_settings(),
+        tg=_make_bot_secret(),
+        redis=_make_redis_settings(host="h"),
+    )
+
+    assert settings.wb == WbSettings()
+    assert settings.wb.LAUNCH_BUDGET == 8
+
+
+def test_wb_environment_variables_override_one_field_and_keep_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``WB__LAUNCH_BUDGET=3`` (not the default 8) reaches the model through
+    the real environment path; the other four stay at their defaults."""
+    _delenv_settings_prefix_space(monkeypatch)
+    monkeypatch.setenv("WB__LAUNCH_BUDGET", "3")
+    monkeypatch.setenv("WB__BROWSER_SANDBOX", "true")
+
+    settings = Settings(
+        _env_file=None,
+        db=_make_db_settings(),
+        tg=_make_bot_secret(),
+        redis=_make_redis_settings(host="h"),
+    )
+
+    assert settings.wb.LAUNCH_BUDGET == 3
+    assert settings.wb.BROWSER_SANDBOX is True
+    assert settings.wb.TOKEN_TIMEOUT_SECONDS == 30.0
+    assert settings.wb.FAILURE_PAUSE_SECONDS == 300.0
+    assert settings.wb.LAUNCH_WINDOW_SECONDS == 900.0
+
+
+def test_wb_environment_value_out_of_bounds_fails_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _delenv_settings_prefix_space(monkeypatch)
+    monkeypatch.setenv("WB__TOKEN_TIMEOUT_SECONDS", "1e400")
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(
+            _env_file=None,
+            db=_make_db_settings(),
+            tg=_make_bot_secret(),
+            redis=_make_redis_settings(host="h"),
+        )
+
+    assert [e["loc"] for e in excinfo.value.errors()] == [
+        ("wb", "TOKEN_TIMEOUT_SECONDS")
+    ]
+
+
+def test_environment_clearing_covers_the_wb_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agreement 19: a stray shell ``WB__LAUNCH_BUDGET=999`` (out of bounds)
+    must not break ``get_settings()`` tests - the helper clears it. Without
+    ``WB__`` in the cleared prefix space the build below raises."""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("WB__LAUNCH_BUDGET", "999")
+    _set_env_for_get_settings(monkeypatch)
+
+    settings = get_settings.__wrapped__()
+
+    assert settings.wb.LAUNCH_BUDGET == 8
+
+
+def test_env_example_lists_every_wb_variable_with_its_default() -> None:
+    """AC9: `.env.example` names all five ``WB__*`` variables, and each
+    example value parses to the model's default (the file documents the
+    default, not an invented tuning)."""
+    example = (Path(__file__).resolve().parents[3] / ".env.example").read_text()
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1].strip()
+        for line in example.splitlines()
+        if line.startswith("WB__")
+    }
+
+    assert sorted(values) == sorted(f"WB__{name}" for name in WbSettings.model_fields)
+    parsed = WbSettings.model_validate(
+        {k.removeprefix("WB__"): v for k, v in values.items()}
+    )
+    assert parsed == WbSettings()

@@ -1,4 +1,4 @@
-.PHONY: help install update run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks
+.PHONY: help install update install-browser run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks
 
 RED    := \033[0;31m
 GREEN  := \033[0;32m
@@ -14,6 +14,7 @@ help:
 	@echo "$(GREEN)Dev:$(NC)"
 	@echo "  install        — Install/sync dependencies (uv)"
 	@echo "  update         — Update all dependencies"
+	@echo "  install-browser — Install Chromium for Playwright (version of the locked package)"
 	@echo "  run            — Run dev server with auto-reload"
 	@echo ""
 	@echo "$(GREEN)Quality:$(NC)"
@@ -54,6 +55,12 @@ update:
 	@echo "$(YELLOW)==> Updating dependencies...$(NC)"
 	uv lock --upgrade
 	uv sync
+
+# Full Chromium (not the headless shell): measured as the only variant WB accepts.
+# System libraries (--with-deps) are the image's concern (PAB-080), not this target.
+install-browser:
+	@echo "$(GREEN)==> Installing Chromium for Playwright...$(NC)"
+	uv run playwright install --no-shell chromium
 
 run:
 	@if [ -d "alembic" ] || [ -f "alembic.ini" ]; then \

@@ -37,6 +37,7 @@ from app.bot.setup import create_dispatcher
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_message_update
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Record
@@ -79,6 +80,7 @@ def _dispatcher() -> Dispatcher:
         async_sessionmaker(class_=AsyncSession),
         httpx.AsyncClient(),
         50,
+        stub_client_factory(),
     )
     dispatcher.include_router(_failing_router())
     return dispatcher
@@ -173,6 +175,7 @@ async def test_commit_failure_after_a_successful_handler_reaches_the_error_handl
         async_sessionmaker(class_=_CommitFails),
         httpx.AsyncClient(),
         50,
+        stub_client_factory(),
     )
     bot = build_fake_bot()
 

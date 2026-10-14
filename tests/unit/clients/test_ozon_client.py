@@ -39,6 +39,7 @@ from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.ozon_client import OzonClient
 from app.services.wb_client import WbClient
+from tests.unit.wb_access_stub import StubWbAccess
 
 _ARTICLE = 3593896354
 _NAME = "Лонгслив тельняшка длинный рукав 1 шт"
@@ -692,7 +693,7 @@ async def test_redirect_cookie_reaches_next_step_but_not_other_hosts() -> None:
 
     async with _client_with(handler) as client:
         ozon_result = await OzonClient(client).get_product_data(_ARTICLE)
-        wb_result = await WbClient(client).get_product_data(860043555)
+        wb_result = await WbClient(client, StubWbAccess()).get_product_data(860043555)
 
     assert ozon_result == _failure(FetchFailureReason.blocked, "HTTP 403")
     ozon_requests = requests[:2]
@@ -701,7 +702,11 @@ async def test_redirect_cookie_reaches_next_step_but_not_other_hosts() -> None:
     assert cookie in ozon_requests[1].headers["cookie"]  # positive control
     assert requests[2].url.host != "www.ozon.ru"
     assert isinstance(wb_result, MarketplaceFetchFailure)
-    assert "cookie" not in requests[2].headers
+    # PAB-079: the WB request now carries its own `x_wbaas_token` header, so
+    # the old "no cookie at all" check became "no Ozon cookie in it", with the
+    # WB pair as the positive control that the header is looked at.
+    assert requests[2].headers["cookie"] == "x_wbaas_token=TOKEN-MARKER-1"
+    assert cookie not in requests[2].headers["cookie"]
 
 
 @pytest.mark.asyncio

@@ -40,8 +40,8 @@ from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import UnsupportedMarketplaceError
-from app.services.client_factory import get_client
 from app.services.tracking import TrackingService
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -341,7 +341,7 @@ async def test_preview_ozon_with_real_factory_antibot_403_is_blocked_warning(
     service = TrackingService(
         session=cast(AsyncSession, harness.session),
         http_client=real_http,
-        client_factory=get_client,
+        client_factory=stub_client_factory(),
         max_products_per_user=_LIMIT,
     )
     records: list[Record] = []
