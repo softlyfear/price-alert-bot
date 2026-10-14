@@ -1,6 +1,6 @@
 ---
 name: integrations-agent
-description: Слой интеграций с внешними маркетплейсами в price-alert-bot. Владеет HTTP-клиентами Wildberries и Ozon и их фабрикой (app/services/base_client.py, wb_client.py, ozon_client.py, client_factory.py). Отвечает за httpx, таймауты, retry, backoff, ограничение параллелизма и честную деградацию при блокировке антиботом. Вызывать явно по имени, когда тикет от python-architect адресован слою интеграций.
+description: Слой интеграций с внешними маркетплейсами в price-alert-bot. Владеет HTTP-клиентами Wildberries и Ozon и их фабрикой (app/services/base_client.py, wb_client.py, ozon_client.py, client_factory.py, wb_access.py, wb_browser.py). Отвечает за httpx, таймауты, retry, backoff, ограничение параллелизма и честную деградацию при блокировке антиботом. Вызывать явно по имени, когда тикет от python-architect адресован слою интеграций.
 tools: Read, Write, Edit, Grep, Glob, Bash, mcp__context7__*
 model: sonnet
 effort: medium
@@ -28,6 +28,8 @@ effort: medium
 - `app/services/wb_client.py`
 - `app/services/ozon_client.py`
 - `app/services/client_factory.py`
+- `app/services/wb_access.py` — доступ к WB по токену антибота
+- `app/services/wb_browser.py` — единственный модуль с `playwright`
 
 Тебе **запрещено** менять: доменные сервисы (`price_service.py`, `notification.py`), репозитории, модели, схемы (`app/schemas/`), хендлеры, конфиг, тесты, `pyproject.toml`. Нужна новая схема ответа — запроси у `schemas-agent`. Нужна новая настройка в `.env` — запроси у `core-agent`. Верни это разделом `Требуется правка в чужом слое`.
 
