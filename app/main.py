@@ -8,7 +8,8 @@ polling task -- is created inside ``lifespan`` and torn down there too, so
 
 A background task (polling, scheduler) dying before shutdown starts makes the
 process send itself SIGTERM, so it exits through the normal ``_shutdown`` and
-the restart policy of the stack revives it.
+the restart policy of the stack revives it. Telegram is checked with one
+``getMe`` before any task starts, so a failed check ends the startup instead.
 """
 
 import asyncio
@@ -155,6 +156,41 @@ async def _ensure_redis_available(storage: RedisStorage) -> None:
     except Exception as exc:
         await storage.close()
         raise RuntimeError("Redis is not reachable") from exc
+
+
+async def _ensure_telegram_available(bot: Bot) -> None:
+    """Fail fast if Telegram does not answer ``getMe`` (PROJECT.md §8.3).
+
+    Runs before the bot profile and before any background task, so a cycle of
+    restarts against an unreachable Telegram or a rejected token starts no
+    scheduler pass. ``Bot.me()`` caches its answer, so polling does not repeat
+    ``getMe``. Any ``Exception`` is logged in exactly one ``ERROR`` record and
+    replaced by ``RuntimeError`` naming only the class, raised ``from None``;
+    the cleanup of the failed startup stays in ``lifespan``.
+
+    The text of the original exception is external data: for a broken HTTP
+    answer it embeds the request URL ``.../bot<token>/getMe``. So the exception
+    object never reaches the record (neither the message nor ``extra``), its
+    text enters the record once with the secret part of ``bot.token`` (all
+    after the first ``:``) cut out, and the text is passed as a pre-built
+    message without format arguments, so braces in it are not interpreted. The
+    raised error carries neither text nor ``__cause__``, so the uvicorn
+    traceback does not print the original either.
+    """
+    try:
+        await bot.me()
+    except Exception as exc:
+        error_type = type(exc).__name__
+        text = str(exc)
+        secret = bot.token.partition(":")[2]
+        if secret:
+            text = text.replace(secret, "***")
+        logger.bind(error_type=error_type).error(
+            "Telegram is not available at startup: " + text
+        )
+        raise RuntimeError(
+            f"Telegram is not available at startup: {error_type}"
+        ) from None
 
 
 async def _stop_polling_if_running(
@@ -335,15 +371,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     ``get_engine()`` call (validates ``DB__*`` without opening a connection)
     -> FSM storage plus a live Redis check -> the shared ``httpx.AsyncClient``
     (one per process, timeout from ``APP__HTTP_TIMEOUT_SECONDS``) -> ``Bot``
-    and dispatcher -> services -> profile -> polling task -> scheduler task
-    (PROJECT.md §8.3, Р6 (а)/(б); PAB-069, Р1).
+    -> one ``getMe`` check of Telegram -> dispatcher -> services -> profile ->
+    polling task -> scheduler task (PROJECT.md §8.3, Р6 (а)/(б); PAB-069, Р1;
+    PAB-082).
 
     A failure after the Redis check (e.g. ``create_bot`` raising
-    ``TokenValidationError``) releases whatever was created -- bot session,
-    HTTP client, storage, engine -- in isolated steps before re-raising
-    unchanged. The ping-failure branch inside ``_ensure_redis_available``
-    already closes the storage itself, so that path is left out of this
-    cleanup to avoid closing it twice.
+    ``TokenValidationError``, or ``getMe`` failing: it is logged once as
+    ``ERROR`` with the token secret cut out and replaced by a
+    ``RuntimeError`` without a cause; no profile request or background task
+    ever starts) releases whatever was created -- bot session, HTTP client,
+    storage, engine -- in isolated steps before re-raising unchanged. The ping-failure
+    branch inside ``_ensure_redis_available`` already closes the storage
+    itself, so that path is left out of this cleanup to avoid closing it
+    twice.
 
     A background task (polling, scheduler) finishing for any reason before
     shutdown begins makes ``_BackgroundDeathWatch`` log one ``CRITICAL`` record
@@ -366,6 +406,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             timeout=httpx.Timeout(settings.app.HTTP_TIMEOUT_SECONDS)
         )
         bot = create_bot(settings)
+        await _ensure_telegram_available(bot)
         sessionmaker = get_sessionmaker()
         dispatcher = create_dispatcher(
             storage,

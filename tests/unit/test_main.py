@@ -31,29 +31,40 @@ import os
 import signal
 import subprocess
 import sys
+import traceback
 from collections.abc import AsyncIterator
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import NamedTuple
 from typing import cast
 
+import aiohttp
 import httpx
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
 from aiogram import Router
+from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.methods import GetMe
+from aiogram.methods import GetUpdates
 from aiogram.methods import SetMyCommands
 from aiogram.methods import SetMyDescription
 from aiogram.methods import SetMyShortDescription
 from aiogram.methods import TelegramMethod
 from aiogram.types import Message as TgMessage
 from aiogram.types import Update
+from multidict import CIMultiDict
+from multidict import CIMultiDictProxy
 from pydantic import SecretStr
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from yarl import URL
 
 from app import main
 from app.bot.setup import _INFLIGHT_KEY
@@ -65,11 +76,13 @@ from app.core.config import BotSecret
 from app.core.config import DatabaseSettings
 from app.core.config import RedisSettings
 from app.core.config import Settings
+from app.core.logging import setup_logging
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
 from app.services.client_factory import get_client
 from app.services.notification import NotificationService
+from tests.unit.conftest import FAKE_BOT_USER
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_command_update
 
@@ -473,10 +486,10 @@ async def test_startup_against_a_401_bot_session_does_not_leak_the_token_to_stde
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """AC4(c): every Bot API call (profile config, then the real polling
-    loop's own ``GetMe``) fails with 401. ``preset_me=False`` is required
-    for the ``GetMe`` failure to actually happen through the session --
-    the default ``preset_me=True`` would skip it entirely.
+    """AC4(c) / PAB-082 AC4: every Bot API call fails with 401, so startup now
+    fails at the ``getMe`` check (the failed-startup path), not later in the
+    polling loop. ``preset_me=False`` is required for ``getMe`` to actually go
+    through the session -- the default ``preset_me=True`` would skip it.
 
     Checked on two independent channels (AC4(c) names both): ``loguru``'s
     own handler via ``capsys`` (``setup_logging()`` writes to ``stderr``)
@@ -486,13 +499,12 @@ async def test_startup_against_a_401_bot_session_does_not_leak_the_token_to_stde
     ``logging.getLogger(...).error(...)`` instead of ``loguru`` stays
     invisible to ``capsys`` alone. Mutation target: adding
     ``logging.getLogger("aiogram").error("t=%s", token)`` anywhere on this
-    path. The positive control at the end proves ``caplog`` genuinely
-    captures that channel in this environment, so the negative assertion
-    on it is not vacuous (convention 22).
+    path. The positive controls prove each channel genuinely captures what
+    it should in this environment, so the negative assertions are not
+    vacuous (convention 22): the startup ERROR record reaches ``stderr``,
+    and a canary record reaches ``caplog``.
     """
     import logging
-
-    from aiogram.exceptions import TelegramUnauthorizedError
 
     token_marker = "1:unauthorized-token-marker"
     redis_password_marker = "redis-pw-marker-401-test"
@@ -511,15 +523,19 @@ async def test_startup_against_a_401_bot_session_does_not_leak_the_token_to_stde
 
     assert bot.token == token_marker  # positive control
 
-    with caplog.at_level(logging.DEBUG):
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RuntimeError, match=_STARTUP_FAILURE_PREFIX),
+    ):
         async with main.lifespan(main.app):
-            with pytest.raises(TelegramUnauthorizedError):
-                await main.app.state.polling_task
+            pytest.fail("lifespan must not yield when getMe is rejected")
 
-            # Positive control: requests really went out against the fake session.
-            assert len(bot.session.requests) > 0  # type: ignore[attr-defined]
+    # Positive control: the request really went out against the fake session.
+    assert len(bot.session.requests) > 0  # type: ignore[attr-defined]
 
     err = capsys.readouterr().err
+    # Positive control of the loguru channel: the startup ERROR is on stderr.
+    assert "Telegram is not available at startup" in err
     assert token_marker not in err
     assert redis_password_marker not in err
     assert token_marker not in caplog.text
@@ -2408,3 +2424,372 @@ async def test_real_termination_seam_delivers_exactly_one_sigterm_to_this_proces
     finally:
         signal.signal(signal.SIGTERM, previous)
     assert signal.getsignal(signal.SIGTERM) is previous
+
+
+# --- PAB-082: Telegram is checked once before any background task ----------
+
+_TELEGRAM_FAILURES: list[Callable[[], Exception]] = [
+    lambda: TelegramUnauthorizedError(method=GetMe(), message="Unauthorized"),
+    lambda: TelegramNetworkError(method=GetMe(), message="connection refused"),
+    lambda: TimeoutError("getMe timed out"),
+]
+_TELEGRAM_FAILURE_IDS = ["unauthorized", "network", "timeout"]
+
+
+_STARTUP_FAILURE_PREFIX = "^Telegram is not available at startup: "
+
+
+class _FailedTelegramStartup(NamedTuple):
+    raised: RuntimeError
+    injected: Exception
+    records: list[Record]
+    bot: Bot
+    redis: _FakeRedisClient
+    http_clients: list[httpx.AsyncClient]
+    dispose_calls: list[None]
+    polling_calls: list[None]
+    scheduler_calls: list[tuple[tuple[Any, ...], dict[str, Any]]]
+    dispatcher_calls: list[tuple[Any, ...]]
+
+
+async def _fail_startup_at_get_me(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    spy: _TerminationSpy,
+    failure: Callable[[], Exception],
+    token: str = "1:test-token",
+) -> _FailedTelegramStartup:
+    """Run the real ``lifespan`` against a bot whose ``getMe`` raises.
+
+    ``setup_logging`` is replaced by a no-op: the real one removes every loguru
+    handler, including the ERROR sink that must already exist when startup
+    fails (the record is written before ``lifespan`` ever yields).
+    """
+    from loguru import logger
+
+    injected = failure()
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, GetMe):
+            raise injected
+        return True
+
+    polling_calls: list[None] = []
+    scheduler_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    dispatcher_calls: list[tuple[Any, ...]] = []
+    redis = _FakeRedisClient()
+    dispose_calls: list[None] = []
+
+    async def start_polling(*args: Any, **kwargs: Any) -> None:
+        polling_calls.append(None)
+
+    async def fake_dispose_engine() -> None:
+        dispose_calls.append(None)
+
+    bot = build_fake_bot(token=token, responder=responder, preset_me=False)
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=bot,
+        start_polling=start_polling,
+        redis_client=redis,
+        dispatcher_calls=dispatcher_calls,
+        loop_calls=scheduler_calls,
+    )
+    monkeypatch.setattr(main, "dispose_engine", fake_dispose_engine)
+    monkeypatch.setattr(main, "setup_logging", lambda: None)
+    for name in ("polling_task", "scheduler_task"):
+        with contextlib.suppress(AttributeError, KeyError):
+            delattr(main.app.state, name)
+
+    records, sink_id = _capture_records("ERROR")
+    spy.records = records
+    try:
+        # Only the expected class: ``pytest.fail`` (a ``BaseException``
+        # descendant) must propagate instead of being swallowed here.
+        with pytest.raises(RuntimeError, match=_STARTUP_FAILURE_PREFIX) as exc_info:
+            async with main.lifespan(main.app):
+                pytest.fail("lifespan must not yield when getMe fails")
+    finally:
+        logger.remove(sink_id)
+    # Let any (wrongly) created task run its first step before the caller looks.
+    await asyncio.sleep(0)
+    return _FailedTelegramStartup(
+        exc_info.value,
+        injected,
+        records,
+        bot,
+        redis,
+        created_http_clients,
+        dispose_calls,
+        polling_calls,
+        scheduler_calls,
+        dispatcher_calls,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", _TELEGRAM_FAILURES, ids=_TELEGRAM_FAILURE_IDS)
+async def test_get_me_failure_reaches_the_caller_as_a_class_only_error_without_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+    failure: Callable[[], Exception],
+) -> None:
+    result = await _fail_startup_at_get_me(
+        monkeypatch, created_http_clients, termination_spy, failure
+    )
+
+    name = type(result.injected).__name__
+    assert type(result.raised) is RuntimeError
+    assert str(result.raised) == f"Telegram is not available at startup: {name}"
+    assert result.raised.__cause__ is None
+    assert result.raised.__suppress_context__ is True
+    # Positive control: the failure really came from the session.
+    assert result.raised.__context__ is result.injected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", _TELEGRAM_FAILURES, ids=_TELEGRAM_FAILURE_IDS)
+async def test_get_me_failure_starts_no_task_no_dispatcher_and_no_profile_request(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+    failure: Callable[[], Exception],
+) -> None:
+    result = await _fail_startup_at_get_me(
+        monkeypatch, created_http_clients, termination_spy, failure
+    )
+
+    # The only request ever sent is the check itself (positive control: the
+    # failure really came from the session), so no profile call followed it.
+    assert [type(m) for m in result.bot.session.requests] == [GetMe]  # type: ignore[attr-defined]
+    assert result.polling_calls == []
+    assert result.scheduler_calls == []
+    assert result.dispatcher_calls == []
+    assert not hasattr(main.app.state, "polling_task")
+    assert not hasattr(main.app.state, "scheduler_task")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", _TELEGRAM_FAILURES, ids=_TELEGRAM_FAILURE_IDS)
+async def test_get_me_failure_releases_bot_session_http_client_storage_and_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+    failure: Callable[[], Exception],
+) -> None:
+    result = await _fail_startup_at_get_me(
+        monkeypatch, created_http_clients, termination_spy, failure
+    )
+
+    assert result.bot.session.closed is True  # type: ignore[attr-defined]
+    assert len(result.http_clients) == 1
+    assert result.http_clients[0].is_closed is True
+    assert result.redis.aclose_calls == 1
+    assert len(result.dispose_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", _TELEGRAM_FAILURES, ids=_TELEGRAM_FAILURE_IDS)
+async def test_get_me_failure_requests_no_termination_and_logs_no_critical(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+    failure: Callable[[], Exception],
+) -> None:
+    result = await _fail_startup_at_get_me(
+        monkeypatch, created_http_clients, termination_spy, failure
+    )
+
+    assert termination_spy.calls == 0
+    assert _count_level(result.records, "CRITICAL") == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", _TELEGRAM_FAILURES, ids=_TELEGRAM_FAILURE_IDS)
+async def test_get_me_failure_logs_one_error_with_text_once_and_no_exception_object(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+    failure: Callable[[], Exception],
+) -> None:
+    result = await _fail_startup_at_get_me(
+        monkeypatch, created_http_clients, termination_spy, failure
+    )
+
+    errors = _of_level(result.records, "ERROR")
+    assert len(errors) == 1
+    assert errors[0]["extra"]["error_type"] == type(result.injected).__name__
+    assert "Telegram is not available at startup" in errors[0]["message"]
+    # Nothing else of ERROR or higher: cleanup steps all succeeded.
+    assert len(result.records) == 1
+    extra = errors[0]["extra"]
+    assert not [v for v in extra.values() if isinstance(v, BaseException)]
+    # What the sink format prints is ``{message}`` plus ``{extra}``.
+    printed = errors[0]["message"] + str(extra)
+    assert printed.count(str(result.injected)) == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_start_sends_get_me_first_and_exactly_once_with_real_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC3: with the REAL ``Dispatcher.start_polling`` and ``preset_me=False``
+    the whole startup issues one ``GetMe``: the check in ``lifespan``; polling
+    reuses the answer cached by ``Bot.me()`` instead of asking again.
+    """
+    got_updates = asyncio.Event()
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, GetMe):
+            return FAKE_BOT_USER
+        if isinstance(method, GetUpdates):
+            got_updates.set()
+            # Yield so the real polling loop does not starve the event loop.
+            await asyncio.sleep(0)
+            return []
+        return True
+
+    bot = build_fake_bot(responder=responder, preset_me=False)
+    _patch_orchestration_factories(monkeypatch, bot=bot)
+
+    async with main.lifespan(main.app):
+        await asyncio.wait_for(got_updates.wait(), timeout=5)
+
+    types = [type(m) for m in bot.session.requests]  # type: ignore[attr-defined]
+    assert types[0] is GetMe
+    assert types.count(GetMe) == 1
+    # Positive controls: the profile and the real polling loop did run.
+    assert SetMyCommands in types
+    assert GetUpdates in types
+
+
+@pytest.mark.asyncio
+async def test_get_me_failure_text_with_braces_is_logged_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+) -> None:
+    """Braces in external text must not be read as format fields."""
+    result = await _fail_startup_at_get_me(
+        monkeypatch,
+        created_http_clients,
+        termination_spy,
+        lambda: TimeoutError("bad {x} {0} {}"),
+    )
+
+    errors = _of_level(result.records, "ERROR")
+    assert len(errors) == 1
+    assert (
+        errors[0]["message"] == "Telegram is not available at startup: bad {x} {0} {}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_me_failure_with_empty_token_secret_keeps_the_text_intact() -> None:
+    """An empty secret part must skip the cut: ``str.replace("", ...)`` would
+    insert the mask between every character of the text.
+    """
+    from loguru import logger
+
+    async def me() -> None:
+        raise TimeoutError("connection refused")
+
+    stub = cast(Bot, SimpleNamespace(token="12345:", me=me))
+    records, sink_id = _capture_records("ERROR")
+    try:
+        with pytest.raises(RuntimeError, match=_STARTUP_FAILURE_PREFIX):
+            await main._ensure_telegram_available(stub)
+    finally:
+        logger.remove(sink_id)
+
+    assert [r["message"] for r in records] == [
+        "Telegram is not available at startup: connection refused"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_broken_http_answer_leaks_no_token_secret_through_any_channel(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    created_http_clients: list[httpx.AsyncClient],
+    termination_spy: _TerminationSpy,
+) -> None:
+    """AC4 (b). A broken HTTP answer makes ``aiogram`` raise
+    ``TelegramNetworkError`` from a real ``aiohttp.ClientResponseError`` whose
+    ``request_info.real_url`` is ``.../bot<token>/getMe``. The secret part of
+    the token must reach neither the log nor the traceback uvicorn prints.
+    """
+    import logging
+
+    from loguru import logger
+
+    marker = "secret-part-marker-pab082"
+    token = f"7:{marker}"
+    url = URL(f"https://api.telegram.org/bot{token}/getMe")
+    cause = aiohttp.ClientResponseError(
+        aiohttp.RequestInfo(
+            url=url,
+            method="POST",
+            headers=CIMultiDictProxy(CIMultiDict()),
+            real_url=url,
+        ),
+        (),
+        status=200,
+        message="Attempt to decode JSON with unexpected mimetype",
+    )
+    injected = TelegramNetworkError(
+        method=GetMe(), message=f"{type(cause).__name__}: {cause}"
+    )
+    injected.__cause__ = cause
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        raise injected
+
+    bot = build_fake_bot(token=token, responder=responder, preset_me=False)
+    _patch_orchestration_factories(
+        monkeypatch, bot=bot, settings=_make_orchestration_settings(bot_token=token)
+    )
+
+    # The real ``setup_logging`` runs inside ``lifespan`` and drops every
+    # handler, so the capturing sink is added right after it.
+    real_setup = setup_logging
+    captured: list[list[Record]] = []
+    sink_ids: list[int] = []
+
+    def setup_then_capture() -> None:
+        real_setup()
+        records, sink_id = _capture_records("DEBUG")
+        captured.append(records)
+        sink_ids.append(sink_id)
+
+    monkeypatch.setattr(main, "setup_logging", setup_then_capture)
+
+    try:
+        with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError) as exc_info:
+            async with main.lifespan(main.app):
+                pytest.fail("lifespan must not yield when getMe fails")
+    finally:
+        for sink_id in sink_ids:
+            logger.remove(sink_id)
+    raised = exc_info.value
+    logged = captured[0]
+
+    # Positive controls: the marker is really present in what was injected, the
+    # record reached stderr, and only the secret was cut from the text.
+    assert marker in "".join(traceback.format_exception(injected))
+    err = capsys.readouterr().err
+    assert "Telegram is not available at startup" in err
+    assert "ClientResponseError" in err
+    errors = _of_level(logged, "ERROR")
+    assert len(errors) == 1
+    assert "ClientResponseError" in errors[0]["message"]
+    assert "***" in errors[0]["message"]
+
+    assert marker not in err
+    assert marker not in caplog.text
+    for record in logged:
+        assert marker not in str(record["extra"])
+        assert all(marker not in str(v) for v in record["extra"].values())
+    assert marker not in "".join(traceback.format_exception(raised))
