@@ -23,6 +23,7 @@ Telegram-бот отслеживания цен на товары Wildberries и
 | БД | PostgreSQL + `SQLAlchemy` 2.0 async + `asyncpg` | |
 | Миграции | `alembic` | |
 | HTTP | `httpx` | общий `AsyncClient` на процесс |
+| Браузер | `playwright` (Chromium) | только получение токена антибота Wildberries |
 | Логи | `loguru` | контекст через `logger.bind()` |
 | Планировщик | собственный asyncio-цикл | интервал из `.env`, по умолчанию 15 минут |
 | Тесты | `pytest` + `pytest-asyncio` | unit на моках, интеграционные на реальном PostgreSQL |
@@ -86,7 +87,7 @@ python-architect  → финальная приёмка, вердикт ✅ ПР
 | Модели и миграции | `db-models-agent` | `app/models/**`, `alembic/**` |
 | Схемы Pydantic | `schemas-agent` | `app/schemas/**` |
 | Репозитории | `repository-agent` | `app/repositories/**` |
-| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory}.py` |
+| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser}.py` |
 | Доменная логика | `service-agent` | `app/services/**`, кроме клиентов маркетплейсов; `app/domain/**` |
 | Telegram-интерфейс | `bot-agent` | `app/bot/**`, `app/handlers/**` |
 | Инфраструктура и запуск | `core-agent` | `app/core/**`, `app/main.py`, `app/scheduler.py`, `.env.example` |
