@@ -385,6 +385,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     itself, so that path is left out of this cleanup to avoid closing it
     twice.
 
+    Right after ``create_bot`` and before ``getMe``, ``setup_logging`` is
+    called again with the secret part of ``bot.token``: from then on every
+    log channel (loguru, stdlib ``logging``, ``uvicorn``) cuts it out
+    (PAB-083).
+
     A background task (polling, scheduler) finishing for any reason before
     shutdown begins makes ``_BackgroundDeathWatch`` log one ``CRITICAL`` record
     and send SIGTERM to the process, so it leaves through the usual
@@ -406,6 +411,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             timeout=httpx.Timeout(settings.app.HTTP_TIMEOUT_SECONDS)
         )
         bot = create_bot(settings)
+        setup_logging(redact=[bot.token.partition(":")[2]])
         await _ensure_telegram_available(bot)
         sessionmaker = get_sessionmaker()
         dispatcher = create_dispatcher(
