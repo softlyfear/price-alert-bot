@@ -323,13 +323,30 @@ async def _exec_ident(admin_url: DatabaseUrl, template: str, *args: str) -> None
         await conn.close()
 
 
-@pytest.fixture
-def unprivileged_url(database_url: str) -> Iterator[DatabaseUrl]:
-    """URL of a ``LOGIN NOCREATEROLE NOCREATEDB`` role owning its own database.
+_NO_PRIVILEGES = "NOCREATEROLE NOCREATEDB"
 
-    Owning the database lets a whole nested pytest session (with its own
-    migrations) run against it, like a managed-database role in CI.
+#: Role attributes for ``unprivileged_url``: lacking both rights, and holding
+#: exactly one of them. ``_can_create`` needs *both*; each single-right role
+#: must still be refused. Closed set of literals, not input.
+_ROLE_ATTRIBUTES = [
+    pytest.param(_NO_PRIVILEGES, id="neither"),
+    pytest.param("CREATEROLE NOCREATEDB", id="createrole_only"),
+    pytest.param("NOCREATEROLE CREATEDB", id="createdb_only"),
+]
+
+
+@pytest.fixture
+def unprivileged_url(
+    database_url: str, request: pytest.FixtureRequest
+) -> Iterator[DatabaseUrl]:
+    """URL of a ``LOGIN NOSUPERUSER`` role owning its own database.
+
+    Role attributes come from ``request.param`` (indirect parametrization)
+    and default to ``NOCREATEROLE NOCREATEDB``. Owning the database lets a
+    whole nested pytest session (with its own migrations) run against it,
+    like a managed-database role in CI.
     """
+    attributes = cast("str", getattr(request, "param", _NO_PRIVILEGES))
     admin_url = DatabaseUrl(database_url)
     _require_create(admin_url)
     suffix = uuid.uuid4().hex[:12]
@@ -340,10 +357,11 @@ def unprivileged_url(database_url: str) -> Iterator[DatabaseUrl]:
         asyncio.run(
             _exec_ident(
                 admin_url,
-                "SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEROLE"
-                " NOCREATEDB PASSWORD %L', $1::text, $2::text)",
+                "SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER %s PASSWORD %L',"
+                " $1::text, $3::text, $2::text)",
                 role,
                 password,
+                attributes,
             )
         )
         asyncio.run(
@@ -374,6 +392,7 @@ def unprivileged_url(database_url: str) -> Iterator[DatabaseUrl]:
         )
 
 
+@pytest.mark.parametrize("unprivileged_url", _ROLE_ATTRIBUTES, indirect=True)
 def test_role_without_create_privileges_gives_skip_and_leaves_no_roles_or_databases(
     unprivileged_url: DatabaseUrl,
 ) -> None:
@@ -516,6 +535,54 @@ _DDL_TESTS = [
     "test_whole_file_skips_without_errors_on_role_lacking_create_privileges",
 ]
 
+_SUMMARY_LINE = re.compile(r"^=+ .* in [\d.]+s.*=+$")
+_BAD_COUNT = re.compile(r"\b(\d+) (failed|errors?)\b")
+
+
+def _bad_outcome_counts(output: str) -> dict[str, int]:
+    """Counts of ``failed`` / ``error`` outcomes from the final summary line.
+
+    Read by the outcome word, not by cutting substrings out of the output:
+    removing ``"0 error"`` would also hide the tail of ``"10 errors"``.
+    """
+    summaries = [ln for ln in output.splitlines() if _SUMMARY_LINE.match(ln)]
+    assert summaries, f"no pytest summary line in: {output[-500:]}"
+    counts: dict[str, int] = {}
+    for number, word in _BAD_COUNT.findall(summaries[-1]):
+        counts[word.rstrip("s")] = int(number)
+    return counts
+
+
+def _result_lines(output: str, name: str) -> list[str]:
+    """Every ``-v`` result line of test ``name``, parametrized ids included."""
+    pattern = re.compile(rf"::{re.escape(name)}(\[[^\]]*\])? ")
+    return [ln for ln in output.splitlines() if pattern.search(ln)]
+
+
+def test_bad_outcome_counts_reads_the_count_by_outcome_word() -> None:
+    assert _bad_outcome_counts("=== 3 passed, 10 errors in 1.50s ===") == {"error": 10}
+    assert _bad_outcome_counts("=== 1 failed, 2 skipped in 0.10s ===") == {"failed": 1}
+    assert _bad_outcome_counts("=== 9 skipped in 0.10s ===") == {}
+
+
+def test_bad_outcome_counts_refuses_output_without_summary() -> None:
+    with pytest.raises(AssertionError, match="no pytest summary line"):
+        _bad_outcome_counts("collected 0 items")
+
+
+def test_result_lines_match_plain_and_parametrized_names_only() -> None:
+    output = (
+        "f.py::test_a SKIPPED [ 10%]\n"
+        "f.py::test_a[x] SKIPPED [ 20%]\n"
+        "f.py::test_ab SKIPPED [ 30%]\n"
+    )
+
+    assert _result_lines(output, "test_a") == [
+        "f.py::test_a SKIPPED [ 10%]",
+        "f.py::test_a[x] SKIPPED [ 20%]",
+    ]
+    assert _result_lines(output, "test_missing") == []
+
 
 def test_whole_file_skips_without_errors_on_role_lacking_create_privileges(
     unprivileged_url: DatabaseUrl, tmp_path: Path
@@ -526,10 +593,10 @@ def test_whole_file_skips_without_errors_on_role_lacking_create_privileges(
     ``LOGIN NOCREATEROLE NOCREATEDB`` role. Inside that run this very test
     skips at its own fixture, so the recursion ends there. A new DDL step
     without a privilege check turns one of the named tests into a failure.
+    The environment copy and the password are never bound to locals: a
+    failure of this test under ``--showlocals`` would print them.
     """
-    env = {**os.environ, "TEST_DATABASE_URL": str(unprivileged_url)}
-    password = make_url(unprivileged_url).password
-    assert password
+    assert make_url(unprivileged_url).password
 
     result = subprocess.run(
         [
@@ -545,7 +612,7 @@ def test_whole_file_skips_without_errors_on_role_lacking_create_privileges(
             str(tmp_path / "inner"),
         ],
         cwd=str(REPO_ROOT),
-        env=env,
+        env={**os.environ, "TEST_DATABASE_URL": str(unprivileged_url)},
         capture_output=True,
         text=True,
         timeout=MIGRATION_TIMEOUT_SECONDS,
@@ -553,11 +620,12 @@ def test_whole_file_skips_without_errors_on_role_lacking_create_privileges(
     )
 
     output = result.stdout + result.stderr
-    assert password not in output
+    assert str(make_url(unprivileged_url).password) not in output
     assert result.returncode == 0, output[-2000:]
-    assert " failed" not in output
-    assert " error" not in output.lower().replace("0 error", "")
+    assert _bad_outcome_counts(output) == {}
     for name in _DDL_TESTS:
-        line = next(ln for ln in output.splitlines() if f"::{name} " in ln)
-        assert "SKIPPED" in line, line
+        lines = _result_lines(output, name)
+        assert lines, f"no result line for {name}"
+        for line in lines:
+            assert "SKIPPED" in line, line
     assert "lacks CREATEROLE/CREATEDB" in output

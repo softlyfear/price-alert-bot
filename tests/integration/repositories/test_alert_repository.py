@@ -257,7 +257,7 @@ async def test_deactivate_on_an_already_inactive_alert_still_returns_true(
     ``updated_at``'s *value* is deliberately **not** asserted to differ
     between the two calls, though. Measured directly on this project's
     PostgreSQL: within a single transaction, ``now()``/``CURRENT_TIMESTAMP``
-    -- what ``onupdate=text("TIMEZONE('utc', now())")`` evaluates --
+    -- what ``onupdate=text("now()")`` evaluates --
     returns the transaction's start time on every call, not the
     statement's, so two ``UPDATE``s of the same row inside one transaction
     get the identical ``updated_at``. This fixture gives each test exactly

@@ -122,12 +122,45 @@ class DatabaseUrl(str):
     unexpected exception unrelated to the URL (a bug in this module, say)
     still gets its full trace, because nothing here touches how
     tracebacks are rendered -- only what one specific value renders as.
+
+    .. warning::
+       The masking lives on this exact class and nowhere else. Any value
+       *derived* from an instance is a plain ``str`` again and prints the
+       raw URL: an f-string, ``%`` formatting, concatenation,
+       ``json.dumps``, and every ``str`` method (``replace``, ``strip``,
+       slicing, ``format``...) all return ``str``, not ``DatabaseUrl``.
+       Never derive a value from the URL into a local, argument, or
+       container that can reach a traceback; re-wrap the result (as
+       ``_connect_asyncpg`` does) or keep it out of any frame.
+       The same holds for ``DatabasePassword`` below. Nothing checks this
+       in code, which is why it is written here.
     """
 
     __slots__ = ()
 
     def __repr__(self) -> str:
         return repr(mask_database_url(self))
+
+
+class DatabasePassword(str):
+    """A database password whose ``repr()`` is always fully hidden.
+
+    Same technique and same reason as ``DatabaseUrl``: ``pytest`` renders
+    frame arguments, and under ``--showlocals`` every local and every
+    ``dict`` value, via ``repr()``. ``build_migration_env`` is where the
+    password first appears in the process as a separate value (it is
+    parsed out of the URL), so it is wrapped there, once, rather than at
+    each call site that might raise. The value stays the real password
+    for ``==``, ``str()`` and ``subprocess.run(env=...)``; no part of it
+    is shown in ``repr()``. Derived strings (f-strings, concatenation,
+    any ``str`` method) are plain ``str`` and unmasked -- see the warning
+    on ``DatabaseUrl``.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "'<password hidden>'"
 
 
 class UnsupportedDatabaseDriverError(ValueError):
@@ -225,11 +258,15 @@ def build_migration_env(url: str) -> dict[str, str]:
     ``str(parsed.port)`` bug is only observable with a URL that omits a
     port, and every URL used anywhere else in this test suite happens to
     include one.
+
+    ``DB__PASSWORD`` is returned as ``DatabasePassword`` (masked ``repr``),
+    including for an empty password, so a dump of this dict or of a
+    ``dict`` that merges it never shows the password.
     """
     parsed = make_url(url)
     return {
         "DB__USER": parsed.username or "",
-        "DB__PASSWORD": parsed.password or "",
+        "DB__PASSWORD": DatabasePassword(parsed.password or ""),
         "DB__HOST": parsed.host or "",
         "DB__PORT": str(parsed.port or DEFAULT_POSTGRES_PORT),
         "DB__NAME": parsed.database or "",
