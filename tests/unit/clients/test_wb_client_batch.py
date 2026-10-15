@@ -526,17 +526,6 @@ async def test_stalled_batch_hits_the_deadline_for_every_article(
 
 
 @pytest.mark.asyncio
-async def test_body_of_exactly_max_bytes_still_parses() -> None:
-    """AC2(д), boundary. Mutation ``>`` -> ``>=`` in the cap."""
-    body = _payload(_product(1, price=100))
-    padded = body + b" " * (WbClient.MAX_BODY_BYTES - len(body))
-    assert len(padded) == 1_048_576
-    results = await _fetch(_recording(httpx.Response(200, content=padded), []), [1])
-
-    assert results == {1: MarketplaceProductData(name="Товар", price=100)}
-
-
-@pytest.mark.asyncio
 async def test_batch_body_over_the_single_cap_still_parses() -> None:
     """AC2(и): a batch body of ``MAX_BODY_BYTES + 1`` is legal.
     Mutation: the single cap used on the batch path."""
@@ -550,7 +539,11 @@ async def test_batch_body_over_the_single_cap_still_parses() -> None:
 
 @pytest.mark.asyncio
 async def test_batch_body_of_exactly_batch_max_bytes_still_parses() -> None:
-    """AC2(и), boundary: exactly 4 MiB is accepted."""
+    """AC2(и), boundary: exactly 4 MiB is accepted.
+
+    Mutation ``>`` -> ``>=`` in ``read_body_bounded``
+    (``app/services/base_client.py``) turns this into ``bad_payload``.
+    """
     body = _payload(_product(1, price=100))
     padded = body + b" " * (WbClient.MAX_BATCH_BODY_BYTES - len(body))
     assert len(padded) == 4_194_304

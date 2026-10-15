@@ -3,7 +3,7 @@
 `fetch_wb_token` drives a real Chromium (`sandbox=False`: the sandbox does not
 start on the development host) against `WbAntibotStub` on `127.0.0.1`; nothing
 here talks to Wildberries or any other host. A missing Chromium is a red test,
-not a skip - the gate installs it (`make playwright-install` /
+not a skip - the gate installs it (`make install-browser` /
 `PROJECT.md` section 2.12).
 
 No Playwright object is mocked: every branch of `wb_browser.py` is reached on

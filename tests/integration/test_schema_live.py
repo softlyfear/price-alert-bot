@@ -15,12 +15,12 @@ neither.
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 
 import pytest
-from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
@@ -153,6 +153,9 @@ async def test_orm_update_sets_updated_at_to_transaction_now_under_non_utc_sessi
     db_session: AsyncSession,
 ) -> None:
     await db_session.execute(text(f"SET LOCAL TimeZone = '{SESSION_ZONE}'"))
+    # Positive control: the session really runs in the chosen zone.
+    shown = (await db_session.execute(text("SHOW TimeZone"))).scalar_one()
+    assert shown == SESSION_ZONE
     past = datetime(2020, 1, 1, tzinfo=UTC)
     user = User(tg_user_id=700_000_003, updated_at=past)
     db_session.add(user)
@@ -196,10 +199,20 @@ async def test_catalog_check_constraints_are_exactly_the_three_price_checks(
     assert await _catalog_checks(db_session) == EXPECTED_CHECKS
 
 
+#: Model side of the same three checks: (table, name, condition text), written
+#: out by hand from PROJECT.md section 6. A weakened condition under an
+#: unchanged name (``> 0`` instead of ``>= 0``) must not pass.
+EXPECTED_MODEL_CHECKS = {
+    ("products", "ck_products_current_price_non_negative", "current_price >= 0"),
+    ("products", "ck_products_previous_price_non_negative", "previous_price >= 0"),
+    ("alerts", "ck_alerts_target_price_non_negative", "target_price >= 0"),
+}
+
+
 def test_model_check_constraints_are_exactly_the_three_price_checks() -> None:
     # Column-level checks live in ``column.constraints`` and table-level ones
     # in ``table.constraints``; both places are collected.
-    found: set[tuple[str, str]] = set()
+    found: set[tuple[str, str, str]] = set()
     for table in Base.metadata.tables.values():
         if table.name not in TABLES:
             continue
@@ -207,11 +220,11 @@ def test_model_check_constraints_are_exactly_the_three_price_checks() -> None:
         for column in table.columns:
             declared.extend(column.constraints)
         found |= {
-            (table.name, str(constraint.name))
+            (table.name, str(constraint.name), str(constraint.sqltext))
             for constraint in declared
             if isinstance(constraint, CheckConstraint)
         }
-    assert found == EXPECTED_CHECKS
+    assert found == EXPECTED_MODEL_CHECKS
 
 
 @pytest.mark.asyncio
@@ -269,8 +282,9 @@ async def _scalar_int_or_null(
 
 
 def _run_revision(connection: Connection, direction: str) -> None:
-    config = Config(str(REPO_ROOT / "alembic.ini"))
-    revision = ScriptDirectory.from_config(config).get_revision(REVISION_ID)
+    # Built straight from the directory: no ``Config``, so the ini option
+    # ``prepend_sys_path`` is never applied and ``alembic/env.py`` is not loaded.
+    revision = ScriptDirectory(str(REPO_ROOT / "alembic")).get_revision(REVISION_ID)
     assert revision is not None
     module = revision.module
     with Operations.context(MigrationContext.configure(connection)):
@@ -282,6 +296,7 @@ async def test_downgrade_restores_old_schema_and_upgrade_reapplies_new_one(
     db_session: AsyncSession,
 ) -> None:
     connection = await db_session.connection()
+    path_before = list(sys.path)
 
     await connection.run_sync(_run_revision, "downgrade")
     assert await _catalog_checks(db_session) == set()
@@ -294,3 +309,4 @@ async def test_downgrade_restores_old_schema_and_upgrade_reapplies_new_one(
     assert await _catalog_defaults(db_session) == dict.fromkeys(
         TIMESTAMP_COLUMNS, "now()"
     )
+    assert sys.path == path_before

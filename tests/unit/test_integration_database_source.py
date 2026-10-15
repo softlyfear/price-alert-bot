@@ -15,6 +15,7 @@ import pytest
 from tests.integration.database_source import DEFAULT_POSTGRES_PORT
 from tests.integration.database_source import DEFAULT_READINESS_REQUIRED_SUCCESSES
 from tests.integration.database_source import TEST_DATABASE_URL_VAR
+from tests.integration.database_source import DatabasePassword
 from tests.integration.database_source import DatabaseUrl
 from tests.integration.database_source import IncompleteDatabaseUrlError
 from tests.integration.database_source import UnsupportedDatabaseDriverError
@@ -349,3 +350,29 @@ def test_build_migration_env_defaults_port_when_url_has_none() -> None:
 
     assert env["DB__PORT"] == str(DEFAULT_POSTGRES_PORT)
     assert env["DB__PORT"] != "None"  # positive control against the original bug
+
+
+def test_migration_env_password_is_masked_in_repr_but_real_by_value() -> None:
+    """``DB__PASSWORD`` is a ``DatabasePassword``: hidden in ``repr``, real otherwise.
+
+    The URL carries the password percent-encoded; the expected value is the
+    decoded literal, written out by hand.
+    """
+    env = build_migration_env(
+        "postgresql+asyncpg://user:Zq%40x%2F%257%20k@myhost:6543/mydb"
+    )
+
+    value = env["DB__PASSWORD"]
+    assert isinstance(value, DatabasePassword)
+    assert "Zq@x/%7 k" not in repr(value)
+    assert "Zq@x/%7 k" not in repr(env)
+    assert "Zq" not in repr(value)  # no partial masking either
+    assert str(value) == "Zq@x/%7 k"  # positive control: the real value survives
+    assert value == "Zq@x/%7 k"
+
+
+def test_migration_env_empty_password_is_still_a_database_password() -> None:
+    env = build_migration_env("postgresql+asyncpg://user@myhost:6543/mydb")
+
+    assert isinstance(env["DB__PASSWORD"], DatabasePassword)
+    assert env["DB__PASSWORD"] == ""

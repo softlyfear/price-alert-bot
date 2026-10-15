@@ -22,6 +22,8 @@ those guarantees.
 from __future__ import annotations
 
 import os
+import re
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -227,7 +229,7 @@ async def test_sees_a_clean_database_after_the_previous_test(
 #: Scenario 1: ``select_database_url`` rejects the driver before anything
 #: touches a socket -- no monkeypatching needed, and fast regardless of
 #: Docker availability.
-_BAD_DRIVER_URL = "postgresql://probe:{marker}@127.0.0.1:5432/probe"
+_BAD_DRIVER_URL = "postgresql://probe:{marker}@127.0.0.1:{port}/probe"
 _BAD_DRIVER_PATCH = ""
 
 #: Scenario 2: ``wait_until_ready`` times out. ``_connect_asyncpg`` is
@@ -237,7 +239,7 @@ _BAD_DRIVER_PATCH = ""
 #: fixture calls it without overriding them, so this is the only way to
 #: keep the *default* readiness budget from costing this test 30 real
 #: seconds while still exercising the actual call the fixture makes.
-_READINESS_TIMEOUT_URL = "postgresql+asyncpg://probe:{marker}@127.0.0.1:5432/probe"
+_READINESS_TIMEOUT_URL = "postgresql+asyncpg://probe:{marker}@127.0.0.1:{port}/probe"
 _READINESS_TIMEOUT_PATCH = """
 from tests.integration import conftest as integration_conftest
 
@@ -254,13 +256,12 @@ integration_conftest.wait_until_ready.__kwdefaults__ = {
 }
 """
 
-#: Scenario 3: ``_run_migrations`` raises. This is the path Major 2's
-#: report missed: a migration failure (wrong privileges, drifted revision,
-#: wrong schema -- the single most likely failure on a first CI setup) is
-#: reached only *after* readiness succeeds, so readiness is faked as an
-#: instant success here rather than skipped, keeping the call shape the
-#: fixture actually uses.
-_MIGRATION_FAILURE_URL = "postgresql+asyncpg://probe:{marker}@127.0.0.1:5432/probe"
+#: Scenario 3: the real ``_run_migrations`` body runs, with a real ``alembic``
+#: subprocess. Only what it depends on is replaced: readiness is an instant
+#: success, and the address is a closed port taken from the OS (``{port}``),
+#: so nothing depends on what listens on 5432 on the host. The function
+#: itself is never replaced -- a stub would make this guard blind to its body.
+_MIGRATION_FAILURE_URL = "postgresql+asyncpg://probe:{marker}@127.0.0.1:{port}/probe"
 _MIGRATION_FAILURE_PATCH = """
 from tests.integration import conftest as integration_conftest
 
@@ -269,40 +270,65 @@ async def _instant_ready(url, connect, **kwargs):
     return None
 
 
-def _failing_migrations(url):
-    raise RuntimeError("simulated: alembic upgrade head failed (regression test)")
-
-
 integration_conftest.wait_until_ready = _instant_ready
-integration_conftest._run_migrations = _failing_migrations
 """
 
 
+def _free_port() -> int:
+    """Return a TCP port that nothing listens on (taken from the OS, then freed)."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+#: Under ``--showlocals`` pytest prints ``name = repr(value)`` per frame local.
+#: These match the lines proving the locals really were rendered: the ``url``
+#: of the failing frame (a masked ``DatabaseUrl``), or, for the migration
+#: failure, ``result`` -- a local that exists only in the real body of
+#: ``_run_migrations``.
+_URL_LOCAL = r"^url\s+= '"
+_RESULT_LOCAL = r"^result\s+= CompletedProcess"
+
+
 @pytest.mark.parametrize(
-    ("url_template", "conftest_patch", "positive_control"),
+    ("url_template", "conftest_patch", "positive_control", "locals_control"),
     [
         pytest.param(
-            _BAD_DRIVER_URL, _BAD_DRIVER_PATCH, "TEST_DATABASE_URL", id="bad_driver"
+            _BAD_DRIVER_URL,
+            _BAD_DRIVER_PATCH,
+            "TEST_DATABASE_URL",
+            _URL_LOCAL,
+            id="bad_driver",
         ),
         pytest.param(
             _READINESS_TIMEOUT_URL,
             _READINESS_TIMEOUT_PATCH,
             "did not accept",
+            _URL_LOCAL,
             id="readiness_timeout",
         ),
         pytest.param(
             _MIGRATION_FAILURE_URL,
             _MIGRATION_FAILURE_PATCH,
-            "alembic upgrade head failed",
+            # Only the real body of ``_run_migrations`` produces this text.
+            "failed with rc=",
+            _RESULT_LOCAL,
             id="migration_failure",
         ),
     ],
+)
+@pytest.mark.parametrize(
+    "flags",
+    [["-q"], ["-q", "--showlocals", "--tb=long"]],
+    ids=["quiet", "showlocals_long"],
 )
 def test_database_url_fixture_output_never_contains_the_raw_password(
     tmp_path: Path,
     url_template: str,
     conftest_patch: str,
     positive_control: str,
+    locals_control: str,
+    flags: list[str],
 ) -> None:
     """Regression test: measures ``pytest``'s actual output, not ``str(exc)``.
 
@@ -336,7 +362,7 @@ def test_database_url_fixture_output_never_contains_the_raw_password(
     always lands after the real definitions exist.
     """
     marker = "s3cr3t-regression-marker-pass"
-    bad_url = url_template.format(marker=marker)
+    bad_url = url_template.format(marker=marker, port=_free_port())
     probe_module = tmp_path / "test_probe_database_url_fixture.py"
     probe_module.write_text("def test_placeholder(database_url):\n    pass\n")
     if conftest_patch:
@@ -350,7 +376,7 @@ def test_database_url_fixture_output_never_contains_the_raw_password(
             str(probe_module),
             "-p",
             "tests.integration.conftest",
-            "-q",
+            *flags,
         ],
         cwd=_REPO_ROOT,
         env={**os.environ, "TEST_DATABASE_URL": bad_url},
@@ -363,3 +389,7 @@ def test_database_url_fixture_output_never_contains_the_raw_password(
     assert marker not in result.stderr
     assert positive_control in result.stdout  # positive control
     assert result.returncode != 0  # a hard failure, not a silent skip
+    if "--showlocals" in flags:
+        # Positive control: frame locals were rendered, so the absence of the
+        # marker above was measured on a dump that could have shown it.
+        assert re.search(locals_control, result.stdout, re.MULTILINE)
