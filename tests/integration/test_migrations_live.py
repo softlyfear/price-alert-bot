@@ -41,6 +41,7 @@ from tests.integration.conftest import MIGRATION_TIMEOUT_SECONDS
 from tests.integration.conftest import REPO_ROOT
 from tests.integration.conftest import _connect_asyncpg
 from tests.integration.database_source import DatabaseUrl
+from tests.integration.database_source import SubprocessEnvironment
 
 
 @dataclass(frozen=True)
@@ -445,6 +446,7 @@ def test_drop_removes_role_left_without_database(database_url: str) -> None:
 _PROBE = """
 import tests.integration.test_migrations_live as live
 from tests.integration.database_source import DatabaseUrl
+from tests.integration.database_source import SubprocessEnvironment
 from tests.integration.test_migrations_live import target  # noqa: F401
 import pytest
 
@@ -509,7 +511,7 @@ def test_admin_password_absent_from_output_when_fixture_fails(
     result = subprocess.run(
         [sys.executable, "-m", "pytest", str(probe), "-p", "no:cacheprovider", *flags],
         cwd=str(REPO_ROOT),
-        env={**os.environ},
+        env=SubprocessEnvironment(os.environ),
         capture_output=True,
         text=True,
         timeout=MIGRATION_TIMEOUT_SECONDS,
@@ -593,8 +595,11 @@ def test_whole_file_skips_without_errors_on_role_lacking_create_privileges(
     ``LOGIN NOCREATEROLE NOCREATEDB`` role. Inside that run this very test
     skips at its own fixture, so the recursion ends there. A new DDL step
     without a privilege check turns one of the named tests into a failure.
-    The environment copy and the password are never bound to locals: a
-    failure of this test under ``--showlocals`` would print them.
+    The password is never bound to a local, and the environment copy is a
+    ``SubprocessEnvironment`` built in the call expression: it lives in
+    ``kwargs`` of the stdlib ``subprocess.run`` frame (printed under
+    ``--showlocals`` if the call raises, e.g. ``TimeoutExpired``), where its
+    ``repr`` shows no values.
     """
     assert make_url(unprivileged_url).password
 
@@ -612,7 +617,9 @@ def test_whole_file_skips_without_errors_on_role_lacking_create_privileges(
             str(tmp_path / "inner"),
         ],
         cwd=str(REPO_ROOT),
-        env={**os.environ, "TEST_DATABASE_URL": str(unprivileged_url)},
+        env=SubprocessEnvironment(
+            os.environ, {"TEST_DATABASE_URL": str(unprivileged_url)}
+        ),
         capture_output=True,
         text=True,
         timeout=MIGRATION_TIMEOUT_SECONDS,

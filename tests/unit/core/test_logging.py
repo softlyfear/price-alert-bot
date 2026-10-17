@@ -24,6 +24,7 @@ from loguru import logger
 
 from app.core.logging import _InterceptHandler
 from app.core.logging import setup_logging
+from tests.integration.database_source import SubprocessEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -327,11 +328,10 @@ def test_fixture_restores_no_handler_when_loguru_autoinit_disabled() -> None:
             "matching this test's name"
         )
     repo_root = Path(__file__).resolve().parents[3]
-    env = {
-        **os.environ,
-        "LOGURU_AUTOINIT": "0",
-        _LOGURU_AUTOINIT_REENTRY_GUARD_ENV: "1",
-    }
+    env = SubprocessEnvironment(
+        os.environ,
+        {"LOGURU_AUTOINIT": "0", _LOGURU_AUTOINIT_REENTRY_GUARD_ENV: "1"},
+    )
     result = subprocess.run(
         [sys.executable, "-c", _LOGURU_AUTOINIT_DISABLED_DRIVER],
         cwd=repo_root,
