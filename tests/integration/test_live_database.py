@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Marketplace
 from app.models import Product
 from app.models import User
+from tests.integration.database_source import SubprocessEnvironment
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -349,12 +350,15 @@ def test_database_url_fixture_output_never_contains_the_raw_password(
     ``tests/``, so nothing lingers in the suite -- see the project's rule
     against probes committed under ``tests/``) that requests the
     ``database_url`` fixture and does nothing else. A local ``conftest.py``
-    is written alongside it for the scenarios that need to monkeypatch a
-    fast, socket-free failure into ``tests.integration.conftest`` (whose
-    module object it imports and mutates directly -- picked up because
-    the real ``database_url`` fixture body looks up ``_connect_asyncpg``,
-    ``wait_until_ready``, and ``_run_migrations`` as plain module globals
-    at call time, not at import time). ``tests/integration/conftest.py``
+    is written alongside it for the scenarios that replace a dependency in
+    ``tests.integration.conftest`` (whose module object it imports and
+    mutates directly): scenario 2 replaces ``_connect_asyncpg`` and shrinks
+    the defaults of ``wait_until_ready``; scenario 3 replaces only
+    ``wait_until_ready`` (instant readiness) and runs the real body of
+    ``_run_migrations`` against a closed port taken from the OS; scenario 1
+    needs no patch. The patches take effect because the real
+    ``database_url`` fixture body looks these names up as plain module
+    globals at call time, not at import time. ``tests/integration/conftest.py``
     itself is loaded explicitly as a plugin by dotted path, since the
     temporary module does not live under a directory that would pick it
     up by pytest's normal conftest discovery; pytest loads that explicit
@@ -379,7 +383,7 @@ def test_database_url_fixture_output_never_contains_the_raw_password(
             *flags,
         ],
         cwd=_REPO_ROOT,
-        env={**os.environ, "TEST_DATABASE_URL": bad_url},
+        env=SubprocessEnvironment(os.environ, {"TEST_DATABASE_URL": bad_url}),
         capture_output=True,
         text=True,
         timeout=60,

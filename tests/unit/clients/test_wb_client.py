@@ -69,6 +69,7 @@ from app.schemas.marketplace import MarketplaceProductData
 from app.services.wb_access import WbAccessStage
 from app.services.wb_access import WbAccessUnavailable
 from app.services.wb_client import WbClient
+from tests.integration.database_source import SubprocessEnvironment
 from tests.unit.wb_access_stub import StubWbAccess
 from tests.unit.wb_access_stub import make_pair
 
@@ -1075,7 +1076,9 @@ def test_unhandled_transport_exception_does_not_print_the_pair(
     result = subprocess.run(
         [sys.executable, "-m", "pytest", str(probe), "-p", "no:cacheprovider", *flags],
         cwd=str(_REPO_ROOT),
-        env={**os.environ, "PROBE_TOKEN": token, "PROBE_DEVICE": device},
+        env=SubprocessEnvironment(
+            os.environ, {"PROBE_TOKEN": token, "PROBE_DEVICE": device}
+        ),
         capture_output=True,
         text=True,
         timeout=120,

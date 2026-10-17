@@ -33,6 +33,7 @@ import asyncio
 import time
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Iterator
 from collections.abc import Mapping
 from typing import Any
 from typing import Protocol
@@ -161,6 +162,60 @@ class DatabasePassword(str):
 
     def __repr__(self) -> str:
         return "'<password hidden>'"
+
+
+class SubprocessEnvironment(Mapping[str, str]):
+    """An immutable ``subprocess.run(env=...)`` environment that hides its values.
+
+    Same reason as ``DatabaseUrl`` (convention 27: protect the value once, at
+    the point where it first appears): a copy of ``os.environ`` handed to a
+    subprocess call as a ``dict`` is printed in full via ``repr()`` by
+    ``pytest --showlocals`` -- as the local of a test frame, or, when the
+    call is a bare expression, as ``kwargs['env']`` of the stdlib
+    ``subprocess.run`` frame when it raises (``TimeoutExpired``). In CI that
+    environment carries ``TEST_DATABASE_URL`` with the password.
+
+    A ``Mapping`` rather than a ``dict`` subclass: a subclass is mutable and
+    hands back an unmasked plain ``dict`` from ``copy()`` and ``|``. Here
+    ``subprocess`` needs only ``env.items()``, which the ``Mapping`` mixin
+    provides.
+
+    The environment is a snapshot taken at construction: layers are applied
+    left to right (a later one overrides an earlier one) and later changes to
+    a source mapping do not show through. ``repr()``, ``str()`` and
+    f-strings print the number of variables only -- neither values nor key
+    names.
+
+    .. warning::
+       Limits, not covered by this type:
+
+       - A value derived from it is a plain, unmasked object: ``dict(env)``,
+         ``{**env}``, ``env.items()`` unpacked into a local.
+       - If ``exec`` of the program fails, the local ``env_list`` of
+         ``Popen._execute_child`` holds raw ``KEY=VALUE`` bytes. Not reachable
+         here: the program is always ``sys.executable``.
+       - ``/proc/<pid>/environ`` of the child process is out of scope.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, *layers: Mapping[str, str]) -> None:
+        data: dict[str, str] = {}
+        for layer in layers:
+            data.update(layer)
+        self._data = data
+
+    def __getitem__(self, key: str) -> str:
+        return self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return f"<SubprocessEnvironment: {len(self._data)} variables, values hidden>"
 
 
 class UnsupportedDatabaseDriverError(ValueError):
