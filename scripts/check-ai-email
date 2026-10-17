@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Forbidden AI-assistant email addresses in git history (PAB-065, PAB-037).
+#
+# The single source of the pattern: the local `commit-msg` hook and the CI job
+# both call this script, so the two cannot drift apart.
+#
+# Usage:
+#   check-ai-email message [--honor-cut-marker] FILE
+#       Check one commit message file. With --honor-cut-marker (the local hook)
+#       the text from the `git commit -v` scissors line onwards is ignored: git
+#       appends the diff there and strips it only AFTER the hook has run, so the
+#       literal in a diff must not turn the hook red. CI never passes the flag:
+#       a forged marker in `-m`/`-F` text must not hide an address.
+#   check-ai-email range BEFORE AFTER
+#       Check author, committer and message of every commit in BEFORE..AFTER.
+#       An empty BEFORE, all zeros, or an object missing from the clone (new
+#       branch, force-push) means: every commit reachable from AFTER.
+#
+# Exit codes: 0 clean, 1 forbidden address found (commit and field are named on
+# stderr), 2 usage or tooling error. Never silent on a non-zero exit.
+
+set -euo pipefail
+
+# Closed list of AI-assistant mail domains, case-insensitive, email-shaped
+# occurrences only (`@domain`), so a customer's own address is not affected.
+# The Copilot local part is a negative character class (anything but `@`,
+# whitespace, `<`/`>`), not an allow-list: a positive class missing `[`/`]`
+# let `…+copilot-swe-agent[bot]@users.noreply.github.com` through.
+readonly PATTERN='@([a-z0-9-]+\.)*(anthropic\.com|claude\.ai|openai\.com|cursor\.com|cursor\.sh|codeium\.com)\b|[^@[:space:]<>]*copilot[^@[:space:]<>]*@users\.noreply\.github\.com'
+readonly CUT_MARKER='------------------------ >8 ------------------------'
+readonly ZERO_SHA='0000000000000000000000000000000000000000'
+
+# Temporary path of the running mode. Global, not `local`: the EXIT trap fires
+# after the mode function has returned, when a local would already be unset.
+TMP_PATH=""
+cleanup() {
+    if [ -n "$TMP_PATH" ]; then
+        rm -rf -- "$TMP_PATH"
+    fi
+}
+trap cleanup EXIT
+
+die() {
+    echo "check-ai-email: $*" >&2
+    exit 2
+}
+
+# True (0) if the file holds a forbidden address. Reads the file directly, no
+# `grep | grep -q` pipe: an early match would make the reader exit before the
+# writer finished, and under `pipefail` that SIGPIPE let a ~240 KB message with
+# an address through. `-a`: treat NUL bytes as text instead of "binary file".
+has_ai_email() {
+    local rc=0
+    grep -Eiqa -- "$PATTERN" "$1" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) die "grep failed on $1 (rc=$rc)" ;;
+    esac
+}
+
+check_message() {
+    local honor_marker=0
+    if [ "${1:-}" = "--honor-cut-marker" ]; then
+        honor_marker=1
+        shift
+    fi
+    [ "$#" -eq 1 ] || die "usage: message [--honor-cut-marker] FILE"
+    local msg_file="$1"
+    [ -r "$msg_file" ] || die "cannot read $msg_file"
+
+    local check_file="$msg_file" cut_line=""
+    if [ "$honor_marker" -eq 1 ]; then
+        local found_rc=0 found=""
+        found="$(grep -Fn -m1 -- "$CUT_MARKER" "$msg_file")" || found_rc=$?
+        [ "$found_rc" -le 1 ] || die "grep failed on $msg_file (rc=$found_rc)"
+        cut_line="${found%%:*}"
+        if [ -n "$cut_line" ]; then
+            TMP_PATH="$(mktemp)"
+            head -n "$((cut_line - 1))" "$msg_file" > "$TMP_PATH"
+            check_file="$TMP_PATH"
+        fi
+    fi
+    if has_ai_email "$check_file"; then
+        echo "commit message contains a forbidden AI-assistant email address" >&2
+        exit 1
+    fi
+}
+
+check_range() {
+    [ "$#" -eq 2 ] || die "usage: range BEFORE AFTER"
+    local before="$1" after="$2"
+    [ -n "$after" ] || die "AFTER is empty"
+    git rev-parse --verify --quiet "$after^{commit}" > /dev/null \
+        || die "AFTER $after is not a commit in this clone"
+
+    local -a revs=("$after")
+    if [ -n "$before" ] && [ "$before" != "$ZERO_SHA" ] \
+        && git cat-file -e "$before^{commit}" 2> /dev/null; then
+        revs=("$before..$after")
+    fi
+
+    TMP_PATH="$(mktemp -d)"
+
+    local sha total=0 bad=0
+    local -a shas
+    # Through a file, not `< <(git rev-list)`: a process substitution hides the
+    # exit code of git, and a broken object would read as "0 commits checked".
+    git rev-list --reverse "${revs[@]}" > "$TMP_PATH/revs" \
+        || die "git rev-list ${revs[*]} failed"
+    mapfile -t shas < "$TMP_PATH/revs"
+    for sha in ${shas[@]+"${shas[@]}"}; do
+        total=$((total + 1))
+        git log -1 --format='%an <%ae>' "$sha" > "$TMP_PATH/author" \
+            || die "git log failed for commit $sha"
+        git log -1 --format='%cn <%ce>' "$sha" > "$TMP_PATH/committer" \
+            || die "git log failed for commit $sha"
+        git log -1 --format='%B' "$sha" > "$TMP_PATH/message" \
+            || die "git log failed for commit $sha"
+        local field
+        for field in author committer message; do
+            if has_ai_email "$TMP_PATH/$field"; then
+                echo "forbidden AI-assistant email address: commit $sha, field: $field" >&2
+                bad=1
+            fi
+        done
+    done
+    if [ "$bad" -ne 0 ]; then
+        exit 1
+    fi
+    echo "check-ai-email: $total commit(s) checked (${revs[*]}), no forbidden addresses"
+}
+
+case "${1:-}" in
+    message)
+        shift
+        check_message "$@"
+        ;;
+    range)
+        shift
+        check_range "$@"
+        ;;
+    *)
+        die "usage: message [--honor-cut-marker] FILE | range BEFORE AFTER"
+        ;;
+esac

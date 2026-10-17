@@ -48,7 +48,7 @@ trap 'exit 143' TERM
 
 declare -A seen=()
 shas=()
-while read -r local_ref local_sha remote_ref remote_sha; do
+while read -r local_ref local_sha _remote_ref _remote_sha; do
     [ -n "${local_ref:-}" ] || continue
     [ "$local_sha" = "$ZERO_SHA" ] && continue
     if [ -z "${seen[$local_sha]+x}" ]; then
