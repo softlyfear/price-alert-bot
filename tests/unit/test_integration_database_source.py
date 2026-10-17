@@ -500,8 +500,9 @@ def test_probe():
 _NEW_FORM = 'SubprocessEnvironment(os.environ, {"0_PROBE": os.environ["PROBE_MARKER"]})'
 # The marker key sorts first: pytest's ``saferepr`` shows only the first few
 # (sorted) items of a ``dict``, so the control must put it where the dump shows it.
-# Same shape as the former construction, but over a synthetic base: the child
-# prints this dict, and the output must never hold the real environment.
+# ``_OLD_FORM`` is the control: a plain ``dict`` literal, which pytest prints
+# in full; its base is synthetic - the child prints this dict, and the output
+# must never hold the real environment.
 _OLD_FORM = '{**{"PATH": os.environ["PATH"]}, "0_PROBE": os.environ["PROBE_MARKER"]}'
 
 

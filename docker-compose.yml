@@ -45,7 +45,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      # TCP (-h 127.0.0.1), not the unix socket: the temporary first-initialization
+      # server of the image listens on the socket only, and a socket probe reports
+      # "ready" while the real server is not up yet.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -99,18 +102,77 @@ services:
       DB__PORT: "5432"
       REDIS__HOST: redis
       REDIS__PORT: "6379"
+      # Security invariant of this stack, not an operator choice: the token is
+      # fetched by Chromium that runs third-party JavaScript, and it must run
+      # inside its own sandbox. If the sandbox cannot start, the fetch fails with
+      # detail `sandbox_unavailable` instead of running without it.
+      WB__BROWSER_SANDBOX: "true"
+      # Chromium writes its profile and caches under HOME / XDG_*; the root
+      # filesystem is read-only, so they point into the /tmp tmpfs.
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      XDG_CONFIG_HOME: /tmp/.config
     read_only: true
+    # Chromium spawns processes; without an init a crashed one stays a zombie of PID 1.
+    init: true
+    # tmpfs counts against mem_limit, so its size is a cap on what Chromium may take
+    # from the memory budget. Playwright starts Chromium with --disable-dev-shm-usage
+    # (confirmed in the process command line inside this container), so Chromium
+    # shared memory goes to /tmp, not /dev/shm. D5 (five live fetches of
+    # wildberries.ru): maximum /tmp use 1.36 MiB (1425408 B); 64m is ~47x that.
     tmpfs:
-      - /tmp
+      - /tmp:size=64m
+    # /dev/shm is NOT used by Chromium while --disable-dev-shm-usage stays (D5: 0
+    # bytes at 50 ms sampling in all five live fetches). 128m is only insurance for
+    # the case that flag disappears in a Playwright update (Docker default is 64m,
+    # the Playwright docs advise raising it); it counts against mem_limit only
+    # while used. `ipc: host` is not used.
+    shm_size: 128m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+      # Docker's default profile (moby/profiles seccomp v0.1.0, the version built into
+      # Engine 29.1.3) forbids creating user namespaces without CAP_SYS_ADMIN: the
+      # Chromium sandbox does not start (measured: detail `sandbox_unavailable`).
+      # docker/seccomp-chromium.json = that profile + a delta: chroot, and clone and
+      # unshare with a flag mask (like the default clone rule) that lets only
+      # CLONE_NEWUSER, CLONE_NEWPID and CLONE_NEWNET through; CLONE_NEWNS, NEWUTS,
+      # NEWIPC, NEWCGROUP and (unshare only) NEWTIME stay denied (measured: EPERM).
+      # For clone, bit 0x80 is CSIGNAL, not CLONE_NEWTIME: clone cannot create a
+      # time namespace; clone3 (which could) stays ENOSYS.
+      # It is NOT guarded against drift from the default profile; trigger to
+      # re-derive it: a Docker Engine update on the server.
+      # Residual risk: ANY process of app (not only Chromium) can create user and
+      # network namespaces, which widens the kernel attack surface of the container.
+      # Why accepted: the Chromium sandbox is built on namespaces; the setuid
+      # sandbox cannot work with no-new-privileges; running without the sandbox is
+      # forbidden (WB__BROWSER_SANDBOX above). Alternative: a separate browser
+      # container (TASKS.md, section K, question 3). Revisit when Docker Engine on
+      # the server is updated.
+      - seccomp=./docker/seccomp-chromium.json
+    # Memory limit (PAB-080 AC7): (D5 peak + app working memory + WB batch reserve)
+    # x 1.25, rounded up to 64 MiB. memswap_limit = mem_limit: no swap, so the limit
+    # is real and an overrun is an OOM kill, not a slowdown.
+    #   D5 memory.peak, max of 5 live fetches (cgroup, fresh container): 441.2 MiB
+    #   app working memory (aiogram, SQLAlchemy, FastAPI, pools; not measured):
+    #                                                            240 MiB (estimate)
+    #   WB batch of 4 MiB body (measured: peak delta of 3 consecutive batches
+    #   through WbClient against a stub, 4126814 B body):         10.3 MiB
+    #   (441.2 + 240 + 10.3) x 1.25 = 864.3 MiB -> 896 MiB.
+    # Recompute if the browser, batch size or body cap changes.
+    mem_limit: 896m
+    memswap_limit: 896m
+    # CPU: the target server has 2 cores shared with postgres, redis and the OS.
+    # 1.5 leaves 0.5 core for them; Chromium startup is CPU-bound and gets the rest.
+    cpus: 1.5
     # Shutdown budgets in app/main.py are sequential: 30 (in-flight updates)
-    # + 45 (scheduler stop) + 5 (scheduler cancel) = 80 s, plus 20 s for steps
-    # without a budget. Recompute if a constant changes or the app spawns processes.
-    # `init` stays off: uvicorn is PID 1 and exits 0 on SIGTERM (143 under init).
-    stop_grace_period: 100s
+    # + 45 (scheduler stop) + 5 (scheduler cancel) + 10 (WB token step: closing
+    # the browser) = 90 s, plus 20 s for steps without a budget = 110 s.
+    # Recompute if a constant changes or the process tree changes.
+    # `init` is on: with it the exit code of uvicorn on SIGTERM is 143, not 0;
+    # `restart: unless-stopped` does not care.
+    stop_grace_period: 110s
     healthcheck:
       # 200 only; 503 (polling or scheduler dead) raises and fails the check.
       # python:slim has no curl/wget, so the standard library does the request.
@@ -122,9 +184,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      # Measured start to "Application startup complete": 2.4-4.4 s (3 restarts and
-      # a first start, no real Telegram token); 20 s leaves a margin of ~4.5x for a
-      # slower host or a real Telegram handshake. Failures inside it are not counted.
+      # Measured start to "Application startup complete" at cpus: 1.5 (three starts,
+      # fake local Bot API answering getMe, no browser at start): 2.12, 2.37, 2.47 s.
+      # start_period >= 3 x max (7.4 s) and not below 20 s: 20 s (~8x) for a slower
+      # host or a real Telegram handshake. Failures inside it are not counted.
       start_period: 20s
     depends_on:
       postgres:

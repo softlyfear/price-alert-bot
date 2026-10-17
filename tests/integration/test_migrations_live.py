@@ -446,7 +446,6 @@ def test_drop_removes_role_left_without_database(database_url: str) -> None:
 _PROBE = """
 import tests.integration.test_migrations_live as live
 from tests.integration.database_source import DatabaseUrl
-from tests.integration.database_source import SubprocessEnvironment
 from tests.integration.test_migrations_live import target  # noqa: F401
 import pytest
 
