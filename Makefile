@@ -1,4 +1,4 @@
-.PHONY: help install update install-browser run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks
+.PHONY: help install update install-browser run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks docker-restart clean-all
 
 RED    := \033[0;31m
 GREEN  := \033[0;32m
@@ -136,7 +136,7 @@ docker-build:
 #   make docker-up ENV_FILE=/path/to/file
 ENV_FILE ?= .env
 export ENV_FILE
-COMPOSE := docker compose --env-file $(ENV_FILE)
+COMPOSE := docker compose --env-file "$(ENV_FILE)"
 
 # build -> stop app -> up -d: a bare `up -d` would re-run migrate while app is alive.
 docker-up:

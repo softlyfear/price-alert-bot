@@ -1,0 +1,130 @@
+# CI for every push to `main` (PAB-037, PROJECT.md §8.8). `main` is the only branch,
+# so there is no pull_request trigger; `pull_request_target` must never be added.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No `concurrency` with cancel-in-progress: every commit on `main` gets its own verdict.
+
+jobs:
+  gate:
+    name: Quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          # Throwaway credentials of a service container that lives for this job only.
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: ci_test
+        ports:
+          - 5432:5432
+        # TCP (-h 127.0.0.1), not the unix socket: during first initialisation the
+        # image runs a temporary server that answers on the socket only.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U ci -d ci_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 5s
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          # Same version as the Dockerfile.
+          version: "0.11.31"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: uv sync --locked
+        run: uv sync --locked
+
+      - name: Python version
+        run: uv run python --version
+
+      - name: Resolve Playwright version from uv.lock
+        id: playwright
+        run: |
+          version="$(python3 -c "import tomllib; print(next(p['version'] for p in tomllib.load(open('uv.lock', 'rb'))['package'] if p['name'] == 'playwright'))")"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Only the downloaded browser is cached; system libraries come from apt on every run.
+      - name: Cache Chromium
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # Full Chromium (not the headless shell), as `make install-browser`.
+      - name: Install Chromium with system libraries
+        run: uv run playwright install --with-deps --no-shell chromium
+
+      - name: ruff check .
+        run: uv run ruff check .
+
+      - name: ruff format --check .
+        run: uv run ruff format --check .
+
+      - name: mypy app tests
+        run: uv run mypy app tests
+
+      - name: lint-imports
+        run: uv run lint-imports
+
+      - name: pytest --cov=app --cov-report=term-missing
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://ci:ci-password@127.0.0.1:5432/ci_test
+        run: uv run pytest --cov=app --cov-report=term-missing
+
+  ai-email:
+    name: No AI-assistant emails in history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Author, committer and message of every pushed commit; the `>8` marker is not honoured.
+      - name: scripts/check-ai-email range
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: scripts/check-ai-email range "$BEFORE" "$AFTER"
+
+  ops:
+    name: Scripts and compose file
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck --severity=warning scripts/*
+        run: shellcheck --severity=warning scripts/*
+
+      # Dummy values only: the repository holds no env file and no secrets.
+      - name: docker compose config -q
+        env:
+          ENV_FILE: ${{ runner.temp }}/compose-ci.env
+        run: |
+          printf '%s\n' 'DB__USER=ci' 'DB__PASSWORD=ci-password' 'DB__NAME=ci' > "$ENV_FILE"
+          docker compose --env-file "$ENV_FILE" config -q
