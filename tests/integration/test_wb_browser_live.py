@@ -21,17 +21,21 @@ import asyncio
 import json
 import os
 import re
+import socket
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
 import pytest
+from loguru import logger
+from playwright.async_api import Error as PlaywrightError
 
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.wb_access import BrowserWbAccessProvider
 from app.services.wb_access import WbAccessStage
 from app.services.wb_access import WbAccessUnavailable
+from app.services.wb_access import WbTokenFetchError
 from app.services.wb_browser import fetch_wb_token
 from app.services.wb_client import WbClient
 from tests.integration.wb_antibot_stub import WbAntibotStub
@@ -253,3 +257,61 @@ async def test_browser_environment_is_the_allowlist_without_bot_settings(
     assert all(
         "ENVIRON-MARKER" not in json.dumps(env, ensure_ascii=False) for env in environs
     )
+
+
+def _closed_local_port() -> int:
+    """A port nothing listens on: bound to 0 by the OS, then released.
+
+    Not port 9: Chromium refuses it as `ERR_UNSAFE_PORT`, a different failure.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+@pytest.mark.asyncio
+async def test_missing_browser_is_browser_not_installed_without_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PAB-080 AC9: an empty browsers directory -> `browser_not_installed`,
+    raised before the launch, so there is no Playwright exception to chain."""
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+
+    with pytest.raises(WbTokenFetchError) as caught:
+        await asyncio.wait_for(fetch_wb_token(sandbox=False), _FUSE_SECONDS)
+
+    assert caught.value.stage is WbAccessStage.launch_failed
+    assert caught.value.detail == "browser_not_installed"
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_navigation_to_closed_port_is_navigation_network_error(
+    private_tmp: str,
+) -> None:
+    """PAB-080 AC9: `goto` on a closed `127.0.0.1` port -> `navigation_network_error`,
+    chained to the Playwright error; its text is in neither `detail` nor a log
+    (positive control: the text does hold the URL and the net error)."""
+    url = f"http://127.0.0.1:{_closed_local_port()}/"
+    lines: list[str] = []
+    handler = logger.add(
+        lambda m: lines.append(str(m).rstrip("\n")), level="TRACE", format="{message}"
+    )
+    try:
+        with pytest.raises(WbTokenFetchError) as caught:
+            await asyncio.wait_for(
+                fetch_wb_token(sandbox=False, home_url=url), _FUSE_SECONDS
+            )
+        logger.info("control")
+    finally:
+        logger.remove(handler)
+
+    cause = caught.value.__cause__
+    assert caught.value.stage is WbAccessStage.launch_failed
+    assert caught.value.detail == "navigation_network_error"
+    assert isinstance(cause, PlaywrightError)
+    assert url in str(cause)  # positive control: the text carries the URL
+    assert url not in caught.value.detail
+    assert lines == ["control"]
+    assert _processes_started_by_test(private_tmp) == {}

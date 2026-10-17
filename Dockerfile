@@ -29,7 +29,8 @@ FROM python:3.14.7-slim-trixie
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
 # Unprivileged regular user (not a system one) with a fixed UID; its home is
 # declared as /nonexistent and not created, nothing writes there.
@@ -38,13 +39,25 @@ RUN useradd --uid 10001 --home-dir /nonexistent --no-create-home --shell /usr/sb
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
+
+# Full Chromium (no headless shell: WB rejects its token, PROJECT.md 10.0 D6) of the
+# exact version of the locked `playwright` package, installed by the package itself
+# from the venv, plus system libraries and fonts (--with-deps, needs root, hence
+# before USER). Its own layer after the venv: code changes do not re-download it.
+# PLAYWRIGHT_BROWSERS_PATH is a fixed image directory: owned by root, readable and
+# executable by everyone, writable by nobody but root.
+RUN playwright install --with-deps chromium --no-shell \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod -R u=rwX,go=rX /opt/pw-browsers
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY app ./app
 
 # Normalize modes so the image does not depend on the umask of the build host:
-# readable by everyone, writable by root only. .venv is left as built.
-RUN chmod -R u=rwX,go=rX /app/app /app/alembic /app/alembic.ini
+# readable by everyone, writable by root only. .venv is left as built, except
+# the lock file uv leaves there with mode 666 (world-writable).
+RUN chmod -R u=rwX,go=rX /app/app /app/alembic /app/alembic.ini \
+    && chmod 644 /app/.venv/.lock
 
 USER 10001
 
