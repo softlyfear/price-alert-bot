@@ -118,6 +118,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: shellcheck --version
+        run: shellcheck --version
+
       - name: shellcheck --severity=warning scripts/*
         run: shellcheck --severity=warning scripts/*
 
@@ -128,3 +131,52 @@ jobs:
         run: |
           printf '%s\n' 'DB__USER=ci' 'DB__PASSWORD=ci-password' 'DB__NAME=ci' > "$ENV_FILE"
           docker compose --env-file "$ENV_FILE" config -q
+
+  image:
+    name: Image build and smoke checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No registry login, no push, no build cache backend: every run builds from scratch.
+      - name: Builder
+        run: docker buildx version
+
+      # Dummy values only: the repository holds no env file and no secrets.
+      - name: Create dummy env file
+        run: |
+          printf '%s\n' 'DB__USER=ci' 'DB__PASSWORD=ci-password' 'DB__NAME=ci' > "$RUNNER_TEMP/compose-ci.env"
+          echo "ENV_FILE=$RUNNER_TEMP/compose-ci.env" >> "$GITHUB_ENV"
+
+      # The same target the operator uses (flags live in the Makefile only).
+      - name: make docker-build
+        run: |
+          make docker-build
+          docker image inspect --format '{{.Id}}' price-alert-bot > "$RUNNER_TEMP/image-id-1"
+          docker images --filter dangling=true --format '{{.ID}}' | sort > "$RUNNER_TEMP/dangling-1"
+          echo "image ID after the first build: $(cat "$RUNNER_TEMP/image-id-1")"
+
+      # An unchanged rebuild must neither change the image ID nor leave an unnamed image.
+      - name: make docker-build again, image unchanged
+        run: |
+          make docker-build
+          docker image inspect --format '{{.Id}}' price-alert-bot > "$RUNNER_TEMP/image-id-2"
+          docker images --filter dangling=true --format '{{.ID}}' | sort > "$RUNNER_TEMP/dangling-2"
+          status=0
+          if ! diff "$RUNNER_TEMP/image-id-1" "$RUNNER_TEMP/image-id-2" > /dev/null; then
+              echo "::error::image ID changed on an unchanged rebuild: $(cat "$RUNNER_TEMP/image-id-1") -> $(cat "$RUNNER_TEMP/image-id-2")"
+              status=1
+          fi
+          if ! diff "$RUNNER_TEMP/dangling-1" "$RUNNER_TEMP/dangling-2"; then
+              echo "::error::the set of unnamed images changed on an unchanged rebuild"
+              status=1
+          fi
+          echo "image ID after the second build: $(cat "$RUNNER_TEMP/image-id-2")"
+          exit "$status"
+
+      - name: scripts/smoke-image price-alert-bot
+        run: scripts/smoke-image price-alert-bot

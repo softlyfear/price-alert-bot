@@ -76,8 +76,11 @@ check_message() {
         [ "$found_rc" -le 1 ] || die "grep failed on $msg_file (rc=$found_rc)"
         cut_line="${found%%:*}"
         if [ -n "$cut_line" ]; then
-            TMP_PATH="$(mktemp)"
-            head -n "$((cut_line - 1))" "$msg_file" > "$TMP_PATH"
+            # `|| die`: under `set -e` a failed `$(…)` assignment would exit with
+            # the rc of the utility (1 = "address found"), not the promised 2.
+            TMP_PATH="$(mktemp)" || die "mktemp failed (is TMPDIR writable?)"
+            head -n "$((cut_line - 1))" "$msg_file" > "$TMP_PATH" \
+                || die "cannot write the truncated copy of $msg_file"
             check_file="$TMP_PATH"
         fi
     fi
@@ -100,7 +103,7 @@ check_range() {
         revs=("$before..$after")
     fi
 
-    TMP_PATH="$(mktemp -d)"
+    TMP_PATH="$(mktemp -d)" || die "mktemp -d failed (is TMPDIR writable?)"
 
     local sha total=0 bad=0
     local -a shas
