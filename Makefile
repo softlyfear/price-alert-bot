@@ -129,18 +129,21 @@ db-upgrade:
 db-downgrade:
 	uv run python -m alembic downgrade -1
 
-docker-build:
-	docker build -t price-alert-bot .
-
 # The env file (default .env) is used for interpolation and as env_file of app and migrate:
 #   make docker-up ENV_FILE=/path/to/file
 ENV_FILE ?= .env
 export ENV_FILE
 COMPOSE := docker compose --env-file "$(ENV_FILE)"
 
+# The single build path of operator and CI (PAB-086): compose, BuildKit when available.
+# Default build attestations are off: they make the image ID differ between two
+# builds of identical content.
+docker-build:
+	@echo "$(GREEN)==> Building image...$(NC)"
+	BUILDX_NO_DEFAULT_ATTESTATIONS=1 $(COMPOSE) build
+
 # build -> stop app -> up -d: a bare `up -d` would re-run migrate while app is alive.
-docker-up:
-	$(COMPOSE) build
+docker-up: docker-build
 	$(COMPOSE) stop app
 	$(COMPOSE) up -d
 

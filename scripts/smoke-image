@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Smoke checks of the runtime image contract (PROJECT.md §8.6, PAB-086).
+#
+# Usage: scripts/smoke-image IMAGE
+#
+# Runs on a developer machine and in CI alike. No network (--network none), no
+# application settings. Every container is `--rm`; no image or volume is created.
+# `docker inspect` is queried field by field and never printed whole, the
+# container environment is never printed.
+#
+# Exit codes: 0 all checks passed, 1 at least one check failed (each failure is a
+# `FAIL` line naming the check), 2 usage error.
+
+set -uo pipefail
+
+[ "$#" -eq 1 ] && [ -n "$1" ] || { echo "usage: smoke-image IMAGE" >&2; exit 2; }
+readonly IMAGE="$1"
+readonly START_LIMIT=60
+
+failed=0
+pass() { echo "ok   $1"; }
+fail() { echo "FAIL $1${2:+: $2}"; failed=1; }
+
+# Throwaway container: no network, removed on exit.
+drun() { docker run --rm --network none "$@"; }
+# One inspect field, rendered by a Go template.
+field() { docker image inspect --format "$1" "$IMAGE"; }
+
+docker image inspect --format '{{.Id}}' "$IMAGE" > /dev/null 2>&1 \
+    || { echo "smoke-image: image $IMAGE not found" >&2; exit 2; }
+
+# (1) /app content, no uv.
+out="$(drun "$IMAGE" ls -A /app 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$out" | LC_ALL=C sort | tr '\n' ' ')" = ".venv alembic alembic.ini app " ]; then
+    pass "(1) /app holds exactly .venv alembic alembic.ini app"
+else
+    fail "(1) /app content" "rc=$rc, got: $(printf '%s' "$out" | tr '\n' ' ')"
+fi
+out="$(drun "$IMAGE" sh -c 'command -v uv || echo not-found' 2>&1)"
+if [ "$out" = "not-found" ]; then pass "(1) uv is not in the image"; else fail "(1) uv lookup" "found: $out"; fi
+
+# (2) installed distributions: no dev tooling, runtime stack present. The same
+# lookup finds both lists, so the positive control proves the negative one.
+# shellcheck disable=SC2016  # the program is Python, not shell
+dist_py='
+import re, sys
+from importlib.metadata import distributions
+names = {re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() for d in distributions()}
+absent = "pytest mypy ruff testcontainers docker requests urllib3 import-linter pre-commit".split()
+present = "aiogram sqlalchemy asyncpg uvicorn alembic playwright".split()
+print(f"distributions: {len(names)}")
+bad = [f"unexpected {n}" for n in absent if n in names] + [f"missing {n}" for n in present if n not in names]
+if bad:
+    print("; ".join(bad))
+    sys.exit(1)
+'
+out="$(drun "$IMAGE" python -c "$dist_py" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "(2) no dev distributions, runtime stack present ($out)"; else fail "(2) distributions" "rc=$rc, $(printf '%s' "$out" | tr '\n' ' ')"; fi
+
+# (3) import under a read-only root FS, cwd /, safe path, no settings.
+out="$(drun --read-only -w / -e PYTHONSAFEPATH=1 "$IMAGE" python -c 'import app.main' 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "(3) import app.main under read-only root FS"; else fail "(3) import app.main" "rc=$rc, $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"; fi
+
+# (4) unprivileged user; /app is not writable (the message is checked, not only the rc).
+uid="$(drun "$IMAGE" id -u 2>&1)"
+cfg_user="$(field '{{.Config.User}}')"
+if [ "$uid" != "0" ] && [[ "$uid" =~ ^[0-9]+$ ]] && [[ "$cfg_user" =~ ^[1-9][0-9]* ]]; then
+    pass "(4) runs as uid $uid, Config.User=$cfg_user"
+else
+    fail "(4) user" "id -u=$uid, Config.User=$cfg_user"
+fi
+out="$(drun "$IMAGE" sh -c 'touch /app/smoke-probe' 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && [[ "$out" == *"Permission denied"* ]]; then
+    pass "(4) /app is not writable (Permission denied)"
+else
+    fail "(4) /app write" "rc=$rc, $(printf '%s' "$out" | tr '\n' ' ')"
+fi
+
+# (5) Entrypoint empty, Cmd is the exec-form uvicorn command, one exposed port.
+ep_len="$(field '{{len .Config.Entrypoint}}')"
+cmd_len="$(field '{{len .Config.Cmd}}')"
+cmd_first="$(field '{{index .Config.Cmd 0}}' 2>/dev/null)"
+cmd_all="$(field '{{range .Config.Cmd}}[{{.}}]{{end}}')"
+ports="$(field '{{range $p, $_ := .Config.ExposedPorts}}{{$p}} {{end}}')"
+cmd_ok=1
+[ "$ep_len" = "0" ] || cmd_ok=0
+[ "${cmd_len:-0}" -ge 1 ] 2>/dev/null || cmd_ok=0
+case "${cmd_first##*/}" in sh|bash|dash|ash|"") cmd_ok=0 ;; esac
+for need in 'app.main:app' '0.0.0.0' '8000'; do
+    [[ "$cmd_all" == *"[$need]"* ]] || cmd_ok=0
+done
+for deny in '--workers' '--reload' 'alembic'; do
+    [[ "$cmd_all" != *"$deny"* ]] || cmd_ok=0
+done
+if [ "$cmd_ok" -eq 1 ]; then pass "(5) Entrypoint empty, Cmd is exec-form uvicorn: $cmd_all"; else fail "(5) Entrypoint/Cmd" "Entrypoint length=$ep_len, Cmd=$cmd_all"; fi
+if [ "$ports" = "8000/tcp " ]; then pass "(5) ExposedPorts is 8000/tcp"; else fail "(5) ExposedPorts" "got: $ports"; fi
+
+# (6) no settings: loud refusal, exit code 3, within the limit.
+name="smoke-image-$$"
+t0=$SECONDS
+out="$(timeout "$START_LIMIT" docker run --rm --network none --name "$name" "$IMAGE" 2>&1)"; rc=$?
+elapsed=$((SECONDS - t0))
+if [ "$rc" -eq 124 ]; then docker rm -f "$name" > /dev/null 2>&1; fi
+if [ "$rc" -eq 3 ] && [[ "$out" == *"validation error"* ]] && [[ "$out" == *"Settings"* ]] \
+    && [[ "$out" == *"Application startup failed. Exiting."* ]]; then
+    pass "(6) start without settings: rc=3 in ${elapsed}s, validation error reported"
+else
+    fail "(6) start without settings" "rc=$rc after ${elapsed}s (limit ${START_LIMIT}s), $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"
+fi
+
+# (7) Chromium: path named by the playwright package, full build, loadable libraries.
+# shellcheck disable=SC2016  # the program is Python, not shell
+path_py='
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    print(p.chromium.executable_path)
+'
+chrome="$(drun --read-only --tmpfs /tmp "$IMAGE" python -c "$path_py" 2>/dev/null | tail -n 1)"
+browsers="$(drun "$IMAGE" sh -c 'printf %s "$PLAYWRIGHT_BROWSERS_PATH"' 2>/dev/null)"
+if [ -n "$chrome" ] && [ -n "$browsers" ] && [[ "$chrome" == "$browsers"/* ]] \
+    && drun "$IMAGE" test -x "$chrome"; then
+    pass "(7) Chromium executable exists under $browsers"
+else
+    fail "(7) Chromium executable" "playwright names '${chrome:-nothing}', browsers path '${browsers:-unset}'"
+fi
+shells="$(drun "$IMAGE" sh -c 'ls -d "$PLAYWRIGHT_BROWSERS_PATH"/chromium_headless_shell* 2>/dev/null' 2>&1)"
+if [ -z "$shells" ]; then pass "(7) no headless shell directory"; else fail "(7) headless shell" "found: $shells"; fi
+out="$(drun "$IMAGE" "${chrome:-/nonexistent}" --version 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then pass "(7) Chromium starts under the image UID: $out"; else fail "(7) Chromium --version" "rc=$rc, $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"; fi
+out="$(drun "$IMAGE" sh -c 'touch "$PLAYWRIGHT_BROWSERS_PATH/smoke-probe"' 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && [[ "$out" == *"Permission denied"* ]]; then
+    pass "(7) browsers directory is not writable (Permission denied)"
+else
+    fail "(7) browsers directory write" "rc=$rc, $(printf '%s' "$out" | tr '\n' ' ')"
+fi
+
+# (8) facts for the log, not compared.
+py_version="$(drun "$IMAGE" python --version 2>&1)"
+echo "info $py_version in the image"
+echo "info image size: $(field '{{.Size}}') bytes"
+
+if [ "$failed" -ne 0 ]; then
+    echo "smoke-image: FAILED" >&2
+    exit 1
+fi
+echo "smoke-image: all checks passed"
