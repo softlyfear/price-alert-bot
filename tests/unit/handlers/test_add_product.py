@@ -266,7 +266,7 @@ async def test_unparseable_link_shows_format_hint_and_keeps_state(
 
 
 @pytest.mark.asyncio
-async def test_ozon_link_is_reported_unsupported_not_not_found(
+async def test_unsupported_marketplace_at_link_step_keeps_dialog_with_cancel_keyboard(
     dialog: _Dialog, stub: _TrackingStub
 ) -> None:
     stub.preview_error = MarketplaceNotSupportedError("ozon")
@@ -276,11 +276,27 @@ async def test_ozon_link_is_reported_unsupported_not_not_found(
 
     assert stub.preview_calls == [(_USER, Marketplace.ozon, 1234567)]
     assert dialog.last_text == texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT
-    assert "не поддерживается" in dialog.last_text
     assert (
         dialog.last_text != texts.ADD_FETCH_FAILURE_TEXTS[FetchFailureReason.not_found]
     )
     assert await dialog.state() == AddProduct.waiting_link.state
+    assert _keyboard_callbacks(dialog.sent[-1]) == [CB_ADD_CANCEL]
+
+
+def test_unsupported_marketplace_text_is_true_in_both_places_it_is_shown() -> None:
+    """Shown with the cancel keyboard (link step) and with no dialog at all
+    (confirmation), so it names no marketplace and asks for no action."""
+    forbidden = ("Wildberries", "Ozon", "Отмена", "Пришлите")
+    text = texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT
+    # positive control: the check does catch the text this one replaced
+    old = (
+        "Этот маркетплейс пока не поддерживается. Пришлите ссылку или артикул "
+        "Wildberries либо нажмите «Отмена»."
+    )
+
+    assert [f for f in forbidden if f in old] == ["Wildberries", "Отмена", "Пришлите"]
+    assert "не поддерживается" in text
+    assert [f for f in forbidden if f in text] == []
 
 
 @pytest.mark.asyncio

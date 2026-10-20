@@ -671,6 +671,33 @@ async def test_redirect_to_foreign_origin_is_bad_payload_without_any_request(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "location",
+    [f"http://[::1{_MARKER}", f"\x00bad{_MARKER}"],
+    ids=["unclosed-ipv6-host", "control-character"],
+)
+async def test_unparseable_redirect_location_is_transport_error_without_leak(
+    location: str,
+) -> None:
+    """Pins httpx 0.28.1: an unparseable `Location` surfaces from `send()` as
+    `RemoteProtocolError` (an `httpx.HTTPError`), never as a raw exception."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"Location": location})
+
+    result, records = await _fetch(handler)
+
+    assert _MARKER in location  # positive control for the leak assertions
+    assert result == _failure(FetchFailureReason.transport_error, "RemoteProtocolError")
+    assert len(seen) == 1
+    assert [r["level"].name for r in records] == ["WARNING"]
+    assert _MARKER not in records[0]["message"]
+    assert _MARKER not in str(records[0]["extra"])
+
+
+@pytest.mark.asyncio
 async def test_redirect_cookie_reaches_next_step_but_not_other_hosts() -> None:
     """Synthetic cookie. Step 1: `307` + `Set-Cookie`; step 2 carries it and is
     blocked (the factual chain of `PROJECT.md` section 2.11)."""

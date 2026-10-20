@@ -86,8 +86,7 @@ ADD_NOT_TEXT_TEXT: Final[str] = (
 )
 
 ADD_MARKETPLACE_UNSUPPORTED_TEXT: Final[str] = (
-    "Этот маркетплейс пока не поддерживается. Пришлите ссылку или артикул "
-    "Wildberries либо нажмите «Отмена»."
+    "Этот маркетплейс пока не поддерживается."
 )
 
 ADD_FETCH_FAILURE_TEXTS: Final[dict[FetchFailureReason, str]] = {
