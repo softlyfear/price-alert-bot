@@ -223,7 +223,7 @@ async def test_help_command_names_the_limit_from_workflow_data(
 
     sent = _sent_texts(_requests(bot))
     assert sent == [texts.help_text(limit)]
-    assert f"не более чем за {limit} товарами" in sent[0]
+    assert f"Лимит товаров: {limit}." in sent[0]
 
 
 @pytest.mark.asyncio
@@ -268,7 +268,7 @@ async def test_menu_help_button_edits_to_help_with_the_limit_and_keeps_fsm(
 
     edits = [r for r in _requests(bot) if isinstance(r, EditMessageText)]
     assert [(e.text, e.parse_mode) for e in edits] == [(texts.help_text(limit), None)]
-    assert f"не более чем за {limit} товарами" in edits[0].text
+    assert f"Лимит товаров: {limit}." in edits[0].text
     assert _callbacks(edits[0]) == _MENU
     assert len([r for r in _requests(bot) if isinstance(r, AnswerCallbackQuery)]) == 1
     assert await dispatcher.storage.get_state(key) == "some-dialog-state"

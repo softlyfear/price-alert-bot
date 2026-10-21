@@ -333,10 +333,22 @@ async def test_remove_alert_twice_is_removed_then_not_found(
     service = _service(db_session)
     tg, article = next(_tg_ids), next(_articles)
     first = await _add(service, tg, article=article, target=9_000)
-    await _add(service, tg, article=article, target=8_000)
+    sibling = await _add(service, tg, article=article, target=8_000)
+    foreign = await _add(service, next(_tg_ids), article=article, target=9_000)
 
     assert await service.remove_alert(tg, first.id) is AlertRemoval.removed
     assert await service.remove_alert(tg, first.id) is AlertRemoval.not_found
+
+    surviving = (
+        (
+            await db_session.execute(
+                select(Alert.id).where(Alert.id.in_([first.id, sibling.id, foreign.id]))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert sorted(surviving) == sorted([sibling.id, foreign.id])
 
 
 @pytest.mark.parametrize("keep_sibling", [True, False])

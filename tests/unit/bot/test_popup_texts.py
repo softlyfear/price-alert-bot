@@ -18,7 +18,9 @@ _POPUP_TEXTS: dict[str, str] = {
     "ADD_OLD_CARD_ALERT_TEXT": texts.ADD_OLD_CARD_ALERT_TEXT,
     "LIST_GONE_ALERT_TEXT": texts.LIST_GONE_ALERT_TEXT,
     "LIST_STALE_BUTTON_ALERT_TEXT": texts.LIST_STALE_BUTTON_ALERT_TEXT,
-    "LIST_ALERT_REMOVED_TEXT": texts.LIST_ALERT_REMOVED_TEXT,
+    "ALERT_REMOVED_TEXT": texts.ALERT_REMOVED_TEXT,
+    "ALERT_ALREADY_REMOVED_TEXT": texts.ALERT_ALREADY_REMOVED_TEXT,
+    "PRODUCT_ALREADY_GONE_TEXT": texts.PRODUCT_ALREADY_GONE_TEXT,
     "LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT": texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT,
     "LIST_PRODUCT_REMOVED_TEXT": texts.LIST_PRODUCT_REMOVED_TEXT,
     "CANCEL_TEXT": texts.CANCEL_TEXT,
@@ -34,8 +36,8 @@ def _fits(text: str) -> bool:
     return _utf16_len(text) <= _LIMIT
 
 
-def test_popup_list_has_the_nine_known_constants() -> None:
-    assert len(_POPUP_TEXTS) == 9
+def test_popup_list_has_the_eleven_known_constants() -> None:
+    assert len(_POPUP_TEXTS) == 11
 
 
 @pytest.mark.parametrize("name", list(_POPUP_TEXTS))

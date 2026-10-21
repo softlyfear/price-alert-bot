@@ -42,13 +42,13 @@ def test_marketplace_title_is_the_human_name() -> None:
     assert texts.marketplace_title(Marketplace.ozon) == "Ozon"
 
 
-def test_product_card_text_lists_every_threshold_with_its_direction() -> None:
+def test_product_card_text_shows_short_arrow_thresholds_and_one_legend() -> None:
     text = texts.product_card_text(
         "Кроссовки",
         Marketplace.wb,
         "https://www.wildberries.ru/catalog/1/detail.aspx",
         1_990_00,
-        [(AlertDirection.below, 1_500_00), (AlertDirection.above, 2_500_50)],
+        [(AlertDirection.below, 1_000_00), (AlertDirection.above, 2_000_00)],
     )
 
     assert text == (
@@ -59,9 +59,12 @@ def test_product_card_text_lists_every_threshold_with_its_direction() -> None:
         f"{_DISCLAIMER}.\n"
         "\n"
         "Пороги:\n"
-        f"• Сообщу, когда цена станет ниже 1{_NB}500{_NB}₽\n"
-        f"• Сообщу, когда цена станет выше 2{_NB}500,50{_NB}₽"
+        f"• ↓ 1{_NB}000{_NB}₽\n"
+        f"• ↑ 2{_NB}000{_NB}₽\n"
+        "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
     )
+    assert "цена станет" not in text
+    assert text.count("↓ — сообщу") == 1
 
 
 def test_product_card_text_without_thresholds_says_there_are_none() -> None:
@@ -71,13 +74,49 @@ def test_product_card_text_without_thresholds_says_there_are_none() -> None:
 
     assert text.endswith("Порогов нет.")
     assert "Пороги:" not in text
+    assert "↓" not in text
+    assert "↑" not in text
     assert "Маркетплейс: Ozon" in text
 
 
-def test_remove_alert_button_text_names_the_condition() -> None:
+def test_remove_alert_button_text_has_no_arrow_by_default() -> None:
     assert texts.remove_alert_button_text(AlertDirection.above, 3_000_00) == (
-        f"Убрать порог: цена станет выше 3{_NB}000{_NB}₽"
+        f"Убрать порог: 3{_NB}000{_NB}₽"
     )
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [(AlertDirection.below, "↓"), (AlertDirection.above, "↑")],
+)
+def test_remove_alert_button_text_with_arrow_names_the_direction(
+    direction: AlertDirection, expected: str
+) -> None:
+    assert texts.remove_alert_button_text(direction, 1_000_00, with_arrow=True) == (
+        f"Убрать порог: {expected} 1{_NB}000{_NB}₽"
+    )
+
+
+def test_direction_arrow_rejects_a_value_outside_the_enum() -> None:
+    with pytest.raises(AssertionError):
+        texts.direction_arrow(cast(AlertDirection, "sideways"))
+
+
+@pytest.mark.parametrize(
+    ("direction", "phrase"),
+    [
+        (AlertDirection.below, f"Сообщу, когда цена станет ниже 1{_NB}000{_NB}₽"),
+        (AlertDirection.above, f"Сообщу, когда цена станет выше 1{_NB}000{_NB}₽"),
+    ],
+)
+def test_confirm_and_added_texts_keep_the_full_direction_phrase(
+    direction: AlertDirection, phrase: str
+) -> None:
+    confirm = texts.confirm_text("Item", 2_000_00, 1_000_00, direction)
+    added = texts.added_text("Item", 1_000_00, direction)
+
+    assert phrase in confirm
+    assert phrase in added
 
 
 def test_gone_and_stale_alerts_are_distinct_and_not_about_previous_state() -> None:
@@ -90,16 +129,24 @@ def test_gone_and_stale_alerts_are_distinct_and_not_about_previous_state() -> No
 
 def test_removal_outcome_texts_are_distinct_and_removed_ones_point_to_add() -> None:
     outcomes = {
-        texts.LIST_ALERT_REMOVED_TEXT,
+        texts.ALERT_REMOVED_TEXT,
+        texts.ALERT_ALREADY_REMOVED_TEXT,
+        texts.PRODUCT_ALREADY_GONE_TEXT,
         texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT,
         texts.LIST_PRODUCT_REMOVED_TEXT,
         texts.LIST_GONE_ALERT_TEXT,
     }
 
-    assert len(outcomes) == 4
+    assert len(outcomes) == 6
     assert "/add" in texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT
     assert "/add" in texts.LIST_PRODUCT_REMOVED_TEXT
     assert "➕ Добавить товар" in texts.LIST_EMPTY_TEXT
+
+
+def test_short_removal_texts_are_the_literal_phrases() -> None:
+    assert texts.ALERT_REMOVED_TEXT == "Порог удалён"
+    assert texts.ALERT_ALREADY_REMOVED_TEXT == "Порог уже удалён"
+    assert texts.PRODUCT_ALREADY_GONE_TEXT == "Товар уже не отслеживается"
 
 
 def test_marketplace_title_rejects_a_value_outside_the_enum() -> None:
