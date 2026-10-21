@@ -33,6 +33,7 @@ from tests.unit.handlers.card_dialog_support import ADD_DATA
 from tests.unit.handlers.card_dialog_support import ADD_STATES
 from tests.unit.handlers.card_dialog_support import CARD_NAV
 from tests.unit.handlers.card_dialog_support import DB_ARTICLE
+from tests.unit.handlers.card_dialog_support import DB_FETCHED_AT
 from tests.unit.handlers.card_dialog_support import DB_NAME
 from tests.unit.handlers.card_dialog_support import DB_PRICE
 from tests.unit.handlers.card_dialog_support import EDIT_DATA
@@ -40,6 +41,7 @@ from tests.unit.handlers.card_dialog_support import EDIT_STATE
 from tests.unit.handlers.card_dialog_support import NB
 from tests.unit.handlers.card_dialog_support import PRODUCT_ID
 from tests.unit.handlers.card_dialog_support import callbacks
+from tests.unit.handlers.card_dialog_support import card
 from tests.unit.handlers.card_dialog_support import rows
 
 _DRAFT_FROM_DB: dict[str, Any] = {
@@ -47,6 +49,7 @@ _DRAFT_FROM_DB: dict[str, Any] = {
     "article": DB_ARTICLE,
     "product_name": DB_NAME,
     "current_price": DB_PRICE,
+    "price_fetched_at": DB_FETCHED_AT.isoformat(),
 }
 _START_STATES: list[tuple[str | None, dict[str, Any]]] = [
     (None, {}),
@@ -131,10 +134,45 @@ async def test_amount_then_confirm_adds_the_threshold_with_the_data_from_the_db(
     await card_dialog.press(CB_ADD_CONFIRM, message_id=sent_message_id(0))
 
     card_service.add_tracking.assert_awaited_once_with(
-        _USER, Marketplace.wb, DB_ARTICLE, DB_NAME, DB_PRICE, 150_000
+        _USER,
+        Marketplace.wb,
+        DB_ARTICLE,
+        DB_NAME,
+        DB_PRICE,
+        150_000,
+        price_fetched_at=DB_FETCHED_AT,
     )
     card_service.preview.assert_not_called()
     assert await card_dialog.state() is None
+
+
+@pytest.mark.asyncio
+async def test_press_on_a_product_without_a_stamp_overwrites_the_foreign_one_with_none(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    card_service.get_product_card.return_value = card(price_fetched_at=None)
+    await card_dialog.set_state(
+        "AddProduct:confirming",
+        {**ADD_DATA, "price_fetched_at": "2020-01-02T03:04:05+00:00"},
+    )
+
+    await card_dialog.press(f"aadd:{PRODUCT_ID}")
+
+    assert await card_dialog.data() == {**_DRAFT_FROM_DB, "price_fetched_at": None}
+
+
+@pytest.mark.asyncio
+async def test_null_stamp_of_the_product_reaches_add_tracking_as_none(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    card_service.get_product_card.return_value = card(price_fetched_at=None)
+    card_service.add_tracking.return_value.direction = AlertDirection.below
+    await card_dialog.press(f"aadd:{PRODUCT_ID}")
+    await card_dialog.say("1500")
+
+    await card_dialog.press(CB_ADD_CONFIRM, message_id=sent_message_id(0))
+
+    assert card_service.add_tracking.await_args.kwargs == {"price_fetched_at": None}
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ class ProductRepository(
             "product_name",
             "current_price",
             "previous_price",
+            "price_fetched_at",
         }
 
     @property

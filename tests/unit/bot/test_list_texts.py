@@ -181,8 +181,6 @@ def test_removal_outcome_texts_are_distinct_and_removed_ones_point_to_add() -> N
         assert removed.endswith(
             "Чтобы вернуть товар, добавьте его заново: "
             "«Главное меню» → «➕ Добавить товар»."
-        ) or removed.endswith(
-            "добавьте его заново: «Главное меню» → «➕ Добавить товар»."
         )
     assert "➕ Добавить товар" in texts.LIST_EMPTY_TEXT
 

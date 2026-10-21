@@ -275,6 +275,7 @@ def create_router() -> Router:
             product.article,
             product.product_name,
             product.current_price,
+            price_fetched_at=product.price_fetched_at,
         )
         await edit_callback_message(
             callback,

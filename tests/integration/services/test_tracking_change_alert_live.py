@@ -62,7 +62,9 @@ def _service(session: AsyncSession) -> TrackingService:
 
 
 async def _add(service: TrackingService, tg: int, article: int, target: int) -> Alert:
-    return await service.add_tracking(tg, _WB, article, "Live item", _PRICE, target)
+    return await service.add_tracking(
+        tg, _WB, article, "Live item", _PRICE, target, price_fetched_at=None
+    )
 
 
 async def _mark_triggered(session: AsyncSession, alert_id: int) -> None:

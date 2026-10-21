@@ -44,6 +44,7 @@ class Product(Base, TimestampMixin):
         )
     )
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    price_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint(

@@ -58,7 +58,7 @@ async def _add(
     marketplace: Marketplace = Marketplace.wb,
 ) -> Alert:
     return await service.add_tracking(
-        tg, marketplace, article, "Live item", _PRICE, target
+        tg, marketplace, article, "Live item", _PRICE, target, price_fetched_at=None
     )
 
 
