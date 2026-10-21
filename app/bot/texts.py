@@ -36,6 +36,7 @@ MENU_ADD_BUTTON_TEXT: Final[str] = "➕ Добавить товар"
 MENU_LIST_BUTTON_TEXT: Final[str] = "Мои товары"
 MENU_HELP_BUTTON_TEXT: Final[str] = "Помощь"
 MENU_MAIN_BUTTON_TEXT: Final[str] = "Главное меню"
+NOTICE_OPEN_BUTTON_TEXT: Final[str] = "Открыть товар"
 
 FALLBACK_TEXT: Final[str] = (
     "Не понял сообщение. Выберите действие ниже или пришлите ссылку на "

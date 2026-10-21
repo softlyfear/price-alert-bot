@@ -58,6 +58,7 @@ from aiogram.methods import SetMyCommands
 from aiogram.methods import SetMyDescription
 from aiogram.methods import SetMyShortDescription
 from aiogram.methods import TelegramMethod
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message as TgMessage
 from aiogram.types import Update
 from multidict import CIMultiDict
@@ -69,6 +70,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from yarl import URL
 
 from app import main
+from app.bot.keyboards import notice_keyboard
 from app.bot.setup import _INFLIGHT_KEY
 from app.bot.setup import InFlightUpdatesTracker
 from app.bot.setup import create_dispatcher
@@ -1687,13 +1689,17 @@ async def test_lifespan_builds_services_then_polling_then_scheduler_with_setting
     events: list[str] = []
     price_service_kwargs: list[dict[str, Any]] = []
     notification_bots: list[Bot] = []
+    notification_keyboards: list[Callable[[int], InlineKeyboardMarkup]] = []
     dispatcher_calls: list[tuple[Any, ...]] = []
     real_notification_service = NotificationService
 
-    def recording_notification(bot: Bot) -> Any:
+    def recording_notification(
+        bot: Bot, *, alert_keyboard: Callable[[int], InlineKeyboardMarkup]
+    ) -> Any:
         events.append("notification_service")
         notification_bots.append(bot)
-        return real_notification_service(bot)
+        notification_keyboards.append(alert_keyboard)
+        return real_notification_service(bot, alert_keyboard=alert_keyboard)
 
     class _RecordingPriceService:
         def __init__(self, **kwargs: Any) -> None:
@@ -1748,6 +1754,8 @@ async def test_lifespan_builds_services_then_polling_then_scheduler_with_setting
         ]
 
     assert notification_bots == [bot]
+    # PAB-097 AC3: the assembled service carries the real notice keyboard.
+    assert notification_keyboards == [notice_keyboard]
     kwargs = price_service_kwargs[0]
     assert kwargs["alert_cooldown_seconds"] == 4321
     assert kwargs["http_client"] is clients[0]

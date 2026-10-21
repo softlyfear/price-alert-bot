@@ -581,23 +581,21 @@ async def test_cancel_with_a_vanished_product_says_cancelled_with_the_main_menu(
 
 
 @pytest.mark.asyncio
-async def test_cancel_with_a_non_integer_product_id_in_data_is_stale(
+async def test_cancel_with_a_non_integer_product_id_clears_and_shows_the_menu(
     dialog: _Dialog, service: MagicMock
 ) -> None:
-    data = {"alert_id": 11, "product_id": "5"}
-    await _at_edit(dialog, dict(data))
+    """PAB-097 AC6: damaged data is not "stale" - the edit just ends."""
+    await _at_edit(dialog, {"alert_id": 11, "product_id": "5"})
 
     await dialog.press("ecancel:5")
 
     service.get_product_card.assert_not_called()
-    assert [(a.text, a.show_alert) for a in dialog.callback_answers] == [
-        (texts.LIST_STALE_BUTTON_ALERT_TEXT, True)
-    ]
-    assert dialog.requests[-1] is dialog.callback_answers[0]
-    assert dialog.edits == []
+    assert [e.text for e in dialog.edits] == [texts.CANCEL_TEXT]
     assert dialog.sent == []
-    assert await dialog.state() == _EDIT_STATE
-    assert await dialog.data() == data
+    assert len(dialog.callback_answers) == 1
+    assert dialog.callback_answers[0].show_alert is not True
+    assert await dialog.state() is None
+    assert await dialog.data() == {}
 
 
 @pytest.mark.asyncio

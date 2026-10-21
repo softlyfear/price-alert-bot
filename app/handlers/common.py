@@ -16,8 +16,10 @@ from app.bot.keyboards import CB_MENU_ALL
 from app.bot.keyboards import CB_MENU_HELP
 from app.bot.keyboards import CB_MENU_PREFIX
 from app.bot.keyboards import CB_MENU_START
+from app.bot.keyboards import CB_NOTICE_MENU
 from app.bot.keyboards import main_menu_keyboard
 from app.handlers.callback_reply import edit_callback_message
+from app.handlers.callback_reply import reply_to_callback
 
 
 def create_router() -> Router:
@@ -57,6 +59,16 @@ def create_router() -> Router:
     async def on_menu_start(callback: CallbackQuery) -> None:
         """ "Main menu" button: the /start screen in place; FSM untouched."""
         await edit_callback_message(
+            callback,
+            texts.START_TEXT,
+            reply_markup=main_menu_keyboard(),
+            alert_text=texts.MENU_STALE_ALERT_TEXT,
+        )
+
+    @router.callback_query(F.data == CB_NOTICE_MENU)
+    async def on_notice_menu(callback: CallbackQuery) -> None:
+        """Notification "Main menu": a new message, the notice stays; FSM untouched."""
+        await reply_to_callback(
             callback,
             texts.START_TEXT,
             reply_markup=main_menu_keyboard(),

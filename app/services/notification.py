@@ -1,11 +1,13 @@
 """Notification service."""
 
+from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
 from typing import assert_never
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import InlineKeyboardMarkup
 from loguru import logger
 
 from app.domain.exceptions import DomainError
@@ -52,8 +54,14 @@ def _threshold_label(direction: AlertDirection) -> str:
 class NotificationService:
     """Notification service for telegram bot."""
 
-    def __init__(self, bot: Bot) -> None:
+    def __init__(
+        self,
+        bot: Bot,
+        *,
+        alert_keyboard: Callable[[int], InlineKeyboardMarkup],
+    ) -> None:
         self._bot = bot
+        self._alert_keyboard = alert_keyboard
 
     async def send_alert(
         self,
@@ -85,7 +93,10 @@ class NotificationService:
 
         try:
             await self._bot.send_message(
-                chat_id=user.tg_user_id, text=message, parse_mode=None
+                chat_id=user.tg_user_id,
+                text=message,
+                parse_mode=None,
+                reply_markup=self._alert_keyboard(product.id),
             )
         except TelegramForbiddenError:
             log_context.warning("Alert not delivered: user blocked the bot")

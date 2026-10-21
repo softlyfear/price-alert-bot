@@ -18,6 +18,8 @@ from aiogram.exceptions import TelegramForbiddenError
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.methods import SendMessage
 from aiogram.methods import TelegramMethod
+from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup
 from loguru import logger
 
 import app.services.notification as notification_module
@@ -46,6 +48,15 @@ class _FrozenClock:
 
     def now(self, tz: object = None) -> datetime:
         return _FIXED_NOW
+
+
+def _keyboard(product_id: int) -> InlineKeyboardMarkup:
+    """Stand-in for the keyboard factory injected from ``app.main``."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="x", callback_data=f"k:{product_id}")]
+        ]
+    )
 
 
 def _product(marketplace: Marketplace = Marketplace.wb) -> Product:
@@ -158,7 +169,7 @@ async def test_send_alert_sends_exact_text_for_every_direction_and_marketplace(
     for the wrong marketplace, swap the direction headline."""
     bot = build_fake_bot(responder=send_message_responder())
 
-    await NotificationService(bot).send_alert(
+    await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
         _alert(direction), _product(marketplace), _user()
     )
 
@@ -175,7 +186,7 @@ async def test_send_alert_passes_parse_mode_none_explicitly() -> None:
     a marketplace-supplied product name (Р7)."""
     bot = build_fake_bot(responder=send_message_responder())
 
-    await NotificationService(bot).send_alert(
+    await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
         _alert(AlertDirection.below), _product(), _user()
     )
 
@@ -193,7 +204,9 @@ async def test_send_alert_success_marks_triggered_at_utc_and_logs_one_info(
     records, sink_id = _capture_logs()
 
     try:
-        await NotificationService(bot).send_alert(alert, _product(), _user())
+        await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
+            alert, _product(), _user()
+        )
     finally:
         logger.remove(sink_id)
 
@@ -222,7 +235,9 @@ async def test_send_alert_blocked_user_is_skipped_with_one_warning_and_no_mark()
     records, sink_id = _capture_logs()
 
     try:
-        await NotificationService(bot).send_alert(alert, _product(), _user())
+        await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
+            alert, _product(), _user()
+        )
     finally:
         logger.remove(sink_id)
 
@@ -257,7 +272,9 @@ async def test_send_alert_other_failure_raises_unchained_error_and_logs_type_onl
 
     try:
         with pytest.raises(AlertDeliveryError) as exc_info:
-            await NotificationService(bot).send_alert(alert, _product(), _user())
+            await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
+                alert, _product(), _user()
+            )
     finally:
         logger.remove(sink_id)
 
@@ -288,7 +305,9 @@ async def test_send_alert_rejects_an_unknown_direction_before_sending() -> None:
     alert.direction = cast(AlertDirection, "sideways")
 
     with pytest.raises(AssertionError):
-        await NotificationService(bot).send_alert(alert, _product(), _user())
+        await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
+            alert, _product(), _user()
+        )
 
     assert _sent(bot) == []
     assert alert.triggered_at is None
@@ -300,3 +319,48 @@ def test_threshold_label_has_no_default_branch_for_an_unknown_direction() -> Non
     public method; it is exercised directly to keep the branch honest."""
     with pytest.raises(AssertionError):
         notification_module._threshold_label(cast(AlertDirection, "sideways"))
+
+
+@pytest.mark.asyncio
+async def test_send_alert_attaches_the_keyboard_built_once_for_the_product() -> None:
+    """Mutations: ``reply_markup`` not passed; factory called with the alert id
+    instead of ``product.id``; factory called twice."""
+    calls: list[int] = []
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="b", callback_data="cb")]]
+    )
+
+    def factory(product_id: int) -> InlineKeyboardMarkup:
+        calls.append(product_id)
+        return markup
+
+    bot = build_fake_bot(responder=send_message_responder())
+
+    await NotificationService(bot, alert_keyboard=factory).send_alert(
+        _alert(AlertDirection.below), _product(), _user()
+    )
+
+    sent = _sent(bot)
+    assert len(sent) == 1
+    assert sent[0].reply_markup == markup
+    assert calls == [7]
+
+
+@pytest.mark.asyncio
+async def test_send_alert_factory_failure_is_a_delivery_error_without_mark() -> None:
+    """Mutation: build the keyboard outside the ``try`` (a raw ``ValueError``
+    escapes) or mark ``triggered_at`` although nothing was sent."""
+
+    def factory(product_id: int) -> InlineKeyboardMarkup:
+        raise ValueError("boom")
+
+    bot = build_fake_bot(responder=send_message_responder())
+    alert = _alert(AlertDirection.below)
+
+    with pytest.raises(AlertDeliveryError):
+        await NotificationService(bot, alert_keyboard=factory).send_alert(
+            alert, _product(), _user()
+        )
+
+    assert _sent(bot) == []
+    assert alert.triggered_at is None

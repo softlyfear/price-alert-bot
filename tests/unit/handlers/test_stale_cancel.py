@@ -109,14 +109,21 @@ async def test_edit_cancel_of_another_product_under_a_running_edit_is_stale(
 
 
 @pytest.mark.asyncio
-async def test_edit_cancel_under_an_edit_without_a_product_id_is_stale(
+async def test_edit_cancel_under_an_edit_without_a_product_id_clears_and_shows_menu(
     card_dialog: _Dialog, card_service: MagicMock
 ) -> None:
+    """PAB-097 AC6: a missing ``product_id`` is damaged data, not a stale press."""
     await card_dialog.set_state(EDIT_STATE, {"alert_id": 11})
 
     await card_dialog.press(_EDIT_CANCEL)
 
-    await _assert_stale_popup_only(card_dialog, EDIT_STATE, {"alert_id": 11})
+    card_service.get_product_card.assert_not_called()
+    assert [e.text for e in card_dialog.edits] == [texts.CANCEL_TEXT]
+    assert callbacks(card_dialog.edits[0]) == MENU
+    assert card_dialog.sent == []
+    assert len(card_dialog.callback_answers) == 1
+    assert await card_dialog.state() is None
+    assert await card_dialog.data() == {}
 
 
 @pytest.mark.asyncio
