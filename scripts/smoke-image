@@ -102,8 +102,8 @@ name="smoke-image-$$"
 t0=$SECONDS
 out="$(timeout -k "$KILL_GRACE" "$START_LIMIT" docker run --rm --network none --name "$name" "$IMAGE" 2>&1)"; rc=$?
 elapsed=$((SECONDS - t0))
-# Unconditional cleanup by name: quiet when the container is already gone.
-docker rm -f "$name" > /dev/null 2>&1
+# Unconditional cleanup by name, with its anonymous volumes (-v): quiet when the container is already gone.
+docker rm -f -v "$name" > /dev/null 2>&1
 if [ "$rc" -eq 3 ] && [[ "$out" == *"validation error"* ]] && [[ "$out" == *"Settings"* ]] \
     && [[ "$out" == *"Application startup failed. Exiting."* ]]; then
     pass "(6) start without settings: rc=3 in ${elapsed}s, validation error reported"
