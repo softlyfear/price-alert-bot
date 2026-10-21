@@ -44,6 +44,8 @@ conditions that are only provable on a live database:
 
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -60,6 +62,34 @@ from app.repositories.product import ProductRepository
 from tests.integration.repositories.conftest import make_alert
 from tests.integration.repositories.conftest import make_product
 from tests.integration.repositories.conftest import make_user
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_price_fetched_at_and_persists_it(
+    db_session: AsyncSession,
+) -> None:
+    repository = ProductRepository(db_session)
+    user = await make_user(db_session)
+    stamp = datetime(2026, 10, 21, 11, 5, tzinfo=UTC)
+
+    created = await repository.create(
+        {
+            "user_id": user.id,
+            "marketplace": Marketplace.wb,
+            "article": 4242,
+            "product_name": "Item",
+            "current_price": 1_000,
+            "price_fetched_at": stamp,
+        }
+    )
+
+    stored = (
+        await db_session.execute(
+            text("SELECT price_fetched_at FROM products WHERE id = :id"),
+            {"id": created.id},
+        )
+    ).scalar_one()
+    assert stored == stamp
 
 
 @pytest.mark.asyncio

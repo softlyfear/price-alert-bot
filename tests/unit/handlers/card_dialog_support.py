@@ -7,6 +7,8 @@ not be mistaken for one that came from the marketplace preview.
 
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
 from typing import Any
 
 from aiogram.methods import EditMessageText
@@ -23,6 +25,7 @@ NB = "\u00a0"
 DB_NAME = "Из базы <b>1"
 DB_PRICE = 175_500  # 1 755 rubles
 DB_ARTICLE = 12345678
+DB_FETCHED_AT = datetime(2026, 10, 21, 11, 5, tzinfo=UTC)
 PRODUCT_ID = 5
 WB_LINK = f"https://www.wildberries.ru/catalog/{DB_ARTICLE}/detail.aspx"
 MENU = ["menu:add", "menu:list", "menu:help"]
@@ -43,6 +46,7 @@ ADD_DATA: dict[str, Any] = {
     "target_price": 500,
     "confirm_message_id": 4,
     "link_message_id": 3,
+    "price_fetched_at": "2020-01-02T03:04:05+00:00",  # another product's stamp
 }
 CARD_TEXT = (
     f"{DB_NAME}\n"
@@ -58,7 +62,9 @@ CARD_TEXT = (
 )
 
 
-def product(product_id: int = PRODUCT_ID) -> Product:
+def product(
+    product_id: int = PRODUCT_ID, price_fetched_at: datetime | None = DB_FETCHED_AT
+) -> Product:
     return Product(
         id=product_id,
         user_id=1,
@@ -66,10 +72,11 @@ def product(product_id: int = PRODUCT_ID) -> Product:
         article=DB_ARTICLE,
         product_name=DB_NAME,
         current_price=DB_PRICE,
+        price_fetched_at=price_fetched_at,
     )
 
 
-def card() -> ProductCard:
+def card(price_fetched_at: datetime | None = DB_FETCHED_AT) -> ProductCard:
     """The tracked product with one ``below`` threshold of 1 500 rubles."""
     alert = Alert(
         id=11,
@@ -78,7 +85,9 @@ def card() -> ProductCard:
         target_price=150_000,
         direction=AlertDirection.below,
     )
-    return ProductCard(product=product(), alerts=(alert,))
+    return ProductCard(
+        product=product(price_fetched_at=price_fetched_at), alerts=(alert,)
+    )
 
 
 def rows(request: SendMessage | EditMessageText) -> list[list[tuple[str, str | None]]]:

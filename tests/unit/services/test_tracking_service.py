@@ -8,6 +8,8 @@ the network. The SQL itself and the real SAVEPOINT behaviour are covered by
 
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
 from types import TracebackType
 from typing import TYPE_CHECKING
 from typing import Any
@@ -187,10 +189,20 @@ def _called_names(repo: MagicMock) -> set[str]:
 
 
 async def _add(
-    harness: _Harness, *, target: int = 9_000, product_name: str = "Fresh name"
+    harness: _Harness,
+    *,
+    target: int = 9_000,
+    product_name: str = "Fresh name",
+    price_fetched_at: datetime | None = None,
 ) -> Alert:
     return await harness.service.add_tracking(
-        _TG_USER_ID, _WB, _ARTICLE, product_name, 15_000, target
+        _TG_USER_ID,
+        _WB,
+        _ARTICLE,
+        product_name,
+        15_000,
+        target,
+        price_fetched_at=price_fetched_at,
     )
 
 
@@ -452,6 +464,7 @@ async def test_add_tracking_creates_new_product_then_below_alert(
             "article": _ARTICLE,
             "product_name": "Fresh name",
             "current_price": 15_000,
+            "price_fetched_at": None,
         }
     )
     harness.alerts.create.assert_awaited_once_with(
@@ -489,6 +502,52 @@ async def test_add_tracking_reuses_existing_product_without_overwriting_it(
     harness.alerts.create.assert_awaited_once()
     assert harness.alerts.create.await_args is not None
     assert harness.alerts.create.await_args.args[0]["product_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_stores_the_given_stamp_on_a_new_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp = datetime(2026, 10, 21, 11, 5, tzinfo=UTC)
+    harness = _build(monkeypatch)
+
+    await _add(harness, price_fetched_at=stamp)
+
+    assert harness.products.create.await_args is not None
+    assert harness.products.create.await_args.args[0]["price_fetched_at"] == stamp
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_keeps_the_stamp_of_an_existing_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime(2026, 10, 20, 8, 0, tzinfo=UTC)
+    existing = _product(product_id=42)
+    existing.price_fetched_at = old
+    harness = _build(monkeypatch, existing_product=existing)
+
+    await _add(harness, price_fetched_at=datetime(2026, 10, 21, 11, 5, tzinfo=UTC))
+
+    harness.products.create.assert_not_called()
+    harness.products.patch.assert_not_called()
+    assert existing.price_fetched_at == old
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_keeps_the_stamp_of_the_race_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime(2026, 10, 20, 8, 0, tzinfo=UTC)
+    winner = _product(product_id=99)
+    winner.price_fetched_at = old
+    harness = _build(monkeypatch)
+    harness.products.get_by_article_and_user.side_effect = [None, winner]
+    harness.products.create.side_effect = _integrity_error()
+
+    await _add(harness, price_fetched_at=datetime(2026, 10, 21, 11, 5, tzinfo=UTC))
+
+    harness.products.patch.assert_not_called()
+    assert winner.price_fetched_at == old
 
 
 @pytest.mark.asyncio

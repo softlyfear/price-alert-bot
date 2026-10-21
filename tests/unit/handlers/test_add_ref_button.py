@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -54,6 +56,7 @@ from tests.unit.handlers.add_dialog_support import _Outcome
 from tests.unit.handlers.add_dialog_support import _responder
 from tests.unit.handlers.add_dialog_support import _shown_texts
 from tests.unit.handlers.add_dialog_support import _TrackingStub
+from tests.unit.handlers.add_dialog_support import _without_stamp
 
 _WB_PAYLOAD = "addref:wb:12345678"
 _BUTTON_ID = _CARD_ID  # message_id of the message carrying the button
@@ -112,11 +115,13 @@ async def test_button_shows_checking_then_the_link_step_outcome_by_editing_in_pl
 async def test_button_card_is_stored_in_fsm_with_the_pressed_message_as_marker(
     dialog: _Dialog, stub: _TrackingStub
 ) -> None:
+    before = datetime.now(UTC)
     await dialog.press("addref:ozon:1234567")
+    after = datetime.now(UTC)
 
     assert stub.preview_calls == [(_USER, Marketplace.ozon, 1234567)]
     assert await dialog.state() == AddProduct.waiting_target_price.state
-    assert await dialog.data() == {
+    assert _without_stamp(await dialog.data(), before, after) == {
         "marketplace": "ozon",
         "article": 1234567,
         "product_name": _NAME,
@@ -403,11 +408,13 @@ async def test_button_from_the_confirming_step_replaces_the_other_products_draft
 ) -> None:
     await dialog.set_state(AddProduct.confirming.state, dict(_CONFIRMING_DATA))
 
+    before = datetime.now(UTC)
     await dialog.press("addref:ozon:777")
+    after = datetime.now(UTC)
 
     assert stub.preview_calls == [(_USER, Marketplace.ozon, 777)]
     assert await dialog.state() == AddProduct.waiting_target_price.state
-    assert await dialog.data() == {
+    assert _without_stamp(await dialog.data(), before, after) == {
         "marketplace": "ozon",
         "article": 777,
         "product_name": _NAME,

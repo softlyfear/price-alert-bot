@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
@@ -79,6 +81,7 @@ from tests.unit.handlers.add_dialog_support import _Outcome
 from tests.unit.handlers.add_dialog_support import _responder
 from tests.unit.handlers.add_dialog_support import _shown_texts
 from tests.unit.handlers.add_dialog_support import _TrackingStub
+from tests.unit.handlers.add_dialog_support import _without_stamp
 from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
@@ -266,7 +269,9 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
 ) -> None:
     await dialog.command("add")
 
+    before = datetime.now(UTC)
     await dialog.say(_WB_LINK, message_id=77)
+    after = datetime.now(UTC)
 
     card = dialog.outcome
     assert _NAME in card.text
@@ -275,7 +280,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
     assert card.parse_mode is None
     assert _keyboard_callbacks(card) == [CB_ADD_CANCEL]
     assert await dialog.state() == AddProduct.waiting_target_price.state
-    assert await dialog.data() == {
+    assert _without_stamp(await dialog.data(), before, after) == {
         "marketplace": "wb",
         "article": 12345678,
         "product_name": _NAME,
@@ -1226,6 +1231,7 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
 ) -> None:
     call_a = gated.script(0, result=MarketplaceProductData(name=_NAME_A, price=111))
     call_b = gated.script(1, result=MarketplaceProductData(name=_NAME_B, price=222))
+    before = datetime.now(UTC)
     await dialog.command("add")
     task_a = await _start_link(dialog, call_a, _LINK_A, _MSG_A)
     task_b = await _start_link(dialog, call_b, _LINK_B, _MSG_B)
@@ -1234,10 +1240,11 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
     await _finish_link(task_b, call_b)
     base = len(dialog.requests)
     await _finish_link(task_a, call_a)
+    after = datetime.now(UTC)
 
     _assert_only_dropped_edit(dialog, base, notice_a)
     assert await dialog.state() == AddProduct.waiting_target_price.state
-    assert await dialog.data() == {
+    assert _without_stamp(await dialog.data(), before, after) == {
         "marketplace": "wb",
         "article": 22222222,
         "product_name": _NAME_B,
@@ -1604,3 +1611,68 @@ async def test_input_steps_carry_only_cancel_or_confirm_buttons(
     assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CONFIRM, CB_ADD_CANCEL]
     await dialog.say("yes")  # confirm hint
     assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CONFIRM, CB_ADD_CANCEL]
+
+
+# --- price_fetched_at carried by the draft (PAB-099) ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_passes_the_stamp_taken_after_preview_to_add_tracking(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    before = datetime.now(UTC)
+    await dialog.command("add")
+    await dialog.say(_WB_LINK)
+    after = datetime.now(UTC)
+    await dialog.say("1500")
+    stamp_in_draft = (await dialog.data())["price_fetched_at"]
+
+    await dialog.press(CB_ADD_CONFIRM, message_id=sent_message_id(2))
+
+    assert len(stub.add_fetched_at) == 1
+    passed = stub.add_fetched_at[0]
+    assert passed is not None
+    assert passed.utcoffset() is not None
+    assert before <= passed <= after
+    assert passed.isoformat() == stamp_in_draft
+
+
+_MISSING = object()
+_BROKEN_STAMPS = [
+    pytest.param(_MISSING, id="key-absent"),
+    pytest.param(None, id="none"),
+    pytest.param(123, id="int"),
+    pytest.param("мусор", id="garbage-string"),
+    pytest.param("2026-10-21T11:05:00", id="naive-iso"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stamp", _BROKEN_STAMPS)
+async def test_confirm_with_a_broken_stamp_adds_with_none_and_is_not_stale(
+    dialog: _Dialog, stub: _TrackingStub, stamp: object
+) -> None:
+    data = dict(_CONFIRMING_DATA)
+    if stamp is not _MISSING:
+        data["price_fetched_at"] = stamp
+    await dialog.set_state(AddProduct.confirming.state, data)
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert stub.add_fetched_at == [None]
+    assert len(stub.add_calls) == 1
+    assert dialog.last_text.startswith("Отслеживание добавлено")
+    assert texts.ADD_STALE_TEXT not in _shown_texts(dialog)
+    assert await dialog.state() is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_passes_a_valid_aware_stamp_from_the_draft_unchanged(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    data = {**_CONFIRMING_DATA, "price_fetched_at": "2026-10-21T14:05:00+03:00"}
+    await dialog.set_state(AddProduct.confirming.state, data)
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert stub.add_fetched_at == [datetime(2026, 10, 21, 11, 5, tzinfo=UTC)]

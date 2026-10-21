@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
@@ -65,6 +67,7 @@ class _TrackingStub:
         self.init_kwargs: list[dict[str, Any]] = []
         self.preview_calls: list[tuple[int, Marketplace, int]] = []
         self.add_calls: list[tuple[Any, ...]] = []
+        self.add_fetched_at: list[datetime | None] = []
         self.preview_result: Any = MarketplaceProductData(name=_NAME, price=_PRICE)
         self.preview_error: Exception | None = None
         self.add_error: Exception | None = None
@@ -87,8 +90,11 @@ class _TrackingStub:
             raise self.preview_error
         return self.preview_result
 
-    async def add_tracking(self, *args: Any) -> Alert:
+    async def add_tracking(
+        self, *args: Any, price_fetched_at: datetime | None
+    ) -> Alert:
         self.add_calls.append(args)
+        self.add_fetched_at.append(price_fetched_at)
         if self.add_error is not None:
             raise self.add_error
         return Alert(
@@ -430,3 +436,16 @@ def _shown_texts(dialog: _Dialog) -> str:
     return "\n".join(
         r.text for r in dialog.requests if isinstance(r, (SendMessage, EditMessageText))
     )
+
+
+def _without_stamp(
+    data: dict[str, Any], before: datetime, after: datetime
+) -> dict[str, Any]:
+    """Draft minus ``price_fetched_at``; stamp must be aware ISO in window."""
+    raw = data["price_fetched_at"]
+    assert isinstance(raw, str)
+    stamp = datetime.fromisoformat(raw)
+    assert stamp.utcoffset() is not None
+    assert stamp.astimezone(UTC) == stamp
+    assert before <= stamp <= after
+    return {k: v for k, v in data.items() if k != "price_fetched_at"}

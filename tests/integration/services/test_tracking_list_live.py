@@ -67,6 +67,7 @@ async def _add(
         name,
         _PRICE,
         target,
+        price_fetched_at=None,
     )
 
 

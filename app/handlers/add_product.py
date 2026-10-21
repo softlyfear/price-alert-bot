@@ -12,6 +12,8 @@ one is sent with ``parse_mode=None``.
 
 from collections.abc import Awaitable
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from enum import Enum
 from typing import Any
 from typing import assert_never
@@ -71,6 +73,7 @@ _KEY_CURRENT_PRICE = "current_price"
 _KEY_TARGET_PRICE = "target_price"
 _KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
 _KEY_LINK_MESSAGE_ID = "link_message_id"
+_KEY_PRICE_FETCHED_AT = "price_fetched_at"
 
 # aiogram's marker for "use the bot-wide parse_mode"; same as ``answer`` default.
 _BOT_DEFAULT_PARSE_MODE = Default("parse_mode")
@@ -198,16 +201,42 @@ def _already_tracked_screen(card: ProductCard) -> tuple[str, InlineKeyboardMarku
     return f"{texts.ADD_ALREADY_TRACKED_TEXT}\n\n{text}", keyboard
 
 
+def _parse_fetched_at(raw: object) -> datetime | None:
+    """Parse the draft's price timestamp; anything broken or naive is None."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return None
+    return value
+
+
 async def enter_price_step(
-    state: FSMContext, marketplace: Marketplace, article: int, name: str, price: int
+    state: FSMContext,
+    marketplace: Marketplace,
+    article: int,
+    name: str,
+    price: int,
+    *,
+    price_fetched_at: datetime | None,
 ) -> None:
-    """Move the dialog to the threshold step with the product draft in FSM."""
+    """Move the dialog to the threshold step with the product draft in FSM.
+
+    The timestamp key is always written (ISO string or None) so a previous
+    draft's value never leaks into this product.
+    """
     await state.update_data(
         {
             _KEY_MARKETPLACE: marketplace.value,
             _KEY_ARTICLE: article,
             _KEY_NAME: name,
             _KEY_CURRENT_PRICE: price,
+            _KEY_PRICE_FETCHED_AT: (
+                price_fetched_at.isoformat() if price_fetched_at is not None else None
+            ),
         }
     )
     await state.set_state(AddProduct.waiting_target_price)
@@ -276,6 +305,7 @@ async def _check_and_deliver(
             reply_markup=cancel_keyboard(),
         )
         return
+    fetched_at = datetime.now(UTC)
     if await _discard_if_stale(marker, notice, state, user_id):
         return
     if isinstance(result, MarketplaceFetchFailure):
@@ -289,7 +319,12 @@ async def _check_and_deliver(
     # Accepted window: an interrupt landing between the check above and
     # these writes (a few Redis round-trips) can still be overwritten.
     await enter_price_step(
-        state, ref.marketplace, ref.article, result.name, result.price
+        state,
+        ref.marketplace,
+        ref.article,
+        result.name,
+        result.price,
+        price_fetched_at=fetched_at,
     )
     await _deliver_outcome(
         anchor,
@@ -516,6 +551,7 @@ def create_router() -> Router:
                 name,
                 current_price,
                 target_price,
+                price_fetched_at=_parse_fetched_at(data.get(_KEY_PRICE_FETCHED_AT)),
             )
         except ProductLimitExceededError as exc:
             await _finish(callback, state, texts.limit_exceeded_text(exc.limit))

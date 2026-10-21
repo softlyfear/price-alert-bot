@@ -144,6 +144,7 @@ class PriceService:
         product.previous_price = previous_price
         product.current_price = current_price
         product.last_checked_at = now_utc
+        product.price_fetched_at = now_utc
 
         alerts = await alert_repo.get_active_by_product(product.id)
         if not alerts:

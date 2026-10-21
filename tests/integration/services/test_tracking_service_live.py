@@ -15,6 +15,8 @@ from __future__ import annotations
 import itertools
 from collections.abc import Awaitable
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from typing import Any
 from typing import cast
 
@@ -93,8 +95,25 @@ async def _add(
     target: int = 9_000,
     name: str = "Live item",
     price: int = 15_000,
+    price_fetched_at: datetime | None = None,
 ) -> Alert:
-    return await service.add_tracking(tg_user_id, _WB, article, name, price, target)
+    return await service.add_tracking(
+        tg_user_id,
+        _WB,
+        article,
+        name,
+        price,
+        target,
+        price_fetched_at=price_fetched_at,
+    )
+
+
+async def _stored_stamp(session: AsyncSession, product_id: int) -> datetime | None:
+    return (
+        await session.execute(
+            select(Product.price_fetched_at).where(Product.id == product_id)
+        )
+    ).scalar_one()
 
 
 async def test_add_tracking_persists_product_and_active_below_alert(
@@ -214,6 +233,58 @@ async def test_product_race_reuses_the_winning_row(
     ).scalar_one()
     assert product.product_name == "Winner"
     await db_session.commit()
+
+
+_STAMP = datetime(2026, 10, 21, 11, 5, tzinfo=UTC)
+_OLD_STAMP = datetime(2026, 10, 20, 8, 0, tzinfo=UTC)
+
+
+async def test_new_product_gets_the_given_price_fetched_at(
+    db_session: AsyncSession,
+) -> None:
+    alert = await _add(
+        _service(db_session), next(_tg_ids), next(_articles), price_fetched_at=_STAMP
+    )
+
+    assert await _stored_stamp(db_session, alert.product_id) == _STAMP
+
+
+async def test_new_product_without_a_stamp_stores_null(
+    db_session: AsyncSession,
+) -> None:
+    alert = await _add(_service(db_session), next(_tg_ids), next(_articles))
+
+    assert await _stored_stamp(db_session, alert.product_id) is None
+
+
+@pytest.mark.parametrize("given", [None, _STAMP])
+async def test_existing_product_keeps_its_stamp_and_gets_the_threshold(
+    db_session: AsyncSession, given: datetime | None
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    first = await _add(service, tg, article, target=9_000, price_fetched_at=_OLD_STAMP)
+
+    second = await _add(service, tg, article, target=8_000, price_fetched_at=given)
+
+    assert second.product_id == first.product_id
+    assert await _counts_for_user(db_session, tg) == (1, 2)
+    assert await _stored_stamp(db_session, first.product_id) == _OLD_STAMP
+
+
+async def test_product_race_loser_does_not_overwrite_the_winners_stamp(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    first = await _add(service, tg, article, target=9_000, price_fetched_at=_OLD_STAMP)
+    await _first_call_sees_nothing(
+        monkeypatch, ProductRepository, "get_by_article_and_user", None
+    )
+
+    await _add(service, tg, article, target=8_000, price_fetched_at=_STAMP)
+
+    assert await _stored_stamp(db_session, first.product_id) == _OLD_STAMP
 
 
 async def test_foreign_key_violation_on_alert_is_not_reported_as_duplicate(
