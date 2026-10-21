@@ -77,6 +77,8 @@ ADD_CHECKING_TEXT: Final[str] = (
     "Проверяю товар — это может занять некоторое время, пожалуйста, подождите."
 )
 
+ADD_CHECK_DROPPED_TEXT: Final[str] = "Проверка прервана."
+
 ADD_LINK_FORMAT_HINT_TEXT: Final[str] = (
     "Не получилось разобрать ссылку или артикул. Пришлите ссылку на страницу "
     "товара, например https://www.wildberries.ru/catalog/12345678/detail.aspx, "

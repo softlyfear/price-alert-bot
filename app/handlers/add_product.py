@@ -59,6 +59,7 @@ _KEY_NAME = "product_name"
 _KEY_CURRENT_PRICE = "current_price"
 _KEY_TARGET_PRICE = "target_price"
 _KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
+_KEY_LINK_MESSAGE_ID = "link_message_id"
 
 # aiogram's marker for "use the bot-wide parse_mode"; same as ``answer`` default.
 _BOT_DEFAULT_PARSE_MODE = Default("parse_mode")
@@ -125,6 +126,33 @@ async def _send_checking_notice(message: Message) -> Message | None:
         return None
 
 
+async def _discard_if_stale(
+    message: Message, notice: Message | None, state: FSMContext, user_id: int
+) -> bool:
+    """Report whether this link step was superseded; if so, drop its outcome.
+
+    The step is current while the dialog still waits for a link and the
+    FSM marker is this message's id. A stale step only retitles its notice.
+    """
+    reason = "state_changed"
+    if await state.get_state() == AddProduct.waiting_link.state:
+        data = await state.get_data()
+        if data.get(_KEY_LINK_MESSAGE_ID) == message.message_id:
+            return False
+        reason = "marker_mismatch"
+    logger.bind(user_id=user_id, reason=reason).info(
+        "Product check result dropped: the dialog moved on"
+    )
+    if notice is not None:
+        try:
+            await notice.edit_text(texts.ADD_CHECK_DROPPED_TEXT, parse_mode=None)
+        except Exception as exc:
+            logger.bind(error_type=type(exc).__name__).warning(
+                "Could not retitle the dropped checking notice"
+            )
+    return True
+
+
 async def _deliver_outcome(
     message: Message,
     notice: Message | None,
@@ -179,24 +207,32 @@ def create_router() -> Router:
                 texts.ADD_LINK_FORMAT_HINT_TEXT, reply_markup=cancel_keyboard()
             )
             return
+        # Window accepted: RedisStorage.update_data reads and writes in separate steps.
+        await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
         notice = await _send_checking_notice(message)
         try:
             result = await tracking.preview(
                 message.from_user.id, ref.marketplace, ref.article
             )
         except ProductLimitExceededError as exc:
+            if await _discard_if_stale(message, notice, state, message.from_user.id):
+                return
             await state.clear()
             await _deliver_outcome(
                 message, notice, texts.limit_exceeded_text(exc.limit)
             )
             return
         except MarketplaceNotSupportedError:
+            if await _discard_if_stale(message, notice, state, message.from_user.id):
+                return
             await _deliver_outcome(
                 message,
                 notice,
                 texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
                 reply_markup=cancel_keyboard(),
             )
+            return
+        if await _discard_if_stale(message, notice, state, message.from_user.id):
             return
         if isinstance(result, MarketplaceFetchFailure):
             await _deliver_outcome(
@@ -206,6 +242,8 @@ def create_router() -> Router:
                 reply_markup=cancel_keyboard(),
             )
             return
+        # Accepted window: an interrupt landing between the check above and
+        # these writes (a few Redis round-trips) can still be overwritten.
         await state.update_data(
             {
                 _KEY_MARKETPLACE: ref.marketplace.value,
