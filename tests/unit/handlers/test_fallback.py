@@ -28,13 +28,13 @@ from app.schemas.marketplace import MarketplaceProductData
 from app.services.tracking import TrackingService
 from tests.unit.conftest import FAKE_BOT_USER
 from tests.unit.conftest import make_message_update
-from tests.unit.handlers.test_add_product import _CHAT
-from tests.unit.handlers.test_add_product import _CONFIRMING_DATA
-from tests.unit.handlers.test_add_product import _USER
-from tests.unit.handlers.test_add_product import _BoundSession
-from tests.unit.handlers.test_add_product import _Dialog
-from tests.unit.handlers.test_add_product import _Faults
-from tests.unit.handlers.test_add_product import _responder
+from tests.unit.handlers.add_dialog_support import _CHAT
+from tests.unit.handlers.add_dialog_support import _CONFIRMING_DATA
+from tests.unit.handlers.add_dialog_support import _USER
+from tests.unit.handlers.add_dialog_support import _BoundSession
+from tests.unit.handlers.add_dialog_support import _Dialog
+from tests.unit.handlers.add_dialog_support import _Faults
+from tests.unit.handlers.add_dialog_support import _responder
 
 if TYPE_CHECKING:
     from loguru import Record
@@ -264,6 +264,27 @@ _STICKER: dict[str, Any] = {
     }
 }
 _PIN_CHAT: dict[str, Any] = {"id": 1, "type": "private"}
+_STORY: dict[str, Any] = {"story": {"chat": _PIN_CHAT, "id": 1}}
+_GAME: dict[str, Any] = {
+    "game": {
+        "title": "t",
+        "description": "d",
+        "photo": [{**_FILE, "width": 1, "height": 1}],
+    }
+}
+_CHECKLIST: dict[str, Any] = {
+    "checklist": {"title": "t", "tasks": [{"id": 1, "text": "a"}]}
+}
+_PAID_MEDIA: dict[str, Any] = {
+    "paid_media": {"star_count": 1, "paid_media": [{"type": "preview"}]}
+}
+_GIVEAWAY: dict[str, Any] = {
+    "giveaway": {
+        "chats": [_PIN_CHAT],
+        "winners_selection_date": 1,
+        "winner_count": 1,
+    }
+}
 _USER_DICT: dict[str, Any] = {"id": 77, "is_bot": False, "first_name": "Other"}
 
 
@@ -290,6 +311,11 @@ def _update(
         pytest.param("привет", None, id="text"),
         pytest.param("/foo", None, id="unknown-command"),
         pytest.param(None, _STICKER, id="sticker"),
+        pytest.param(None, _STORY, id="story"),
+        pytest.param(None, _GAME, id="game"),
+        pytest.param(None, _CHECKLIST, id="checklist"),
+        pytest.param(None, _PAID_MEDIA, id="paid-media"),
+        pytest.param(None, _GIVEAWAY, id="giveaway"),
     ],
 )
 async def test_non_private_chat_gets_no_reply_while_private_chat_does(
@@ -345,6 +371,11 @@ _WHITELIST: list[Any] = [
         id="poll",
     ),
     pytest.param({"dice": {"emoji": "\U0001f3b2", "value": 1}}, None, id="dice"),
+    pytest.param(_STORY, None, id="story"),
+    pytest.param(_GAME, None, id="game"),
+    pytest.param(_CHECKLIST, None, id="checklist"),
+    pytest.param(_PAID_MEDIA, None, id="paid-media"),
+    pytest.param(_GIVEAWAY, None, id="giveaway"),
 ]
 
 

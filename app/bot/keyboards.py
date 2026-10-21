@@ -24,6 +24,7 @@ from app.models.product import Product
 
 CB_ADD_CONFIRM: Final[str] = "add:confirm"
 CB_ADD_CANCEL: Final[str] = "add:cancel"
+CB_EDIT_CANCEL: Final[str] = "edit:cancel"
 
 CB_MENU_PREFIX: Final[str] = "menu:"
 CB_MENU_ADD: Final[str] = "menu:add"
@@ -38,7 +39,7 @@ CB_MENU_ALL: Final[frozenset[str]] = frozenset(
 _MAX_ID: Final[int] = 2_147_483_647
 MAX_LIST_BUTTONS: Final[int] = 50
 _MAX_NAME_IN_BUTTON: Final[int] = 40
-CB_LIST_PREFIXES: Final[tuple[str, ...]] = ("pcard", "adel", "pdel")
+CB_LIST_PREFIXES: Final[tuple[str, ...]] = ("pcard", "adel", "aedit", "pdel")
 
 
 class ProductCardCb(CallbackData, prefix="pcard"):
@@ -49,6 +50,13 @@ class ProductCardCb(CallbackData, prefix="pcard"):
 
 class AlertRemoveCb(CallbackData, prefix="adel"):
     """Remove one threshold; ``product_id`` is the card to redraw."""
+
+    alert_id: int = Field(ge=1, le=_MAX_ID)
+    product_id: int = Field(ge=1, le=_MAX_ID)
+
+
+class AlertEditCb(CallbackData, prefix="aedit"):
+    """Change one threshold; ``product_id`` is the card to redraw."""
 
     alert_id: int = Field(ge=1, le=_MAX_ID)
     product_id: int = Field(ge=1, le=_MAX_ID)
@@ -109,6 +117,13 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
                 )
             ]
         ]
+    )
+
+
+def edit_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard of the threshold edit step: a single cancel button."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_button(texts.CANCEL_BUTTON_TEXT, CB_EDIT_CANCEL)]]
     )
 
 
@@ -175,23 +190,35 @@ def nav_keyboard() -> InlineKeyboardMarkup:
 def product_card_keyboard(
     product_id: int, alerts: Sequence[Alert]
 ) -> InlineKeyboardMarkup:
-    """Remove-threshold button per alert, stop-tracking button, nav row."""
+    """Edit and remove buttons per alert, stop-tracking button, nav row."""
     amount_counts = Counter(alert.target_price for alert in alerts)
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=texts.remove_alert_button_text(
-                    alert.direction,
-                    alert.target_price,
-                    with_arrow=amount_counts[alert.target_price] > 1,
-                ),
-                callback_data=AlertRemoveCb(
-                    alert_id=alert.id, product_id=product_id
-                ).pack(),
-            )
-        ]
-        for alert in alerts
-    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    for alert in alerts:
+        with_arrow = amount_counts[alert.target_price] > 1
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.edit_alert_button_text(
+                        alert.direction, alert.target_price, with_arrow=with_arrow
+                    ),
+                    callback_data=AlertEditCb(
+                        alert_id=alert.id, product_id=product_id
+                    ).pack(),
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.remove_alert_button_text(
+                        alert.direction, alert.target_price, with_arrow=with_arrow
+                    ),
+                    callback_data=AlertRemoveCb(
+                        alert_id=alert.id, product_id=product_id
+                    ).pack(),
+                )
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton(

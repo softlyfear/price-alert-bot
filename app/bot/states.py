@@ -10,3 +10,9 @@ class AddProduct(StatesGroup):
     waiting_link = State()
     waiting_target_price = State()
     confirming = State()
+
+
+class EditAlert(StatesGroup):
+    """The single step of changing a threshold from the product card."""
+
+    waiting_target_price = State()

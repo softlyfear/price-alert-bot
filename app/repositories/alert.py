@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy import update
 
 from app.models.alert import Alert
+from app.models.enums import AlertDirection
 from app.repositories.sqlalchemy_repository import SQLAlchemyRepository
 
 
@@ -91,6 +92,35 @@ class AlertRepository(
         # for a plain Executable; at runtime a Core DELETE/UPDATE always
         # yields a CursorResult, which is the type that actually defines
         # `.rowcount` (see SQLAlchemy docs, CursorResult.rowcount).
+        return bool(cast(CursorResult[Any], result).rowcount)
+
+    async def update_target_for_user(
+        self,
+        alert_id: int,
+        user_id: int,
+        target_price: int,
+        direction: AlertDirection,
+    ) -> bool:
+        """Change threshold and direction of an alert, scoped to its owner.
+
+        A single Core UPDATE with the ownership predicate in the same
+        statement (``alert_id`` is untrusted callback input). Sets
+        ``target_price`` and ``direction`` and clears ``triggered_at``, so the
+        cooldown restarts for the new threshold; ``is_active`` is untouched.
+        Returns whether a row matched, from the statement's rowcount.
+        ``synchronize_session="evaluate"`` refreshes a matching ``Alert``
+        already in this session's identity map without an extra round trip.
+        A collision with ``uq_alerts_user_product_logic`` surfaces as
+        ``IntegrityError`` for the caller to handle (no commit, no flush).
+        """
+        stmt = (
+            update(Alert)
+            .where(Alert.id == alert_id, Alert.user_id == user_id)
+            .values(target_price=target_price, direction=direction, triggered_at=None)
+            .execution_options(synchronize_session="evaluate")
+        )
+        result = await self._session.execute(stmt)
+        # See deactivate(): Core UPDATE yields CursorResult at runtime.
         return bool(cast(CursorResult[Any], result).rowcount)
 
     async def get_by_id_for_user(self, alert_id: int, user_id: int) -> Alert | None:

@@ -21,10 +21,14 @@ do not silently diverge.
 
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
 from typing import Any
 
 import pytest
 from sqlalchemy import event
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import MissingGreenlet
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -407,3 +411,239 @@ async def test_delete_for_user_issues_exactly_one_round_trip(
     statement, executemany = calls[0]
     assert executemany is False
     assert "RETURNING" not in statement  # evaluate; a "fetch" regression adds it
+
+
+# --- update_target_for_user (PAB-095) -------------------------------------
+
+_TRIGGERED = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+
+async def _stored(
+    session: AsyncSession, alert_id: int
+) -> tuple[int, AlertDirection, datetime | None, bool]:
+    """The row as PostgreSQL holds it (column query: bypasses the identity map)."""
+    row = (
+        await session.execute(
+            select(
+                Alert.target_price,
+                Alert.direction,
+                Alert.triggered_at,
+                Alert.is_active,
+            ).where(Alert.id == alert_id)
+        )
+    ).one()
+    return (row[0], row[1], row[2], row[3])
+
+
+async def _triggered_alert(
+    session: AsyncSession, *, user_id: int, product_id: int, target: int = 9_000
+) -> Alert:
+    alert = await make_alert(
+        session, user_id=user_id, product_id=product_id, target_price=target
+    )
+    alert.triggered_at = _TRIGGERED
+    await session.flush()
+    return alert
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_by_the_owner_sets_values_and_clears_triggered_at(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+    product = await make_product(db_session, user_id=user.id)
+    alert = await _triggered_alert(db_session, user_id=user.id, product_id=product.id)
+    assert (await _stored(db_session, alert.id))[2] == _TRIGGERED
+
+    changed = await repository.update_target_for_user(
+        alert.id, user.id, 25_000, AlertDirection.above
+    )
+
+    assert changed is True
+    assert await _stored(db_session, alert.id) == (
+        25_000,
+        AlertDirection.above,
+        None,
+        True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_leaves_is_active_false_untouched(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+    product = await make_product(db_session, user_id=user.id)
+    alert = await _triggered_alert(db_session, user_id=user.id, product_id=product.id)
+    assert await repository.deactivate(alert.id, user.id) is True
+
+    changed = await repository.update_target_for_user(
+        alert.id, user.id, 7_000, AlertDirection.below
+    )
+
+    assert changed is True
+    assert await _stored(db_session, alert.id) == (
+        7_000,
+        AlertDirection.below,
+        None,
+        False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_refreshes_the_loaded_alert_in_the_same_session(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+    product = await make_product(db_session, user_id=user.id)
+    alert = await _triggered_alert(db_session, user_id=user.id, product_id=product.id)
+
+    await repository.update_target_for_user(
+        alert.id, user.id, 25_000, AlertDirection.above
+    )
+
+    # Read through the identity map, with no refresh: no stale values.
+    reread = await repository.get_by_id_for_user(alert.id, user.id)
+    assert reread is alert
+    assert (alert.target_price, alert.direction, alert.triggered_at) == (
+        25_000,
+        AlertDirection.above,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_by_another_user_returns_false_and_changes_nothing(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    owner = await make_user(db_session)
+    intruder = await make_user(db_session)
+    product = await make_product(db_session, user_id=owner.id)
+    alert = await _triggered_alert(db_session, user_id=owner.id, product_id=product.id)
+
+    changed = await repository.update_target_for_user(
+        alert.id, intruder.id, 25_000, AlertDirection.above
+    )
+
+    assert changed is False
+    assert await _stored(db_session, alert.id) == (
+        9_000,
+        AlertDirection.below,
+        _TRIGGERED,
+        True,
+    )
+    assert alert.target_price == 9_000
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_on_a_missing_id_returns_false(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+
+    assert (
+        await repository.update_target_for_user(
+            999_999_992, user.id, 25_000, AlertDirection.above
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_issues_exactly_one_statement(
+    db_session: AsyncSession,
+) -> None:
+    """Convention 25: ``before_cursor_execute`` on the real ``Engine``."""
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+    product = await make_product(db_session, user_id=user.id)
+    alert = await _triggered_alert(db_session, user_id=user.id, product_id=product.id)
+
+    calls: list[tuple[str, bool]] = []
+
+    def _record(
+        conn: Any,
+        cursor: Any,
+        statement: Any,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        calls.append((str(statement), executemany))
+
+    engine = db_session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        assert (
+            await repository.update_target_for_user(
+                alert.id, user.id, 25_000, AlertDirection.above
+            )
+            is True
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert len(calls) == 1
+    statement, executemany = calls[0]
+    assert executemany is False
+    assert statement.lstrip().upper().startswith("UPDATE ALERTS")
+    assert "RETURNING" not in statement
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_colliding_with_another_alert_raises_keeping_rows(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+    product = await make_product(db_session, user_id=user.id)
+    first = await make_alert(
+        db_session, user_id=user.id, product_id=product.id, target_price=5_000
+    )
+    second = await _triggered_alert(
+        db_session, user_id=user.id, product_id=product.id, target=6_000
+    )
+
+    with pytest.raises(IntegrityError) as excinfo:
+        async with db_session.begin_nested():
+            await repository.update_target_for_user(
+                second.id, user.id, 5_000, AlertDirection.below
+            )
+
+    assert "uq_alerts_user_product_logic" in str(excinfo.value)
+    assert (await _stored(db_session, first.id))[:2] == (5_000, AlertDirection.below)
+    assert await _stored(db_session, second.id) == (
+        6_000,
+        AlertDirection.below,
+        _TRIGGERED,
+        True,
+    )
+    assert second.target_price == 6_000
+
+
+@pytest.mark.asyncio
+async def test_update_target_for_user_with_a_negative_target_violates_the_check(
+    db_session: AsyncSession,
+) -> None:
+    repository = AlertRepository(db_session)
+    user = await make_user(db_session)
+    product = await make_product(db_session, user_id=user.id)
+    alert = await _triggered_alert(db_session, user_id=user.id, product_id=product.id)
+
+    with pytest.raises(IntegrityError) as excinfo:
+        async with db_session.begin_nested():
+            await repository.update_target_for_user(
+                alert.id, user.id, -1, AlertDirection.below
+            )
+
+    assert "ck_alerts_target_price_non_negative" in str(excinfo.value)
+    assert (await _stored(db_session, alert.id))[:3] == (
+        9_000,
+        AlertDirection.below,
+        _TRIGGERED,
+    )

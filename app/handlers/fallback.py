@@ -41,6 +41,11 @@ REPLY_CONTENT_TYPES = frozenset(
         ContentType.CONTACT,
         ContentType.POLL,
         ContentType.DICE,
+        ContentType.STORY,
+        ContentType.GAME,
+        ContentType.CHECKLIST,
+        ContentType.PAID_MEDIA,
+        ContentType.GIVEAWAY,
     }
 )
 

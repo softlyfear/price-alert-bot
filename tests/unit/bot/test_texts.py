@@ -102,11 +102,12 @@ def test_start_help_and_added_texts_carry_the_one_sound_reminder() -> None:
     )
 
 
-def test_help_text_does_not_name_a_cooldown_number_or_promise_editing() -> None:
-    text = texts.help_text(50)
+def test_help_text_does_not_name_a_cooldown_number() -> None:
+    assert "минут" not in texts.help_text(50)
 
-    assert "изменить" not in text.lower()
-    assert "минут" not in text
+
+def test_help_text_says_a_threshold_can_be_changed_from_the_product_card() -> None:
+    assert "изменить порог" in texts.help_text(50)
 
 
 _NBSP = "\u00a0"
