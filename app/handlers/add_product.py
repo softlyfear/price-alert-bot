@@ -19,12 +19,17 @@ import httpx
 from aiogram import BaseMiddleware
 from aiogram import F
 from aiogram import Router
+from aiogram.client.default import Default
+from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from aiogram.types import TelegramObject
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot import texts
@@ -54,6 +59,9 @@ _KEY_NAME = "product_name"
 _KEY_CURRENT_PRICE = "current_price"
 _KEY_TARGET_PRICE = "target_price"
 _KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
+
+# aiogram's marker for "use the bot-wide parse_mode"; same as ``answer`` default.
+_BOT_DEFAULT_PARSE_MODE = Default("parse_mode")
 
 # Prevents a huge message from reaching the parser; the domain parser
 # enforces its own, larger bound.
@@ -106,6 +114,42 @@ async def _finish(callback: CallbackQuery, state: FSMContext, text: str) -> None
     await reply_to_callback(callback, text)
 
 
+async def _send_checking_notice(message: Message) -> Message | None:
+    """Send the "checking" notice; a Bot API refusal must not break the step."""
+    try:
+        return await message.answer(texts.ADD_CHECKING_TEXT)
+    except TelegramAPIError as exc:
+        logger.bind(error_type=type(exc).__name__).warning(
+            "Could not send the checking notice"
+        )
+        return None
+
+
+async def _deliver_outcome(
+    message: Message,
+    notice: Message | None,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | Default | None = _BOT_DEFAULT_PARSE_MODE,
+) -> None:
+    """Show the step outcome by editing the notice, else as a new message.
+
+    Only ``TelegramBadRequest`` (message gone or not editable) falls back to
+    a new message; other errors propagate to the ``errors`` handler.
+    """
+    if notice is not None:
+        try:
+            await notice.edit_text(
+                text, reply_markup=reply_markup, parse_mode=parse_mode
+            )
+        except TelegramBadRequest:
+            pass
+        else:
+            return
+    await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
 def create_router() -> Router:
     """Build a fresh ``add_product`` router (see ``common.create_router``)."""
     router = Router(name="add_product")
@@ -135,22 +179,31 @@ def create_router() -> Router:
                 texts.ADD_LINK_FORMAT_HINT_TEXT, reply_markup=cancel_keyboard()
             )
             return
+        notice = await _send_checking_notice(message)
         try:
             result = await tracking.preview(
                 message.from_user.id, ref.marketplace, ref.article
             )
         except ProductLimitExceededError as exc:
             await state.clear()
-            await message.answer(texts.limit_exceeded_text(exc.limit))
+            await _deliver_outcome(
+                message, notice, texts.limit_exceeded_text(exc.limit)
+            )
             return
         except MarketplaceNotSupportedError:
-            await message.answer(
-                texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT, reply_markup=cancel_keyboard()
+            await _deliver_outcome(
+                message,
+                notice,
+                texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
+                reply_markup=cancel_keyboard(),
             )
             return
         if isinstance(result, MarketplaceFetchFailure):
-            await message.answer(
-                _failure_text(result.reason), reply_markup=cancel_keyboard()
+            await _deliver_outcome(
+                message,
+                notice,
+                _failure_text(result.reason),
+                reply_markup=cancel_keyboard(),
             )
             return
         await state.update_data(
@@ -162,7 +215,9 @@ def create_router() -> Router:
             }
         )
         await state.set_state(AddProduct.waiting_target_price)
-        await message.answer(
+        await _deliver_outcome(
+            message,
+            notice,
             texts.product_found_text(result.name, result.price),
             reply_markup=cancel_keyboard(),
             parse_mode=None,
