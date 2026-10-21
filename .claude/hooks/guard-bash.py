@@ -227,13 +227,23 @@ def check(
         ):
             return "deny", f"recursive {prog} on a system root"
         elif prog == "docker":
+            # Only the project's own compose stack holds data worth a prompt;
+            # throwaway stacks (`-p <other>`) and scratch volumes run freely.
             joined = " ".join(args)
-            if re.search(r"\bsystem prune\b|\bvolume (rm|prune)\b", joined):
+            stack = os.path.basename(project)
+            if re.search(r"\bsystem prune\b|\bvolume prune\b", joined):
                 return "ask", f"docker {joined}: deletes data"
+            if re.search(r"\bvolume rm\b", joined) and any(
+                t.startswith(stack + "_") for t in targets
+            ):
+                return "ask", f"docker {joined}: deletes the project stack's volumes"
             if re.search(r"\bcompose\b.*\bdown\b", joined) and re.search(
                 r"(^|\s)(-v|--volumes)(\s|$)", joined
             ):
-                return "ask", "docker compose down -v deletes database volumes"
+                named = re.search(r"(?:-p|--project-name)[\s=](\S+)", joined)
+                name = named.group(1) if named else env.get("COMPOSE_PROJECT_NAME")
+                if name in (None, stack):
+                    return "ask", "docker compose down -v deletes database volumes"
         elif prog == "git":
             if not _in_project(_git_target(args, here, env), project):
                 continue
