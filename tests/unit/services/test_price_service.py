@@ -22,6 +22,7 @@ import httpx
 import pytest
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.methods import TelegramMethod
+from aiogram.types import InlineKeyboardMarkup
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,6 +94,10 @@ def _make_alert(
 
 def _make_user() -> User:
     return User(id=1, tg_user_id=100500, tg_username="user")
+
+
+def _stub_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[])
 
 
 class _Harness(NamedTuple):
@@ -612,7 +617,7 @@ async def test_telegram_failure_text_is_absent_from_stderr_under_production_logg
         market_data=MarketplaceProductData(name="Товар", price=100000),
         alerts=[_make_alert(target_price=120000)],
         user=_make_user(),
-        real_notification=NotificationService(bot),
+        real_notification=NotificationService(bot, alert_keyboard=_stub_keyboard),
     )
 
     setup_logging()

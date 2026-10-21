@@ -28,6 +28,7 @@ from app.bot.keyboards import AlertAddCb
 from app.bot.keyboards import AlertEditCb
 from app.bot.keyboards import AlertRemoveCb
 from app.bot.keyboards import EditCancelCb
+from app.bot.keyboards import NoticeCardCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRemoveCb
 from app.bot.keyboards import cancel_keyboard
@@ -45,6 +46,7 @@ from app.handlers.add_product import MAX_TEXT_LENGTH
 from app.handlers.add_product import TrackingServiceMiddleware
 from app.handlers.add_product import enter_price_step
 from app.handlers.callback_reply import edit_callback_message
+from app.handlers.callback_reply import reply_to_callback
 from app.handlers.product_card import card_screen
 from app.services.tracking import AlertChange
 from app.services.tracking import AlertRemoval
@@ -107,6 +109,30 @@ def create_router() -> Router:
             return
         text, keyboard = card_screen(card)
         await edit_callback_message(
+            callback,
+            text,
+            reply_markup=keyboard,
+            alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
+        )
+
+    @router.callback_query(NoticeCardCb.filter())
+    async def on_notice_open_card(
+        callback: CallbackQuery,
+        callback_data: NoticeCardCb,
+        tracking: TrackingService,
+    ) -> None:
+        """Notification "Open product": the card as a new message (PROJECT.md Р10).
+
+        ``product_id`` is user input: the card is read for the pressing user.
+        """
+        card = await tracking.get_product_card(
+            callback.from_user.id, callback_data.product_id
+        )
+        if card is None:
+            await callback.answer(texts.LIST_GONE_ALERT_TEXT, show_alert=True)
+            return
+        text, keyboard = card_screen(card)
+        await reply_to_callback(
             callback,
             text,
             reply_markup=keyboard,
@@ -358,6 +384,7 @@ def create_router() -> Router:
         product_id = data.get(_KEY_PRODUCT_ID)
         if (
             await state.get_state() == EditAlert.waiting_target_price.state
+            and isinstance(product_id, int)
             and product_id != callback_data.product_id
         ):
             await callback.answer(texts.LIST_STALE_BUTTON_ALERT_TEXT, show_alert=True)

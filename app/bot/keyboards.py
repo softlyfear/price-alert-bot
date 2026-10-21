@@ -25,6 +25,7 @@ from app.models.product import Product
 CB_ADD_CONFIRM: Final[str] = "add:confirm"
 CB_ADD_CANCEL: Final[str] = "add:cancel"
 CB_EDIT_CANCEL: Final[str] = "edit:cancel"
+CB_NOTICE_MENU: Final[str] = "notice:menu"
 
 CB_MENU_PREFIX: Final[str] = "menu:"
 CB_MENU_ADD: Final[str] = "menu:add"
@@ -41,6 +42,7 @@ MAX_LIST_BUTTONS: Final[int] = 50
 _MAX_NAME_IN_BUTTON: Final[int] = 40
 CB_LIST_PREFIXES: Final[tuple[str, ...]] = (
     "pcard",
+    "ncard",
     "adel",
     "aedit",
     "aadd",
@@ -52,6 +54,12 @@ CB_LIST_PREFIXES: Final[tuple[str, ...]] = (
 
 class ProductCardCb(CallbackData, prefix="pcard"):
     """Open the card of one product."""
+
+    product_id: int = Field(ge=1, le=_MAX_ID)
+
+
+class NoticeCardCb(CallbackData, prefix="ncard"):
+    """Open the card of the product from a price notification."""
 
     product_id: int = Field(ge=1, le=_MAX_ID)
 
@@ -123,6 +131,21 @@ def add_ref_keyboard(marketplace: Marketplace, article: int) -> InlineKeyboardMa
                 )
             ],
             [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],
+        ]
+    )
+
+
+def notice_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    """Buttons under a price notification: open the product, main menu."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    texts.NOTICE_OPEN_BUTTON_TEXT,
+                    NoticeCardCb(product_id=product_id).pack(),
+                )
+            ],
+            [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_NOTICE_MENU)],
         ]
     )
 

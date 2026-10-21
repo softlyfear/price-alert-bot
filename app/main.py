@@ -32,6 +32,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from app.bot.keyboards import notice_keyboard
 from app.bot.setup import configure_bot_profile
 from app.bot.setup import create_bot
 from app.bot.setup import create_dispatcher
@@ -450,7 +451,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             client_factory,
         )
         price_service = PriceService(
-            notification_service=NotificationService(bot),
+            notification_service=NotificationService(
+                bot, alert_keyboard=notice_keyboard
+            ),
             product_repo_factory=ProductRepository,
             alert_repo_factory=AlertRepository,
             user_repo_factory=UserRepository,
