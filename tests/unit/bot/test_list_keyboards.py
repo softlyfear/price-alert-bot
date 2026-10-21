@@ -17,6 +17,7 @@ from app.models.product import Product
 
 _NB = "\u00a0"
 _MAX_ID = 2_147_483_647
+_NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
 
 
 def _product(product_id: int, name: str = "Item", price: int = 199_000) -> Product:
@@ -48,6 +49,7 @@ def test_list_keyboard_has_one_button_per_product_with_name_and_price() -> None:
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
         [(f"Кроссовки — 1{_NB}990{_NB}₽", "pcard:7")],
         [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        _NAV_ROW,
     ]
 
 
@@ -72,15 +74,23 @@ def test_list_keyboard_collapses_whitespace_and_newlines_in_the_name() -> None:
 def test_list_keyboard_with_exactly_fifty_products_shows_all_of_them() -> None:
     rows = product_list_keyboard([_product(i) for i in range(1, 51)]).inline_keyboard
 
-    assert len(rows) == 50
-    assert rows[-1][0].callback_data == "pcard:50"
+    assert len(rows) == 50 + 1
+    assert rows[49][0].callback_data == "pcard:50"
+    assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
 
 
 def test_list_keyboard_with_fifty_one_products_shows_the_first_fifty() -> None:
     rows = product_list_keyboard([_product(i) for i in range(1, 52)]).inline_keyboard
 
-    assert len(rows) == 50
-    assert rows[-1][0].callback_data == "pcard:50"
+    assert len(rows) == 50 + 1
+    assert rows[49][0].callback_data == "pcard:50"
+    assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
+
+
+def test_list_keyboard_without_products_is_only_the_navigation_row() -> None:
+    rows = product_list_keyboard([]).inline_keyboard
+
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
 
 
 def test_card_keyboard_has_remove_button_per_alert_then_stop_tracking() -> None:

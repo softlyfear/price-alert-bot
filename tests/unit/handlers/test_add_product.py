@@ -75,6 +75,11 @@ _WB_LINK = "https://www.wildberries.ru/catalog/12345678/detail.aspx"
 _NAME = "Кроссовки <b>x*"
 _CARD_ID = 5  # message_id of the card in ``_CONFIRMING_DATA``
 _PRICE = 199_000  # 1 990 rubles
+_MAIN_MENU: list[str | None] = [
+    "menu:add",
+    "menu:list",
+    "menu:help",
+]  # callback_data of the main menu
 
 
 class _TrackingStub:
@@ -1205,7 +1210,7 @@ _OUTCOMES = [
         _Outcome(
             _limit,
             texts.limit_exceeded_text(37),
-            keyboard=None,
+            keyboard=_MAIN_MENU,
             plain=False,
             state=None,
         ),
@@ -1527,6 +1532,10 @@ async def _send_add_command(dialog: _Dialog) -> None:
     await dialog.command("add")
 
 
+async def _press_menu_add(dialog: _Dialog) -> None:
+    await dialog.press("menu:add")
+
+
 _INTERRUPTS = [
     pytest.param(_press_cancel, None, "state_changed", id="cancel-button"),
     pytest.param(_send_cancel_command, None, "state_changed", id="cancel-command"),
@@ -1535,6 +1544,12 @@ _INTERRUPTS = [
         AddProduct.waiting_link.state,
         "marker_mismatch",
         id="add-again",
+    ),
+    pytest.param(
+        _press_menu_add,
+        AddProduct.waiting_link.state,
+        "marker_mismatch",
+        id="menu-add-button",
     ),
 ]
 
@@ -1782,3 +1797,170 @@ async def test_current_check_logs_no_dropped_info_and_keeps_the_pab090_request_c
     assert [type(r) for r in dialog.requests[base:]] == [SendMessage, EditMessageText]
     assert _dropped_infos(log_records) == []
     assert (await dialog.data())["link_message_id"] == _MSG_A
+
+
+# --- main menu on the final screens, "add" menu button (PAB-092) ------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "data"),
+    [
+        pytest.param(None, {}, id="no-dialog"),
+        pytest.param(AddProduct.waiting_link.state, {}, id="waiting-link"),
+        pytest.param(
+            AddProduct.waiting_link.state,
+            {"link_message_id": _MSG_A},
+            id="waiting-link-with-pab091-marker",
+        ),
+        pytest.param(
+            AddProduct.waiting_target_price.state,
+            dict(_CONFIRMING_DATA),
+            id="waiting-price",
+        ),
+        pytest.param(
+            AddProduct.confirming.state, dict(_CONFIRMING_DATA), id="confirming"
+        ),
+    ],
+)
+async def test_menu_add_button_restarts_the_dialog_in_place_from_any_state(
+    dialog: _Dialog, stub: _TrackingStub, state: str | None, data: dict[str, Any]
+) -> None:
+    await dialog.set_state(state, data)
+
+    await dialog.press("menu:add")
+
+    assert await dialog.state() == AddProduct.waiting_link.state
+    assert await dialog.data() == {}
+    assert dialog.sent == []
+    assert [(e.text, e.message_id, e.parse_mode) for e in dialog.edits] == [
+        (texts.ADD_PROMPT_LINK_TEXT, _CARD_ID, None)
+    ]
+    assert _keyboard_callbacks(dialog.edits[0]) == [CB_ADD_CANCEL]
+    assert len(dialog.callback_answers) == 1
+
+
+@pytest.mark.asyncio
+async def test_menu_add_button_on_an_inaccessible_message_sends_the_prompt_as_new(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await dialog.press("menu:add", accessible=False)
+
+    assert await dialog.state() == AddProduct.waiting_link.state
+    assert dialog.edits == []
+    assert [m.text for m in dialog.sent] == [texts.ADD_PROMPT_LINK_TEXT]
+    assert _keyboard_callbacks(dialog.sent[0]) == [CB_ADD_CANCEL]
+    assert len(dialog.callback_answers) == 1
+
+
+@pytest.mark.asyncio
+async def test_menu_add_button_without_a_message_still_opens_the_dialog_with_a_popup(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    # No message: aiogram falls back to the chat_id == user_id FSM key.
+    key = StorageKey(bot_id=dialog.bot.id, chat_id=_USER, user_id=_USER)
+
+    await dialog.press("menu:add", with_message=False)
+
+    assert (
+        await dialog.dispatcher.storage.get_state(key) == AddProduct.waiting_link.state
+    )
+    assert dialog.sent == []
+    assert dialog.edits == []
+    assert [(a.text, a.show_alert) for a in dialog.callback_answers] == [
+        (texts.MENU_STALE_ALERT_TEXT, True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_link_after_menu_add_button_starts_a_normal_check(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await dialog.press("menu:add")
+
+    await dialog.say(_WB_LINK)
+
+    assert stub.preview_calls == [(_USER, Marketplace.wb, 12345678)]
+    assert await dialog.state() == AddProduct.waiting_target_price.state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (None, None),
+        (DuplicateAlertError(), texts.ADD_DUPLICATE_TEXT),
+        (ProductLimitExceededError(37), texts.limit_exceeded_text(37)),
+        (MarketplaceNotSupportedError("ozon"), texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT),
+        (TargetEqualsCurrentPriceError(), texts.ADD_TARGET_EQUALS_RESTART_TEXT),
+    ],
+    ids=["success", "duplicate", "limit", "unsupported", "equals-price"],
+)
+async def test_every_confirm_outcome_carries_the_main_menu(
+    dialog: _Dialog, stub: _TrackingStub, error: Exception | None, expected: str | None
+) -> None:
+    stub.add_error = error
+    await _at_confirming(dialog)
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert _keyboard_callbacks(dialog.sent[-1]) == _MAIN_MENU
+    if expected is not None:
+        assert dialog.sent[-1].text == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", _STEPS)
+async def test_cancel_button_outcome_carries_the_main_menu(
+    dialog: _Dialog, stub: _TrackingStub, state: str
+) -> None:
+    await dialog.set_state(state, dict(_CONFIRMING_DATA))
+
+    await dialog.press(CB_ADD_CANCEL)
+
+    assert dialog.sent[-1].text == texts.CANCEL_TEXT
+    assert _keyboard_callbacks(dialog.sent[-1]) == _MAIN_MENU
+
+
+@pytest.mark.asyncio
+async def test_stale_draft_on_the_confirm_step_carries_the_main_menu(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await dialog.set_state(
+        AddProduct.confirming.state, {"confirm_message_id": _CARD_ID}
+    )
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert dialog.sent[-1].text == texts.ADD_STALE_TEXT
+    assert _keyboard_callbacks(dialog.sent[-1]) == _MAIN_MENU
+
+
+@pytest.mark.asyncio
+async def test_stale_draft_on_the_price_step_carries_the_main_menu(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await dialog.set_state(AddProduct.waiting_target_price.state, {})
+
+    await dialog.say("1500")
+
+    assert dialog.sent[-1].text == texts.ADD_STALE_TEXT
+    assert _keyboard_callbacks(dialog.sent[-1]) == _MAIN_MENU
+
+
+@pytest.mark.asyncio
+async def test_input_steps_carry_only_cancel_or_confirm_buttons(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    await dialog.command("add")
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CANCEL]
+    await dialog.say("hello")  # format hint
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CANCEL]
+    await dialog.say(_WB_LINK)  # product card
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CANCEL]
+    await dialog.say("0")  # price hint
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CANCEL]
+    await dialog.say("1500")  # confirmation card
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CONFIRM, CB_ADD_CANCEL]
+    await dialog.say("yes")  # confirm hint
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CONFIRM, CB_ADD_CANCEL]

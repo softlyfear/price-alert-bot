@@ -12,6 +12,7 @@ from aiogram.types import Message
 from loguru import logger
 
 from app.bot import texts
+from app.bot.keyboards import main_menu_keyboard
 
 
 def create_router() -> Router:
@@ -30,7 +31,11 @@ def create_router() -> Router:
             chat_message = callback.message
         if chat_message is not None:
             try:
-                await chat_message.answer(texts.UNEXPECTED_ERROR_TEXT, parse_mode=None)
+                await chat_message.answer(
+                    texts.UNEXPECTED_ERROR_TEXT,
+                    parse_mode=None,
+                    reply_markup=main_menu_keyboard(),
+                )
             except Exception as exc:
                 log.warning("Failed to deliver the error reply: {exc}", exc=exc)
         if callback is not None:

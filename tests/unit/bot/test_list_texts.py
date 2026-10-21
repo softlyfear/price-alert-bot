@@ -99,7 +99,7 @@ def test_removal_outcome_texts_are_distinct_and_removed_ones_point_to_add() -> N
     assert len(outcomes) == 4
     assert "/add" in texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT
     assert "/add" in texts.LIST_PRODUCT_REMOVED_TEXT
-    assert "/add" in texts.LIST_EMPTY_TEXT
+    assert "➕ Добавить товар" in texts.LIST_EMPTY_TEXT
 
 
 def test_marketplace_title_rejects_a_value_outside_the_enum() -> None:

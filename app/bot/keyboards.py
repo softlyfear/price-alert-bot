@@ -22,6 +22,15 @@ from app.models.product import Product
 CB_ADD_CONFIRM: Final[str] = "add:confirm"
 CB_ADD_CANCEL: Final[str] = "add:cancel"
 
+CB_MENU_PREFIX: Final[str] = "menu:"
+CB_MENU_ADD: Final[str] = "menu:add"
+CB_MENU_LIST: Final[str] = "menu:list"
+CB_MENU_HELP: Final[str] = "menu:help"
+CB_MENU_START: Final[str] = "menu:start"
+CB_MENU_ALL: Final[frozenset[str]] = frozenset(
+    {CB_MENU_ADD, CB_MENU_LIST, CB_MENU_HELP, CB_MENU_START}
+)
+
 # Primary keys are int4 (PostgreSQL ``Integer``).
 _MAX_ID: Final[int] = 2_147_483_647
 MAX_LIST_BUTTONS: Final[int] = 50
@@ -45,6 +54,23 @@ class ProductRemoveCb(CallbackData, prefix="pdel"):
     """Stop tracking one product."""
 
     product_id: int = Field(ge=1, le=_MAX_ID)
+
+
+def _button(text: str, callback_data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Main menu: add a product, list, help."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button(texts.MENU_ADD_BUTTON_TEXT, CB_MENU_ADD)],
+            [
+                _button(texts.MENU_LIST_BUTTON_TEXT, CB_MENU_LIST),
+                _button(texts.MENU_HELP_BUTTON_TEXT, CB_MENU_HELP),
+            ],
+        ]
+    )
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
@@ -85,21 +111,26 @@ def _short_name(name: str) -> str:
 
 
 def product_list_keyboard(products: Sequence[Product]) -> InlineKeyboardMarkup:
-    """One button per product, at most ``MAX_LIST_BUTTONS``."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=(
-                        f"{_short_name(product.product_name)} — "
-                        f"{format_price(product.current_price)}"
-                    ),
-                    callback_data=ProductCardCb(product_id=product.id).pack(),
-                )
-            ]
-            for product in products[:MAX_LIST_BUTTONS]
+    """One button per product (at most ``MAX_LIST_BUTTONS``) plus a nav row."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=(
+                    f"{_short_name(product.product_name)} — "
+                    f"{format_price(product.current_price)}"
+                ),
+                callback_data=ProductCardCb(product_id=product.id).pack(),
+            )
+        ]
+        for product in products[:MAX_LIST_BUTTONS]
+    ]
+    rows.append(
+        [
+            _button(texts.MENU_ADD_BUTTON_TEXT, CB_MENU_ADD),
+            _button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def product_card_keyboard(
