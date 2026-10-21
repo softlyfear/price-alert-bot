@@ -22,7 +22,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "factory-boy>=3.3.3",
     "import-linter>=2.15",
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
