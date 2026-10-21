@@ -39,7 +39,15 @@ CB_MENU_ALL: Final[frozenset[str]] = frozenset(
 _MAX_ID: Final[int] = 2_147_483_647
 MAX_LIST_BUTTONS: Final[int] = 50
 _MAX_NAME_IN_BUTTON: Final[int] = 40
-CB_LIST_PREFIXES: Final[tuple[str, ...]] = ("pcard", "adel", "aedit", "pdel")
+CB_LIST_PREFIXES: Final[tuple[str, ...]] = (
+    "pcard",
+    "adel",
+    "aedit",
+    "aadd",
+    "pdel",
+    "ecancel",
+    CB_EDIT_CANCEL,
+)
 
 
 class ProductCardCb(CallbackData, prefix="pcard"):
@@ -59,6 +67,18 @@ class AlertEditCb(CallbackData, prefix="aedit"):
     """Change one threshold; ``product_id`` is the card to redraw."""
 
     alert_id: int = Field(ge=1, le=_MAX_ID)
+    product_id: int = Field(ge=1, le=_MAX_ID)
+
+
+class AlertAddCb(CallbackData, prefix="aadd"):
+    """Add one more threshold to the product of the card."""
+
+    product_id: int = Field(ge=1, le=_MAX_ID)
+
+
+class EditCancelCb(CallbackData, prefix="ecancel"):
+    """Cancel the threshold edit; ``product_id`` ties it to its own dialog."""
+
     product_id: int = Field(ge=1, le=_MAX_ID)
 
 
@@ -120,10 +140,17 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def edit_cancel_keyboard() -> InlineKeyboardMarkup:
+def edit_cancel_keyboard(product_id: int) -> InlineKeyboardMarkup:
     """Keyboard of the threshold edit step: a single cancel button."""
     return InlineKeyboardMarkup(
-        inline_keyboard=[[_button(texts.CANCEL_BUTTON_TEXT, CB_EDIT_CANCEL)]]
+        inline_keyboard=[
+            [
+                _button(
+                    texts.CANCEL_BUTTON_TEXT,
+                    EditCancelCb(product_id=product_id).pack(),
+                )
+            ]
+        ]
     )
 
 
@@ -190,7 +217,7 @@ def nav_keyboard() -> InlineKeyboardMarkup:
 def product_card_keyboard(
     product_id: int, alerts: Sequence[Alert]
 ) -> InlineKeyboardMarkup:
-    """Edit and remove buttons per alert, stop-tracking button, nav row."""
+    """Edit and remove buttons per alert, add, stop-tracking buttons, nav row."""
     amount_counts = Counter(alert.target_price for alert in alerts)
     rows: list[list[InlineKeyboardButton]] = []
     for alert in alerts:
@@ -219,6 +246,14 @@ def product_card_keyboard(
                 )
             ]
         )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=texts.ADD_ALERT_BUTTON_TEXT,
+                callback_data=AlertAddCb(product_id=product_id).pack(),
+            )
+        ]
+    )
     rows.append(
         [
             InlineKeyboardButton(

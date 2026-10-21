@@ -143,6 +143,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
     mock.list_products.return_value = []
     mock.get_product_card.return_value = None
+    mock.find_tracked_product.return_value = None
     mock.remove_product.return_value = False
     mock.remove_alert.return_value = AlertRemoval.not_found
     monkeypatch.setattr(add_product_module, "TrackingService", lambda **_kw: mock)
@@ -452,6 +453,7 @@ async def test_open_card_edits_the_list_in_place_with_all_card_parts(
         [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:5")],
         [(f"Изменить порог: 2{_NB}000{_NB}₽", "aedit:12:5")],
         [(f"Убрать порог: 2{_NB}000{_NB}₽", "adel:12:5")],
+        [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
     ]
@@ -533,6 +535,7 @@ _REMOVE_CASES = [
         [
             [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
             [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+            [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,
         ],
@@ -554,6 +557,7 @@ _REMOVE_CASES = [
         [
             [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
             [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+            [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,
         ],

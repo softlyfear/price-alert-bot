@@ -4,11 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.bot import texts
-from app.bot.keyboards import CB_EDIT_CANCEL
 from app.bot.keyboards import CB_LIST_PREFIXES
 from app.bot.keyboards import MAX_LIST_BUTTONS
+from app.bot.keyboards import AlertAddCb
 from app.bot.keyboards import AlertEditCb
 from app.bot.keyboards import AlertRemoveCb
+from app.bot.keyboards import EditCancelCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRemoveCb
 from app.bot.keyboards import edit_cancel_keyboard
@@ -115,6 +116,7 @@ def test_card_keyboard_has_edit_then_remove_per_alert_then_stop_tracking_then_na
         [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:4")],
         [(f"Изменить порог: 3{_NB}000{_NB}₽", "aedit:12:4")],
         [(f"Убрать порог: 3{_NB}000{_NB}₽", "adel:12:4")],
+        [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:4")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
         _CARD_NAV_ROW,
     ]
@@ -144,6 +146,7 @@ def test_card_keyboard_without_alerts_has_stop_tracking_then_nav() -> None:
     rows = product_card_keyboard(4, []).inline_keyboard
 
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:4")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
         _CARD_NAV_ROW,
     ]
@@ -168,7 +171,7 @@ def test_card_keyboard_puts_each_edit_row_right_before_its_remove_row() -> None:
 
     data = [
         row[0].callback_data
-        for row in product_card_keyboard(4, alerts).inline_keyboard[:-2]
+        for row in product_card_keyboard(4, alerts).inline_keyboard[:-3]
     ]
 
     assert data == [
@@ -182,12 +185,11 @@ def test_card_keyboard_puts_each_edit_row_right_before_its_remove_row() -> None:
 
 
 def test_edit_cancel_keyboard_is_a_single_cancel_button() -> None:
-    rows = edit_cancel_keyboard().inline_keyboard
+    rows = edit_cancel_keyboard(5).inline_keyboard
 
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
-        [(texts.CANCEL_BUTTON_TEXT, CB_EDIT_CANCEL)]
+        [(texts.CANCEL_BUTTON_TEXT, "ecancel:5")]
     ]
-    assert CB_EDIT_CANCEL == "edit:cancel"
 
 
 def test_edit_prefix_is_a_list_prefix_so_a_broken_payload_gets_the_stale_reply() -> (
@@ -243,3 +245,67 @@ def test_callback_factories_accept_the_range_boundaries(good: int) -> None:
     edit = AlertEditCb(alert_id=good, product_id=good)
     assert (edit.alert_id, edit.product_id) == (good, good)
     assert ProductRemoveCb(product_id=good).product_id == good
+
+
+# --- PAB-096: "Добавить порог" and the typed edit "Отмена" ------------------------
+
+
+def _flat(product_id: int, alerts: list[Alert]) -> list[tuple[str, str | None]]:
+    rows = product_card_keyboard(product_id, alerts).inline_keyboard
+    return [(b.text, b.callback_data) for row in rows for b in row]
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_card_keyboard_has_exactly_one_add_button_after_the_alert_rows_before_stop(
+    count: int,
+) -> None:
+    alerts = [_alert(30 + i, AlertDirection.below, 100_000 + i) for i in range(count)]
+
+    flat = _flat(4, alerts)
+
+    add = [i for i, (text, _) in enumerate(flat) if text == texts.ADD_ALERT_BUTTON_TEXT]
+    stop = [i for i, (_, data) in enumerate(flat) if data == "pdel:4"]
+    alert_rows = [
+        i for i, (_, data) in enumerate(flat) if (data or "")[:4] in ("aedi", "adel")
+    ]
+    assert len(add) == 1
+    assert flat[add[0]] == ("➕ Добавить порог", "aadd:4")
+    assert add[0] == stop[0] - 1
+    assert all(i < add[0] for i in alert_rows)
+    assert len(alert_rows) == 2 * count
+
+
+def test_add_and_edit_cancel_payloads_fit_the_telegram_limit_at_the_largest_id() -> (
+    None
+):
+    packed = [
+        AlertAddCb(product_id=_MAX_ID).pack(),
+        EditCancelCb(product_id=_MAX_ID).pack(),
+    ]
+    keyboard = edit_cancel_keyboard(_MAX_ID).inline_keyboard
+
+    assert packed == [f"aadd:{_MAX_ID}", f"ecancel:{_MAX_ID}"]
+    assert all(len(p.encode()) <= 64 for p in packed)
+    assert [[b.callback_data for b in row] for row in keyboard] == [
+        [f"ecancel:{_MAX_ID}"]
+    ]
+
+
+@pytest.mark.parametrize("bad", [0, -1, _MAX_ID + 1])
+def test_add_and_edit_cancel_factories_reject_ids_outside_the_int4_range(
+    bad: int,
+) -> None:
+    with pytest.raises(ValidationError):
+        AlertAddCb(product_id=bad)
+    with pytest.raises(ValidationError):
+        EditCancelCb(product_id=bad)
+
+
+@pytest.mark.parametrize("good", [1, _MAX_ID])
+def test_add_and_edit_cancel_factories_accept_the_range_boundaries(good: int) -> None:
+    assert AlertAddCb(product_id=good).product_id == good
+    assert EditCancelCb(product_id=good).product_id == good
+
+
+def test_add_and_edit_cancel_prefixes_are_list_prefixes_with_the_legacy_one() -> None:
+    assert {"aadd", "ecancel", "edit:cancel"} <= set(CB_LIST_PREFIXES)

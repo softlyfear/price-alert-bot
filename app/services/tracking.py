@@ -139,7 +139,26 @@ class TrackingService:
         product = await self._products.get_by_id_for_user(product_id, user.id)
         if product is None:
             return None
-        alerts = await self._alerts.get_by_user_and_product(user.id, product.id)
+        return await self._build_card(user.id, product)
+
+    async def find_tracked_product(
+        self, tg_user_id: int, marketplace: Marketplace, article: int
+    ) -> ProductCard | None:
+        """Return the caller's product by (marketplace, article), or None.
+
+        Reads the database only: no marketplace request, no writes besides
+        the existing `get_or_create_by_tg_id`.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        product = await self._products.get_by_article_and_user(
+            article, user.id, marketplace
+        )
+        if product is None:
+            return None
+        return await self._build_card(user.id, product)
+
+    async def _build_card(self, user_id: int, product: Product) -> ProductCard:
+        alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
         return ProductCard(
             product=product,
             alerts=tuple(sorted(alerts, key=lambda alert: alert.target_price)),
