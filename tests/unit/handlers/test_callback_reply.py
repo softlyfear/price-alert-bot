@@ -9,6 +9,8 @@ Telegram and how many times the callback was answered.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
@@ -17,6 +19,7 @@ from aiogram import Bot
 from aiogram import Dispatcher
 from aiogram import F
 from aiogram import Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.methods import AnswerCallbackQuery
@@ -33,6 +36,9 @@ from app.handlers.callback_reply import edit_callback_message
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 
+if TYPE_CHECKING:
+    from loguru import Record
+
 _CHAT = 9_999
 _USER = 4_242
 _MENU = ["menu:add", "menu:list", "menu:help"]
@@ -41,13 +47,20 @@ _MENU = ["menu:add", "menu:list", "menu:help"]
 class _Session:
     """Bot plus the error the fake API raises for ``editMessageText``."""
 
-    def __init__(self, edit_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        edit_error: Exception | None = None,
+        answer_error: Exception | None = None,
+    ) -> None:
         self.edit_error = edit_error
+        self.answer_error = answer_error
         self.bot: Bot = build_fake_bot(responder=self._respond)
 
     async def _respond(self, method: TelegramMethod[Any]) -> Any:
         if isinstance(method, EditMessageText) and self.edit_error is not None:
             raise self.edit_error
+        if isinstance(method, AnswerCallbackQuery) and self.answer_error is not None:
+            raise self.answer_error
         return True
 
     @property
@@ -235,3 +248,146 @@ async def test_missing_message_without_alert_text_shows_the_screen_text_as_popup
 
     answers = session.of(AnswerCallbackQuery)
     assert [(a.text, a.show_alert) for a in answers] == [("screen text", True)]
+
+
+# --- answer_text, failed answer after delivery, edit-refusal log (PAB-093 AC8) ---
+
+_SECRET_SCREEN = "SECRET screen text of the product"
+_TOAST = "toast text"
+
+
+def _answer_error() -> Exception:
+    return TelegramBadRequest(
+        method=AnswerCallbackQuery(callback_query_id="cb-1"),
+        message="Bad Request: query is too old",
+    )
+
+
+def _probe(
+    *, markup: InlineKeyboardMarkup | None = None, answer_text: str | None = _TOAST
+) -> Dispatcher:
+    """A bare dispatcher whose only handler shows ``_SECRET_SCREEN`` in place."""
+    router = Router(name="probe")
+
+    @router.callback_query(F.data == "probe")
+    async def probe(callback: CallbackQuery) -> None:
+        await edit_callback_message(
+            callback, _SECRET_SCREEN, reply_markup=markup, answer_text=answer_text
+        )
+
+    dispatcher = Dispatcher()
+    dispatcher.include_router(router)
+    return dispatcher
+
+
+async def _feed(dispatcher: Dispatcher, session: _Session, **kwargs: Any) -> None:
+    await dispatcher.feed_update(
+        session.bot,
+        make_callback_update("probe", chat_id=_CHAT, user_id=_USER, **kwargs),
+    )
+
+
+def _warnings(records: list[Record]) -> list[Record]:
+    return [r for r in records if r["level"].name == "WARNING"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session", "kwargs"),
+    [
+        (lambda: _Session(), {"message_text": "old"}),
+        (lambda: _Session(_edit_error(TelegramBadRequest)), {}),
+        (lambda: _Session(), {"accessible": False}),
+        (lambda: _Session(), {"message_text": _SECRET_SCREEN}),
+    ],
+    ids=[
+        "edit",
+        "edit-refused-new-message",
+        "inaccessible-new-message",
+        "same-content",
+    ],
+)
+async def test_answer_text_reaches_the_single_callback_answer_on_every_branch(
+    session: Callable[[], _Session], kwargs: dict[str, Any]
+) -> None:
+    current = session()
+
+    await _feed(_probe(), current, **kwargs)
+
+    answers = current.of(AnswerCallbackQuery)
+    assert [(a.text, a.show_alert) for a in answers] == [(_TOAST, None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("edit_error", "kwargs"),
+    [(None, {"message_text": "old"}), (_edit_error(TelegramBadRequest), {})],
+    ids=["after-edit", "after-fallback-new-message"],
+)
+async def test_failed_answer_after_delivery_is_swallowed_and_logged_as_warning(
+    log_records: list[Record], edit_error: Exception | None, kwargs: dict[str, Any]
+) -> None:
+    session = _Session(edit_error, answer_error=_answer_error())
+
+    await _feed(_probe(), session, **kwargs)  # must not raise
+
+    assert len(session.of(AnswerCallbackQuery)) == 1
+    assert len(session.of(EditMessageText)) == 1
+    assert len(session.of(SendMessage)) == (0 if edit_error is None else 1)
+    answer_failures = [
+        r for r in _warnings(log_records) if "answer" in r["message"].lower()
+    ]
+    assert len(answer_failures) == 1
+    assert "TelegramBadRequest" in answer_failures[0]["message"]
+    assert _SECRET_SCREEN not in answer_failures[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_failed_answer_on_the_same_content_branch_is_swallowed_too(
+    log_records: list[Record],
+) -> None:
+    session = _Session(answer_error=_answer_error())
+
+    await _feed(_probe(), session, message_text=_SECRET_SCREEN)
+
+    assert session.of(EditMessageText) == []
+    assert len(_warnings(log_records)) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_bad_request_error_on_the_edit_itself_propagates() -> None:
+    session = _Session(_edit_error(TelegramNetworkError))
+
+    with pytest.raises(TelegramAPIError) as raised:
+        await _feed(_probe(), session)
+
+    assert isinstance(raised.value, TelegramNetworkError)
+    assert session.of(SendMessage) == []
+    assert session.of(AnswerCallbackQuery) == []
+
+
+@pytest.mark.asyncio
+async def test_refused_edit_is_logged_with_the_error_type_and_without_screen_text(
+    log_records: list[Record],
+) -> None:
+    session = _Session(_edit_error(TelegramBadRequest))
+
+    await _feed(_probe(), session)
+
+    assert len(session.of(SendMessage)) == 1  # positive control: fallback ran
+    refusals = _warnings(log_records)
+    assert len(refusals) == 1
+    assert "TelegramBadRequest" in refusals[0]["message"]
+    assert _SECRET_SCREEN not in refusals[0]["message"]
+    assert _SECRET_SCREEN not in str(refusals[0]["extra"])
+
+
+@pytest.mark.asyncio
+async def test_default_answer_text_is_an_empty_answer() -> None:
+    session = _Session()
+
+    await _feed(_probe(answer_text=None), session, message_text="old")
+
+    assert [(a.text, a.show_alert) for a in session.of(AnswerCallbackQuery)] == [
+        (None, None)
+    ]

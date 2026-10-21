@@ -70,8 +70,23 @@ def test_help_text_lists_every_command(command: str) -> None:
 def test_help_text_names_the_given_product_limit(limit: int) -> None:
     other = 50 if limit == 7 else 7
 
-    assert f"не более чем за {limit} товарами" in texts.help_text(limit)
-    assert f"за {other} товарами" not in texts.help_text(limit)
+    assert f"Лимит товаров: {limit}." in texts.help_text(limit)
+    assert f"Лимит товаров: {other}." not in texts.help_text(limit)
+
+
+@pytest.mark.parametrize("n", [1, 2, 5, 21, 50])
+def test_help_text_limit_phrase_is_the_same_for_every_number(n: int) -> None:
+    lines = texts.help_text(n).split("\n")
+
+    assert f"Лимит товаров: {n}." in lines
+
+
+@pytest.mark.parametrize("n", [1, 2, 5, 21, 50])
+def test_limit_exceeded_text_is_the_exact_phrase_for_every_number(n: int) -> None:
+    assert texts.limit_exceeded_text(n) == (
+        f"Достигнут лимит товаров: {n}. "
+        "Чтобы добавить новый, сначала перестаньте следить за одним из текущих."
+    )
 
 
 @pytest.mark.parametrize("limit", [1, 50, 1000])

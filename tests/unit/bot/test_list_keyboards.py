@@ -8,6 +8,7 @@ from app.bot.keyboards import MAX_LIST_BUTTONS
 from app.bot.keyboards import AlertRemoveCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRemoveCb
+from app.bot.keyboards import nav_keyboard
 from app.bot.keyboards import product_card_keyboard
 from app.bot.keyboards import product_list_keyboard
 from app.models.alert import Alert
@@ -17,6 +18,7 @@ from app.models.product import Product
 
 _NB = "\u00a0"
 _MAX_ID = 2_147_483_647
+_CARD_NAV_ROW = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
 
 
@@ -93,7 +95,7 @@ def test_list_keyboard_without_products_is_only_the_navigation_row() -> None:
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
 
 
-def test_card_keyboard_has_remove_button_per_alert_then_stop_tracking() -> None:
+def test_card_keyboard_has_short_remove_buttons_then_stop_tracking_then_nav() -> None:
     rows = product_card_keyboard(
         4,
         [
@@ -103,26 +105,67 @@ def test_card_keyboard_has_remove_button_per_alert_then_stop_tracking() -> None:
     ).inline_keyboard
 
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
-        [(f"Убрать порог: цена станет ниже 1{_NB}000{_NB}₽", "adel:11")],
-        [(f"Убрать порог: цена станет выше 3{_NB}000{_NB}₽", "adel:12")],
+        [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:4")],
+        [(f"Убрать порог: 3{_NB}000{_NB}₽", "adel:12:4")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
+        _CARD_NAV_ROW,
     ]
 
 
-def test_card_keyboard_without_alerts_has_only_stop_tracking() -> None:
+def test_card_keyboard_shows_arrows_only_on_buttons_with_a_same_amount_twin() -> None:
+    rows = product_card_keyboard(
+        4,
+        [
+            _alert(11, AlertDirection.below, 100_000),
+            _alert(12, AlertDirection.above, 100_000),
+            _alert(13, AlertDirection.below, 50_000),
+        ],
+    ).inline_keyboard
+
+    assert [row[0].text for row in rows[:3]] == [
+        f"Убрать порог: ↓ 1{_NB}000{_NB}₽",
+        f"Убрать порог: ↑ 1{_NB}000{_NB}₽",
+        f"Убрать порог: 500{_NB}₽",
+    ]
+
+
+def test_card_keyboard_without_alerts_has_stop_tracking_then_nav() -> None:
     rows = product_card_keyboard(4, []).inline_keyboard
 
-    assert [[b.callback_data for b in row] for row in rows] == [["pdel:4"]]
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
+        _CARD_NAV_ROW,
+    ]
+
+
+def test_card_keyboard_callbacks_fit_the_telegram_limit_at_the_largest_ids() -> None:
+    rows = product_card_keyboard(
+        _MAX_ID, [_alert(_MAX_ID, AlertDirection.below, 100_000)]
+    ).inline_keyboard
+
+    data = [b.callback_data for row in rows for b in row]
+    assert data[0] == f"adel:{_MAX_ID}:{_MAX_ID}"
+    assert all(d is not None and len(d.encode()) <= 64 for d in data)
+
+
+def test_nav_keyboard_is_exactly_the_card_navigation_row() -> None:
+    rows = nav_keyboard().inline_keyboard
+
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_CARD_NAV_ROW]
 
 
 def test_callback_payloads_fit_the_telegram_limit_at_the_largest_id() -> None:
     packed = [
         ProductCardCb(product_id=_MAX_ID).pack(),
-        AlertRemoveCb(alert_id=_MAX_ID).pack(),
+        AlertRemoveCb(alert_id=_MAX_ID, product_id=_MAX_ID).pack(),
         ProductRemoveCb(product_id=_MAX_ID).pack(),
     ]
 
-    assert packed == [f"pcard:{_MAX_ID}", f"adel:{_MAX_ID}", f"pdel:{_MAX_ID}"]
+    assert packed == [
+        f"pcard:{_MAX_ID}",
+        f"adel:{_MAX_ID}:{_MAX_ID}",
+        f"pdel:{_MAX_ID}",
+    ]
     assert all(len(p.encode()) <= 64 for p in packed)
 
 
@@ -131,7 +174,9 @@ def test_callback_factories_reject_ids_outside_the_int4_range(bad: int) -> None:
     with pytest.raises(ValidationError):
         ProductCardCb(product_id=bad)
     with pytest.raises(ValidationError):
-        AlertRemoveCb(alert_id=bad)
+        AlertRemoveCb(alert_id=bad, product_id=1)
+    with pytest.raises(ValidationError):
+        AlertRemoveCb(alert_id=1, product_id=bad)
     with pytest.raises(ValidationError):
         ProductRemoveCb(product_id=bad)
 
@@ -139,5 +184,6 @@ def test_callback_factories_reject_ids_outside_the_int4_range(bad: int) -> None:
 @pytest.mark.parametrize("good", [1, _MAX_ID])
 def test_callback_factories_accept_the_range_boundaries(good: int) -> None:
     assert ProductCardCb(product_id=good).product_id == good
-    assert AlertRemoveCb(alert_id=good).alert_id == good
+    cb = AlertRemoveCb(alert_id=good, product_id=good)
+    assert (cb.alert_id, cb.product_id) == (good, good)
     assert ProductRemoveCb(product_id=good).product_id == good

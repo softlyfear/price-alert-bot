@@ -10,17 +10,21 @@ records every call. Business rules are covered by the service tests.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 from unittest.mock import MagicMock
+from unittest.mock import call
 
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.methods import AnswerCallbackQuery
 from aiogram.methods import EditMessageText
 from aiogram.methods import SendMessage
+from aiogram.methods import TelegramMethod
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Update
 
@@ -40,12 +44,27 @@ from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
 from tests.unit.conftest import send_message_responder
 
+if TYPE_CHECKING:
+    from loguru import Record
+
 _CHAT = 9_999
 _USER = 4_242  # deliberately different from the chat id
 _MAX_ID = 2_147_483_647
 _NAME = "Кроссовки <b>x*"
 _NB = "\u00a0"
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
+_CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
+_LEGEND = "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+_CARD_HEAD = (
+    f"{_NAME}\n"
+    "Маркетплейс: Wildberries\n"
+    "https://www.wildberries.ru/catalog/12345678/detail.aspx\n"
+    f"Текущая цена: 1{_NB}990{_NB}₽\n"
+    "Цена без учёта персональных скидок.\n"
+    "\n"
+    "Пороги:\n"
+)
+_CARD_ONE_ALERT = f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n{_LEGEND}"
 
 
 def _product(product_id: int, name: str = _NAME, price: int = 199_000) -> Product:
@@ -392,43 +411,47 @@ async def test_list_inside_an_add_dialog_state_answers_and_keeps_state_and_draft
 # --- card ------------------------------------------------------------------
 
 
+def _rows(request: SendMessage | EditMessageText) -> list[list[tuple[str, str | None]]]:
+    return [
+        [(b.text, b.callback_data) for b in row]
+        for row in _keyboard(request).inline_keyboard
+    ]
+
+
+def _one_alert_card() -> ProductCard:
+    return ProductCard(
+        product=_product(5), alerts=(_alert(11, AlertDirection.below, 150_000),)
+    )
+
+
 @pytest.mark.asyncio
-async def test_open_card_sends_a_new_plain_text_message_with_all_card_parts(
+async def test_open_card_edits_the_list_in_place_with_all_card_parts(
     bot: _Bot, service: MagicMock
 ) -> None:
     service.get_product_card.return_value = ProductCard(
         product=_product(5),
         alerts=(
-            _alert(11, AlertDirection.below, 150_000),
-            _alert(12, AlertDirection.above, 250_000),
+            _alert(11, AlertDirection.below, 100_000),
+            _alert(12, AlertDirection.above, 200_000),
         ),
     )
 
     await bot.press("pcard:5")
 
     service.get_product_card.assert_awaited_once_with(_USER, 5)
-    assert len(bot.answers) == 1
-    assert bot.answers[0].show_alert is None
-    assert bot.answers[0].text is None
-    request = bot.sent[0]
+    assert bot.sent == []
+    assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
+    request = bot.edits[0]
     assert request.parse_mode is None
     assert request.text == (
-        f"{_NAME}\n"
-        "Маркетплейс: Wildberries\n"
-        "https://www.wildberries.ru/catalog/12345678/detail.aspx\n"
-        f"Текущая цена: 1{_NB}990{_NB}₽\n"
-        "Цена без учёта персональных скидок.\n"
-        "\n"
-        "Пороги:\n"
-        f"• Сообщу, когда цена станет ниже 1{_NB}500{_NB}₽\n"
-        f"• Сообщу, когда цена станет выше 2{_NB}500{_NB}₽"
+        f"{_CARD_HEAD}• ↓ 1{_NB}000{_NB}₽\n• ↑ 2{_NB}000{_NB}₽\n{_LEGEND}"
     )
     assert request.text.count(PRICE_DISCLAIMER_SHORT) == 1
-    rows = _keyboard(request).inline_keyboard
-    assert [[b.callback_data for b in row] for row in rows] == [
-        ["adel:11"],
-        ["adel:12"],
-        ["pdel:5"],
+    assert _rows(request) == [
+        [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:5")],
+        [(f"Убрать порог: 2{_NB}000{_NB}₽", "adel:12:5")],
+        [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
+        _CARD_NAV,
     ]
 
 
@@ -442,30 +465,23 @@ async def test_open_card_of_a_missing_product_alerts_the_gone_text_only(
         (texts.LIST_GONE_ALERT_TEXT, True)
     ]
     assert bot.sent == []
+    assert bot.edits == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", _KINDS_WITH_CHAT)
-async def test_open_card_on_a_message_with_a_chat_sends_the_card_there_and_answers_once(
-    bot: _Bot, service: MagicMock, kind: str
+async def test_open_card_on_an_inaccessible_message_sends_the_card_as_new(
+    bot: _Bot, service: MagicMock
 ) -> None:
-    """``message`` is the positive control; ``inaccessible`` is a stale button."""
-    service.get_product_card.return_value = ProductCard(
-        product=_product(5), alerts=(_alert(11, AlertDirection.below, 150_000),)
-    )
+    service.get_product_card.return_value = _one_alert_card()
 
-    await bot.press("pcard:5", **_PRESS[kind])
+    await bot.press("pcard:5", **_PRESS["inaccessible"])
 
     service.get_product_card.assert_awaited_once_with(_USER, 5)
+    assert bot.edits == []
     assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
-    assert len(bot.sent) == 1
-    request = bot.sent[0]
-    assert request.chat_id == _CHAT
-    assert request.parse_mode is None
-    assert request.text.startswith(f"{_NAME}\nМаркетплейс: Wildberries\n")
-    assert f"• Сообщу, когда цена станет ниже 1{_NB}500{_NB}₽" in request.text
-    rows = _keyboard(request).inline_keyboard
-    assert [[b.callback_data for b in row] for row in rows] == [["adel:11"], ["pdel:5"]]
+    assert [(r.chat_id, r.text, r.parse_mode) for r in bot.sent] == [
+        (_CHAT, _CARD_ONE_ALERT, None)
+    ]
 
 
 @pytest.mark.asyncio
@@ -481,138 +497,314 @@ async def test_open_card_without_any_message_pops_up_the_stale_alert_and_sends_n
         (texts.LIST_STALE_BUTTON_ALERT_TEXT, True)
     ]
     assert bot.sent == []
-
-
-# --- removal ---------------------------------------------------------------
-
-
-_REMOVE_ALERT_OUTCOMES = [
-    (AlertRemoval.removed, texts.LIST_ALERT_REMOVED_TEXT),
-    (AlertRemoval.removed_with_product, texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT),
-]
+    assert bot.edits == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("outcome", "text"), _REMOVE_ALERT_OUTCOMES)
-async def test_remove_alert_success_answers_once_and_sends_its_own_plain_text(
-    bot: _Bot, service: MagicMock, outcome: AlertRemoval, text: str
-) -> None:
-    service.remove_alert.return_value = outcome
-
-    await bot.press("adel:11")
-
-    service.remove_alert.assert_awaited_once_with(_USER, 11)
-    assert len(bot.answers) == 1
-    assert [(r.text, r.parse_mode) for r in bot.sent] == [(text, None)]
-
-
-@pytest.mark.asyncio
-async def test_remove_alert_not_found_alerts_the_gone_text_once_and_sends_nothing(
+async def test_back_to_list_button_of_the_card_edits_the_card_into_the_list(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.remove_alert.return_value = AlertRemoval.not_found
+    """The button is taken from the real card keyboard, then pressed."""
+    service.get_product_card.return_value = _one_alert_card()
+    service.list_products.return_value = [_product(5)]
+    await bot.press("pcard:5")
+    back = _rows(bot.edits[0])[-1][0]
+    assert back[0] == "← К списку"
+    assert back[1] is not None
 
-    await bot.press("adel:11")
+    await bot.press(back[1])
 
-    assert [(a.text, a.show_alert) for a in bot.answers] == [
-        (texts.LIST_GONE_ALERT_TEXT, True)
-    ]
+    service.list_products.assert_awaited_once_with(_USER)
+    assert len(bot.edits) == 2
+    assert bot.edits[1].text.startswith("Вы следите за товарами: 1.")
     assert bot.sent == []
 
 
+# --- removal of a threshold --------------------------------------------------
+
+_GONE = texts.PRODUCT_ALREADY_GONE_TEXT
 _REMOVE_CASES = [
-    ("adel:11", "remove_alert", AlertRemoval.removed, texts.LIST_ALERT_REMOVED_TEXT),
-    (
-        "adel:11",
-        "remove_alert",
-        AlertRemoval.removed_with_product,
-        texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT,
+    pytest.param(
+        AlertRemoval.removed,
+        True,
+        _CARD_ONE_ALERT,
+        [
+            [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+            [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
+            _CARD_NAV,
+        ],
+        texts.ALERT_REMOVED_TEXT,
+        id="removed-card-redrawn",
     ),
-    ("pdel:5", "remove_product", True, texts.LIST_PRODUCT_REMOVED_TEXT),
+    pytest.param(
+        AlertRemoval.removed,
+        False,
+        "Порог удалён",
+        [_CARD_NAV],
+        None,
+        id="removed-card-gone",
+    ),
+    pytest.param(
+        AlertRemoval.not_found,
+        True,
+        _CARD_ONE_ALERT,
+        [
+            [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+            [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
+            _CARD_NAV,
+        ],
+        texts.ALERT_ALREADY_REMOVED_TEXT,
+        id="not-found-card-redrawn",
+    ),
+    pytest.param(
+        AlertRemoval.not_found,
+        False,
+        "Товар уже не отслеживается",
+        [_CARD_NAV],
+        None,
+        id="not-found-card-gone",
+    ),
 ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", _KINDS_WITH_CHAT)
-@pytest.mark.parametrize(("data", "method", "result", "text"), _REMOVE_CASES)
-async def test_removal_outcome_on_a_message_with_a_chat_is_sent_there_and_answered_once(
+@pytest.mark.parametrize(
+    ("outcome", "card_alive", "text", "rows", "toast"), _REMOVE_CASES
+)
+async def test_remove_alert_edits_the_card_in_place_and_answers_exactly_once(
     bot: _Bot,
     service: MagicMock,
-    kind: str,
-    data: str,
-    method: str,
-    result: object,
+    outcome: AlertRemoval,
+    card_alive: bool,
     text: str,
+    rows: list[list[tuple[str, str]]],
+    toast: str | None,
 ) -> None:
-    """``message`` is the positive control; ``inaccessible`` is a stale button."""
-    getattr(service, method).return_value = result
+    service.remove_alert.return_value = outcome
+    service.get_product_card.return_value = _one_alert_card() if card_alive else None
 
-    await bot.press(data, **_PRESS[kind])
+    await bot.press("adel:11:5")
 
-    getattr(service, method).assert_awaited_once()
+    service.remove_alert.assert_awaited_once_with(_USER, 11)
+    service.get_product_card.assert_awaited_once_with(_USER, 5)
+    assert bot.sent == []
+    assert [(e.text, e.parse_mode) for e in bot.edits] == [(text, None)]
+    assert _rows(bot.edits[0]) == rows
+    assert [(a.text, a.show_alert) for a in bot.answers] == [(toast, None)]
+
+
+@pytest.mark.asyncio
+async def test_remove_alert_with_product_edits_to_the_summary_and_nav_row(
+    bot: _Bot, service: MagicMock
+) -> None:
+    service.remove_alert.return_value = AlertRemoval.removed_with_product
+
+    await bot.press("adel:11:5")
+
+    service.remove_alert.assert_awaited_once_with(_USER, 11)
+    service.get_product_card.assert_not_called()  # the product is gone with it
+    assert bot.sent == []
+    assert [(e.text, e.parse_mode) for e in bot.edits] == [
+        (texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT, None)
+    ]
+    assert _rows(bot.edits[0]) == [_CARD_NAV]
     assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
-    assert [(r.chat_id, r.text, r.parse_mode, r.reply_markup) for r in bot.sent] == [
-        (_CHAT, text, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "card_alive", "popup"),
+    [
+        (AlertRemoval.removed, True, texts.ALERT_REMOVED_TEXT),
+        (AlertRemoval.removed, False, texts.ALERT_REMOVED_TEXT),
+        (AlertRemoval.removed_with_product, False, texts.ALERT_REMOVED_TEXT),
+        (AlertRemoval.not_found, True, texts.ALERT_ALREADY_REMOVED_TEXT),
+        (AlertRemoval.not_found, False, texts.PRODUCT_ALREADY_GONE_TEXT),
+    ],
+)
+async def test_remove_alert_without_any_message_pops_up_the_outcome_and_sends_nothing(
+    bot: _Bot,
+    service: MagicMock,
+    outcome: AlertRemoval,
+    card_alive: bool,
+    popup: str,
+) -> None:
+    service.remove_alert.return_value = outcome
+    service.get_product_card.return_value = _one_alert_card() if card_alive else None
+
+    await bot.press("adel:11:5", **_PRESS["none"])
+
+    assert [(a.text, a.show_alert) for a in bot.answers] == [(popup, True)]
+    assert bot.sent == []
+    assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_remove_alert_on_an_inaccessible_message_sends_the_card_as_new(
+    bot: _Bot, service: MagicMock
+) -> None:
+    service.remove_alert.return_value = AlertRemoval.removed
+    service.get_product_card.return_value = _one_alert_card()
+
+    await bot.press("adel:11:5", **_PRESS["inaccessible"])
+
+    assert bot.edits == []
+    assert [(r.chat_id, r.text) for r in bot.sent] == [(_CHAT, _CARD_ONE_ALERT)]
+    assert [(a.text, a.show_alert) for a in bot.answers] == [
+        (texts.ALERT_REMOVED_TEXT, None)
     ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("data", "method", "result", "text"), _REMOVE_CASES)
-async def test_removal_outcome_without_any_message_pops_up_the_outcome_text(
-    bot: _Bot, service: MagicMock, data: str, method: str, result: object, text: str
+async def test_remove_alert_with_a_forged_product_id_leaks_no_card_data(
+    bot: _Bot, service: MagicMock
 ) -> None:
-    getattr(service, method).return_value = result
+    """A foreign or non-existent ``product_id`` looks like ``None`` to the
+    handler: the card is read for the pressing user, so nothing is shown."""
+    service.remove_alert.return_value = AlertRemoval.removed
+    service.get_product_card.return_value = None
 
-    await bot.press(data, **_PRESS["none"])
+    await bot.press("adel:11:777")
 
-    getattr(service, method).assert_awaited_once()
-    assert [(a.text, a.show_alert) for a in bot.answers] == [(text, True)]
+    service.get_product_card.assert_awaited_once_with(_USER, 777)
+    assert [e.text for e in bot.edits] == ["Порог удалён"]
+    assert _rows(bot.edits[0]) == [_CARD_NAV]
     assert bot.sent == []
+    assert not any(_NAME in (e.text or "") for e in bot.edits)
 
 
 @pytest.mark.asyncio
-async def test_remove_product_success_answers_once_and_names_how_to_return(
+async def test_remove_alert_swallows_a_failed_callback_answer_after_the_edit(
+    real_dispatcher: Dispatcher, service: MagicMock, log_records: list[Record]
+) -> None:
+    """The DB middleware commits only if the handler returns normally."""
+    inner = send_message_responder()
+
+    async def responder(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, AnswerCallbackQuery):
+            raise TelegramBadRequest(method=method, message="Bad Request: too old")
+        return await inner(method)
+
+    one = _Bot(real_dispatcher)
+    one.bot = build_fake_bot(responder=responder)
+    service.remove_alert.return_value = AlertRemoval.removed
+    service.get_product_card.return_value = _one_alert_card()
+
+    await one.press("adel:11:5")  # must not raise
+
+    assert [e.text for e in one.edits] == [_CARD_ONE_ALERT]
+    assert one.sent == []  # no UNEXPECTED_ERROR_TEXT from the errors handler
+    warnings = [r for r in log_records if r["level"].name == "WARNING"]
+    assert len(warnings) == 1
+    assert "TelegramBadRequest" in warnings[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_old_format_remove_button_is_stale_and_never_reaches_the_service(
+    bot: _Bot, service: MagicMock
+) -> None:
+    await bot.press("adel:5")
+
+    service.remove_alert.assert_not_called()
+    service.get_product_card.assert_not_called()
+    assert [(a.text, a.show_alert) for a in bot.answers] == [
+        (texts.LIST_STALE_BUTTON_ALERT_TEXT, True)
+    ]
+    assert bot.sent == []
+    assert bot.edits == []
+
+
+# --- stop tracking -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("removed", "text"),
+    [
+        (True, texts.LIST_PRODUCT_REMOVED_TEXT),
+        (False, texts.PRODUCT_ALREADY_GONE_TEXT),
+    ],
+)
+async def test_remove_product_edits_in_place_with_nav_row_and_no_popup(
+    bot: _Bot, service: MagicMock, removed: bool, text: str
+) -> None:
+    service.remove_product.return_value = removed
+
+    await bot.press("pdel:5")
+
+    service.remove_product.assert_awaited_once_with(_USER, 5)
+    assert [(e.text, e.parse_mode) for e in bot.edits] == [(text, None)]
+    assert _rows(bot.edits[0]) == [_CARD_NAV]
+    assert bot.sent == []
+    assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
+
+
+@pytest.mark.asyncio
+async def test_remove_product_success_names_how_to_return(
     bot: _Bot, service: MagicMock
 ) -> None:
     service.remove_product.return_value = True
 
     await bot.press("pdel:5")
 
-    service.remove_product.assert_awaited_once_with(_USER, 5)
-    assert len(bot.answers) == 1
-    assert [(r.text, r.parse_mode) for r in bot.sent] == [
-        (texts.LIST_PRODUCT_REMOVED_TEXT, None)
-    ]
-    assert "/add" in bot.sent[0].text
+    assert "/add" in bot.edits[0].text
 
 
 @pytest.mark.asyncio
-async def test_remove_product_failure_alerts_the_gone_text_once_and_sends_nothing(
-    bot: _Bot, service: MagicMock
+@pytest.mark.parametrize("removed", [True, False])
+async def test_remove_product_on_an_inaccessible_message_sends_the_outcome_as_new(
+    bot: _Bot, service: MagicMock, removed: bool
 ) -> None:
-    service.remove_product.return_value = False
+    service.remove_product.return_value = removed
 
-    await bot.press("pdel:5")
+    await bot.press("pdel:5", **_PRESS["inaccessible"])
 
-    assert [(a.text, a.show_alert) for a in bot.answers] == [
-        (texts.LIST_GONE_ALERT_TEXT, True)
-    ]
-    assert bot.sent == []
+    assert bot.edits == []
+    assert len(bot.sent) == 1
+    assert bot.sent[0].chat_id == _CHAT
+    assert _rows(bot.sent[0]) == [_CARD_NAV]
+    assert len(bot.answers) == 1
 
 
 @pytest.mark.asyncio
-async def test_foreign_and_missing_rows_get_the_same_text_on_every_path(
+@pytest.mark.parametrize(
+    ("removed", "popup"),
+    [
+        (True, texts.LIST_PRODUCT_REMOVED_TEXT),
+        (False, texts.PRODUCT_ALREADY_GONE_TEXT),
+    ],
+)
+async def test_remove_product_without_any_message_pops_up_the_outcome(
+    bot: _Bot, service: MagicMock, removed: bool, popup: str
+) -> None:
+    service.remove_product.return_value = removed
+
+    await bot.press("pdel:5", **_PRESS["none"])
+
+    assert [(a.text, a.show_alert) for a in bot.answers] == [(popup, True)]
+    assert bot.sent == []
+    assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_foreign_and_missing_rows_get_the_same_answer_on_every_path(
     real_dispatcher: Dispatcher, service: MagicMock
 ) -> None:
-    """Both look identical to the handler (``None``/``False``/``not_found``);
-    the same alert text must reach the user for card, alert and product."""
-    texts_seen: list[str | None] = []
-    for data in ("pcard:5", "adel:5", "pdel:5"):
+    """A foreign row looks like a missing one (``None``/``False``/``not_found``)
+    to the handlers, so the user sees the same words for card, alert, product."""
+    seen: list[tuple[str, str | None]] = []
+    for data in ("pcard:5", "adel:5:5", "pdel:5"):
         one = _Bot(real_dispatcher)
         await one.press(data)
-        texts_seen.extend(a.text for a in one.answers)
+        seen.append(
+            (data, one.answers[0].text if one.answers[0].text else one.edits[0].text)
+        )
 
-    assert texts_seen == [texts.LIST_GONE_ALERT_TEXT] * 3
+    assert seen == [
+        ("pcard:5", texts.LIST_GONE_ALERT_TEXT),
+        ("adel:5:5", texts.PRODUCT_ALREADY_GONE_TEXT),
+        ("pdel:5", texts.PRODUCT_ALREADY_GONE_TEXT),
+    ]
 
 
 @pytest.mark.asyncio
@@ -623,10 +815,13 @@ async def test_service_calls_are_scoped_to_the_pressing_user_not_the_chat(
     service.remove_alert.return_value = AlertRemoval.removed
 
     await bot.press("pcard:1")
-    await bot.press("adel:2")
+    await bot.press("adel:2:7")
     await bot.press("pdel:3")
 
-    service.get_product_card.assert_awaited_once_with(_USER, 1)
+    assert service.get_product_card.await_args_list == [
+        call(_USER, 1),
+        call(_USER, 7),
+    ]
     service.remove_alert.assert_awaited_once_with(_USER, 2)
     service.remove_product.assert_awaited_once_with(_USER, 3)
 
@@ -642,10 +837,25 @@ _FORGED_SUFFIXES = [
     "",  # missing field (``pcard:``)
     "1.5",
 ]
+_FORGED_ALERT_SUFFIXES = [
+    "0:1",
+    "1:0",
+    "-1:1",
+    "1:-1",
+    f"{_MAX_ID + 1}:1",
+    f"1:{_MAX_ID + 1}",
+    "abc:1",
+    "1:abc",
+    "1:2:3",  # extra field
+    "1:",  # missing product_id
+    ":1",  # missing alert_id
+    "1.5:1",
+    "5",  # the old single-id format
+]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prefix", ["pcard", "adel", "pdel"])
+@pytest.mark.parametrize("prefix", ["pcard", "pdel"])
 @pytest.mark.parametrize("suffix", _FORGED_SUFFIXES)
 async def test_forged_callback_never_reaches_the_service_and_gets_one_stale_alert(
     bot: _Bot, service: MagicMock, prefix: str, suffix: str
@@ -657,6 +867,21 @@ async def test_forged_callback_never_reaches_the_service_and_gets_one_stale_aler
         (texts.LIST_STALE_BUTTON_ALERT_TEXT, True)
     ]
     assert bot.sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", _FORGED_ALERT_SUFFIXES)
+async def test_forged_remove_alert_callback_never_reaches_the_service(
+    bot: _Bot, service: MagicMock, suffix: str
+) -> None:
+    await bot.press(f"adel:{suffix}")
+
+    _no_service_call(service)
+    assert [(a.text, a.show_alert) for a in bot.answers] == [
+        (texts.LIST_STALE_BUTTON_ALERT_TEXT, True)
+    ]
+    assert bot.sent == []
+    assert bot.edits == []
 
 
 @pytest.mark.asyncio
@@ -680,10 +905,13 @@ async def test_largest_valid_id_passes_through_on_all_three_prefixes(
     service.remove_alert.return_value = AlertRemoval.removed
 
     await bot.press(f"pcard:{_MAX_ID}")
-    await bot.press(f"adel:{_MAX_ID}")
+    await bot.press(f"adel:{_MAX_ID}:{_MAX_ID}")
     await bot.press(f"pdel:{_MAX_ID}")
 
-    service.get_product_card.assert_awaited_once_with(_USER, _MAX_ID)
+    assert service.get_product_card.await_args_list == [
+        call(_USER, _MAX_ID),
+        call(_USER, _MAX_ID),
+    ]
     service.remove_alert.assert_awaited_once_with(_USER, _MAX_ID)
     service.remove_product.assert_awaited_once_with(_USER, _MAX_ID)
 
@@ -707,7 +935,7 @@ async def test_unrelated_callback_data_is_not_swallowed_by_the_stale_trap(
     ("data", "method"),
     [
         ("pcard:5", "get_product_card"),
-        ("adel:5", "remove_alert"),
+        ("adel:5:5", "remove_alert"),
         ("pdel:5", "remove_product"),
     ],
 )
@@ -723,11 +951,25 @@ async def test_unexpected_service_failure_reaches_the_errors_handler(
 
 
 @pytest.mark.asyncio
+async def test_card_read_failure_after_a_removal_reaches_the_errors_handler(
+    bot: _Bot, service: MagicMock
+) -> None:
+    service.remove_alert.return_value = AlertRemoval.removed
+    service.get_product_card.side_effect = RuntimeError("boom")
+
+    await bot.press("adel:5:5")
+
+    assert bot.edits == []
+    assert [r.text for r in bot.sent] == [texts.UNEXPECTED_ERROR_TEXT]
+
+
+@pytest.mark.asyncio
 async def test_unknown_removal_outcome_is_an_error_not_a_silent_success(
     bot: _Bot, service: MagicMock
 ) -> None:
     service.remove_alert.return_value = "vanished"
 
-    await bot.press("adel:5")
+    await bot.press("adel:5:5")
 
+    assert bot.edits == []
     assert [r.text for r in bot.sent] == [texts.UNEXPECTED_ERROR_TEXT]

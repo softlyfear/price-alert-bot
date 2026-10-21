@@ -6,6 +6,7 @@ payload. The /list keyboards carry a single database id in a typed
 ``CallbackData`` (a callback payload is user input: ids are range-checked).
 """
 
+from collections import Counter
 from collections.abc import Sequence
 from typing import Final
 
@@ -45,9 +46,10 @@ class ProductCardCb(CallbackData, prefix="pcard"):
 
 
 class AlertRemoveCb(CallbackData, prefix="adel"):
-    """Remove one threshold."""
+    """Remove one threshold; ``product_id`` is the card to redraw."""
 
     alert_id: int = Field(ge=1, le=_MAX_ID)
+    product_id: int = Field(ge=1, le=_MAX_ID)
 
 
 class ProductRemoveCb(CallbackData, prefix="pdel"):
@@ -133,17 +135,35 @@ def product_list_keyboard(products: Sequence[Product]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def nav_row() -> list[InlineKeyboardButton]:
+    """Navigation row of a card-like screen: back to the list, main menu."""
+    return [
+        _button(texts.LIST_BACK_BUTTON_TEXT, CB_MENU_LIST),
+        _button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START),
+    ]
+
+
+def nav_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard with the navigation row only (no dead-end screens)."""
+    return InlineKeyboardMarkup(inline_keyboard=[nav_row()])
+
+
 def product_card_keyboard(
     product_id: int, alerts: Sequence[Alert]
 ) -> InlineKeyboardMarkup:
-    """Remove-threshold button per alert plus a stop-tracking button."""
+    """Remove-threshold button per alert, stop-tracking button, nav row."""
+    amount_counts = Counter(alert.target_price for alert in alerts)
     rows = [
         [
             InlineKeyboardButton(
                 text=texts.remove_alert_button_text(
-                    alert.direction, alert.target_price
+                    alert.direction,
+                    alert.target_price,
+                    with_arrow=amount_counts[alert.target_price] > 1,
                 ),
-                callback_data=AlertRemoveCb(alert_id=alert.id).pack(),
+                callback_data=AlertRemoveCb(
+                    alert_id=alert.id, product_id=product_id
+                ).pack(),
             )
         ]
         for alert in alerts
@@ -156,4 +176,5 @@ def product_card_keyboard(
             )
         ]
     )
+    rows.append(nav_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)

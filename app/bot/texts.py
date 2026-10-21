@@ -54,7 +54,7 @@ def help_text(max_products: int) -> str:
         "Порог, равный текущей цене, не подойдёт. Сработав, порог остаётся "
         "активным: я напишу снова, если цена опять окажется за порогом, но "
         "не чаще, чем раз в установленный интервал.\n\n"
-        f"Лимит: можно следить не более чем за {max_products} товарами.\n\n"
+        f"Лимит товаров: {max_products}.\n\n"
         "Свои товары и пороги видны в /list. Там же можно убрать порог или "
         "перестать следить за товаром.\n\n"
         "Ozon защищается от автоматических запросов и иногда блокирует их. "
@@ -203,9 +203,11 @@ LIST_GONE_ALERT_TEXT: Final[str] = (
     "Товар или порог уже не отслеживается. Откройте актуальный список командой /list."
 )
 
-LIST_ALERT_REMOVED_TEXT: Final[str] = (
-    "Порог удалён. Товар остаётся в списке — посмотреть его: /list."
-)
+ALERT_REMOVED_TEXT: Final[str] = "Порог удалён"
+
+ALERT_ALREADY_REMOVED_TEXT: Final[str] = "Порог уже удалён"
+
+PRODUCT_ALREADY_GONE_TEXT: Final[str] = "Товар уже не отслеживается"
 
 LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT: Final[str] = (
     "Порог удалён. Других порогов у товара не было, поэтому я перестал за ним "
@@ -218,6 +220,11 @@ LIST_PRODUCT_REMOVED_TEXT: Final[str] = (
 )
 
 STOP_TRACKING_BUTTON_TEXT: Final[str] = "Перестать следить"
+LIST_BACK_BUTTON_TEXT: Final[str] = "← К списку"
+
+CARD_ARROWS_LEGEND_TEXT: Final[str] = (
+    "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+)
 
 CONFIRM_BUTTON_TEXT: Final[str] = "Подтвердить"
 CANCEL_BUTTON_TEXT: Final[str] = "Отмена"
@@ -230,6 +237,17 @@ def direction_phrase(direction: AlertDirection, price: int) -> str:
             return f"цена станет ниже {format_price(price)}"
         case AlertDirection.above:
             return f"цена станет выше {format_price(price)}"
+        case _:
+            assert_never(direction)
+
+
+def direction_arrow(direction: AlertDirection) -> str:
+    """Short arrow of a direction used on the product card (single mapping)."""
+    match direction:
+        case AlertDirection.below:
+            return "↓"
+        case AlertDirection.above:
+            return "↑"
         case _:
             assert_never(direction)
 
@@ -259,7 +277,7 @@ def confirm_text(
 def limit_exceeded_text(limit: int) -> str:
     """Product limit reached."""
     return (
-        f"Достигнут лимит: можно следить не более чем за {limit} товарами. "
+        f"Достигнут лимит товаров: {limit}. "
         "Чтобы добавить новый, сначала перестаньте следить за одним из текущих."
     )
 
@@ -314,14 +332,22 @@ def product_card_text(
     if alerts:
         lines.append("Пороги:")
         lines.extend(
-            f"• Сообщу, когда {direction_phrase(direction, price)}"
+            f"• {direction_arrow(direction)} {format_price(price)}"
             for direction, price in alerts
         )
+        lines.append(CARD_ARROWS_LEGEND_TEXT)
     else:
         lines.append("Порогов нет.")
     return "\n".join(lines)
 
 
-def remove_alert_button_text(direction: AlertDirection, price: int) -> str:
-    """Label of the button that removes one threshold."""
-    return f"Убрать порог: {direction_phrase(direction, price)}"
+def remove_alert_button_text(
+    direction: AlertDirection, price: int, *, with_arrow: bool = False
+) -> str:
+    """Label of the button that removes one threshold.
+
+    The arrow is shown only when another threshold of the same product has the
+    same amount, so the label stays unambiguous.
+    """
+    arrow = f"{direction_arrow(direction)} " if with_arrow else ""
+    return f"Убрать порог: {arrow}{format_price(price)}"
