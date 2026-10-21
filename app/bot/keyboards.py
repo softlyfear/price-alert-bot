@@ -16,8 +16,10 @@ from aiogram.types import InlineKeyboardMarkup
 from pydantic import Field
 
 from app.bot import texts
+from app.domain.links import MAX_ARTICLE
 from app.domain.money import format_price
 from app.models.alert import Alert
+from app.models.enums import Marketplace
 from app.models.product import Product
 
 CB_ADD_CONFIRM: Final[str] = "add:confirm"
@@ -58,6 +60,13 @@ class ProductRemoveCb(CallbackData, prefix="pdel"):
     product_id: int = Field(ge=1, le=_MAX_ID)
 
 
+class AddRefCb(CallbackData, prefix="addref"):
+    """Start the /add link step with an already parsed product reference."""
+
+    marketplace: Marketplace
+    article: int = Field(ge=1, le=MAX_ARTICLE)
+
+
 def _button(text: str, callback_data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
@@ -71,6 +80,21 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                 _button(texts.MENU_LIST_BUTTON_TEXT, CB_MENU_LIST),
                 _button(texts.MENU_HELP_BUTTON_TEXT, CB_MENU_HELP),
             ],
+        ]
+    )
+
+
+def add_ref_keyboard(marketplace: Marketplace, article: int) -> InlineKeyboardMarkup:
+    """Offer to add the recognised product, or go to the main menu."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    texts.ADD_REF_BUTTON_TEXT,
+                    AddRefCb(marketplace=marketplace, article=article).pack(),
+                )
+            ],
+            [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],
         ]
     )
 

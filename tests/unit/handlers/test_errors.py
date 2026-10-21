@@ -83,6 +83,9 @@ def _dispatcher() -> Dispatcher:
         stub_client_factory(),
     )
     dispatcher.include_router(_failing_router())
+    # The root's ``fallback`` router answers any free text in the empty state,
+    # so the failing router must be asked first, like a real dialog handler.
+    dispatcher.sub_routers.insert(0, dispatcher.sub_routers.pop())
     return dispatcher
 
 

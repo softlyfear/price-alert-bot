@@ -219,15 +219,19 @@ def make_message_update(
     chat_id: int = 1000,
     user_id: int | None = 1000,
     message_id: int = 1,
+    chat_type: str = "private",
+    extra: dict[str, Any] | None = None,
 ) -> Update:
     """Build an ``Update`` with a plain text (or photo) message.
 
     ``user_id=None`` omits ``from``, as for messages without a sender.
+    ``chat_type`` sets the chat kind; ``extra`` merges raw Bot API fields
+    (a sticker, a service-message payload, ...) into the message.
     """
     message: dict[str, Any] = {
         "message_id": message_id,
         "date": 0,
-        "chat": {"id": chat_id, "type": "private"},
+        "chat": {"id": chat_id, "type": chat_type},
     }
     if user_id is not None:
         message["from"] = {"id": user_id, "is_bot": False, "first_name": "Test"}
@@ -237,6 +241,8 @@ def make_message_update(
         message["photo"] = [
             {"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1}
         ]
+    if extra:
+        message.update(extra)
     return Update.model_validate({"update_id": update_id, "message": message})
 
 

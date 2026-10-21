@@ -26,6 +26,7 @@ from aiogram.filters import Command
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
+from aiogram.types import InaccessibleMessage
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from aiogram.types import TelegramObject
@@ -36,6 +37,7 @@ from app.bot import texts
 from app.bot.keyboards import CB_ADD_CANCEL
 from app.bot.keyboards import CB_ADD_CONFIRM
 from app.bot.keyboards import CB_MENU_ADD
+from app.bot.keyboards import AddRefCb
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
 from app.bot.keyboards import main_menu_keyboard
@@ -46,6 +48,7 @@ from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
+from app.domain.links import ProductRef
 from app.domain.links import parse_product_ref
 from app.domain.money import rubles_to_kopecks
 from app.domain.thresholds import choose_direction
@@ -69,7 +72,7 @@ _BOT_DEFAULT_PARSE_MODE = Default("parse_mode")
 
 # Prevents a huge message from reaching the parser; the domain parser
 # enforces its own, larger bound.
-_MAX_TEXT_LENGTH = 4096
+MAX_TEXT_LENGTH = 4096
 
 
 class TrackingServiceMiddleware(BaseMiddleware):
@@ -130,17 +133,17 @@ async def _send_checking_notice(message: Message) -> Message | None:
 
 
 async def _discard_if_stale(
-    message: Message, notice: Message | None, state: FSMContext, user_id: int
+    marker: int, notice: Message | None, state: FSMContext, user_id: int
 ) -> bool:
     """Report whether this link step was superseded; if so, drop its outcome.
 
     The step is current while the dialog still waits for a link and the
-    FSM marker is this message's id. A stale step only retitles its notice.
+    FSM marker equals ``marker``. A stale step only retitles its notice.
     """
     reason = "state_changed"
     if await state.get_state() == AddProduct.waiting_link.state:
         data = await state.get_data()
-        if data.get(_KEY_LINK_MESSAGE_ID) == message.message_id:
+        if data.get(_KEY_LINK_MESSAGE_ID) == marker:
             return False
         reason = "marker_mismatch"
     logger.bind(user_id=user_id, reason=reason).info(
@@ -157,7 +160,7 @@ async def _discard_if_stale(
 
 
 async def _deliver_outcome(
-    message: Message,
+    message: Message | InaccessibleMessage,
     notice: Message | None,
     text: str,
     *,
@@ -179,6 +182,74 @@ async def _deliver_outcome(
         else:
             return
     await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
+async def _check_and_deliver(
+    anchor: Message | InaccessibleMessage,
+    marker: int,
+    notice: Message | None,
+    ref: ProductRef,
+    user_id: int,
+    state: FSMContext,
+    tracking: TrackingService,
+) -> None:
+    """Check the product and deliver the outcome of the link step.
+
+    Shared by the link message and the "add this product" button. ``marker``
+    is the id already stored in FSM; ``anchor`` takes a new message when the
+    notice cannot be edited.
+    """
+    try:
+        result = await tracking.preview(user_id, ref.marketplace, ref.article)
+    except ProductLimitExceededError as exc:
+        if await _discard_if_stale(marker, notice, state, user_id):
+            return
+        await state.clear()
+        await _deliver_outcome(
+            anchor,
+            notice,
+            texts.limit_exceeded_text(exc.limit),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    except MarketplaceNotSupportedError:
+        if await _discard_if_stale(marker, notice, state, user_id):
+            return
+        await _deliver_outcome(
+            anchor,
+            notice,
+            texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
+            reply_markup=cancel_keyboard(),
+        )
+        return
+    if await _discard_if_stale(marker, notice, state, user_id):
+        return
+    if isinstance(result, MarketplaceFetchFailure):
+        await _deliver_outcome(
+            anchor,
+            notice,
+            _failure_text(result.reason),
+            reply_markup=cancel_keyboard(),
+        )
+        return
+    # Accepted window: an interrupt landing between the check above and
+    # these writes (a few Redis round-trips) can still be overwritten.
+    await state.update_data(
+        {
+            _KEY_MARKETPLACE: ref.marketplace.value,
+            _KEY_ARTICLE: ref.article,
+            _KEY_NAME: result.name,
+            _KEY_CURRENT_PRICE: result.price,
+        }
+    )
+    await state.set_state(AddProduct.waiting_target_price)
+    await _deliver_outcome(
+        anchor,
+        notice,
+        texts.product_found_text(result.name, result.price),
+        reply_markup=cancel_keyboard(),
+        parse_mode=None,
+    )
 
 
 def create_router() -> Router:
@@ -207,6 +278,39 @@ def create_router() -> Router:
             alert_text=texts.MENU_STALE_ALERT_TEXT,
         )
 
+    @router.callback_query(AddRefCb.filter())
+    async def on_add_ref(
+        callback: CallbackQuery,
+        callback_data: AddRefCb,
+        state: FSMContext,
+        tracking: TrackingService,
+    ) -> None:
+        """ "Add this product" button: restart the dialog at the link step."""
+        message = callback.message
+        if message is None:
+            await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+            return
+        await state.clear()
+        await state.set_state(AddProduct.waiting_link)
+        await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
+        notice = await edit_callback_message(callback, texts.ADD_CHECKING_TEXT)
+        await _check_and_deliver(
+            message,
+            message.message_id,
+            notice,
+            ProductRef(
+                marketplace=callback_data.marketplace, article=callback_data.article
+            ),
+            callback.from_user.id,
+            state,
+            tracking,
+        )
+
+    @router.callback_query(F.data.startswith(AddRefCb.__prefix__))
+    async def on_stale_add_ref(callback: CallbackQuery) -> None:
+        """Forged or malformed payload: never touch the service."""
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+
     @router.message(StateFilter(AddProduct.waiting_link), F.text)
     async def on_link(
         message: Message, state: FSMContext, tracking: TrackingService
@@ -214,7 +318,7 @@ def create_router() -> Router:
         """Parse the link, show the product card or an honest refusal."""
         if message.from_user is None or message.text is None:
             return
-        raw = message.text[:_MAX_TEXT_LENGTH]
+        raw = message.text[:MAX_TEXT_LENGTH]
         try:
             ref = parse_product_ref(raw)
         except ProductRefParseError:
@@ -225,58 +329,14 @@ def create_router() -> Router:
         # Window accepted: RedisStorage.update_data reads and writes in separate steps.
         await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
         notice = await _send_checking_notice(message)
-        try:
-            result = await tracking.preview(
-                message.from_user.id, ref.marketplace, ref.article
-            )
-        except ProductLimitExceededError as exc:
-            if await _discard_if_stale(message, notice, state, message.from_user.id):
-                return
-            await state.clear()
-            await _deliver_outcome(
-                message,
-                notice,
-                texts.limit_exceeded_text(exc.limit),
-                reply_markup=main_menu_keyboard(),
-            )
-            return
-        except MarketplaceNotSupportedError:
-            if await _discard_if_stale(message, notice, state, message.from_user.id):
-                return
-            await _deliver_outcome(
-                message,
-                notice,
-                texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
-                reply_markup=cancel_keyboard(),
-            )
-            return
-        if await _discard_if_stale(message, notice, state, message.from_user.id):
-            return
-        if isinstance(result, MarketplaceFetchFailure):
-            await _deliver_outcome(
-                message,
-                notice,
-                _failure_text(result.reason),
-                reply_markup=cancel_keyboard(),
-            )
-            return
-        # Accepted window: an interrupt landing between the check above and
-        # these writes (a few Redis round-trips) can still be overwritten.
-        await state.update_data(
-            {
-                _KEY_MARKETPLACE: ref.marketplace.value,
-                _KEY_ARTICLE: ref.article,
-                _KEY_NAME: result.name,
-                _KEY_CURRENT_PRICE: result.price,
-            }
-        )
-        await state.set_state(AddProduct.waiting_target_price)
-        await _deliver_outcome(
+        await _check_and_deliver(
             message,
+            message.message_id,
             notice,
-            texts.product_found_text(result.name, result.price),
-            reply_markup=cancel_keyboard(),
-            parse_mode=None,
+            ref,
+            message.from_user.id,
+            state,
+            tracking,
         )
 
     @router.message(StateFilter(AddProduct.waiting_target_price), F.text)
@@ -285,7 +345,7 @@ def create_router() -> Router:
         if message.text is None:
             return
         try:
-            target_price = rubles_to_kopecks(message.text[:_MAX_TEXT_LENGTH])
+            target_price = rubles_to_kopecks(message.text[:MAX_TEXT_LENGTH])
         except InvalidPriceInputError:
             await message.answer(
                 texts.ADD_PRICE_INVALID_TEXT, reply_markup=cancel_keyboard()

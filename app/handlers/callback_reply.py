@@ -60,7 +60,9 @@ async def _answer_after_delivery(
     try:
         await callback.answer(answer_text)
     except TelegramAPIError as exc:
-        logger.warning("Callback answer failed after delivery: {}", type(exc).__name__)
+        logger.bind(
+            user_id=callback.from_user.id, error_type=type(exc).__name__
+        ).warning("Callback answer failed after delivery")
 
 
 async def edit_callback_message(
@@ -70,7 +72,7 @@ async def edit_callback_message(
     reply_markup: InlineKeyboardMarkup | None = None,
     alert_text: str | None = None,
     answer_text: str | None = None,
-) -> None:
+) -> Message | None:
     """Show a navigation screen by editing the pressed message in place.
 
     Identical content is neither edited nor duplicated (compared before the
@@ -80,23 +82,27 @@ async def edit_callback_message(
     answered exactly once, with ``answer_text`` as a short toast if given. A
     failed answer after the screen is delivered is logged and swallowed; other
     Bot API errors before delivery propagate to the ``errors`` handler.
+
+    Returns the message that now shows the screen (the edited one, or the new
+    one after a fallback); ``None`` when only a popup was shown.
     """
     message = callback.message
     if message is None:
         await callback.answer(alert_text or text, show_alert=True)
-        return
+        return None
     if isinstance(message, Message):
         if message.text == text and _same_markup(message.reply_markup, reply_markup):
             await _answer_after_delivery(callback, answer_text)
-            return
+            return message
         try:
             await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
         except TelegramBadRequest as exc:
-            logger.warning(
-                "Edit refused, sending a new message: {}", type(exc).__name__
-            )
+            logger.bind(
+                user_id=callback.from_user.id, error_type=type(exc).__name__
+            ).warning("Edit refused, sending a new message")
         else:
             await _answer_after_delivery(callback, answer_text)
-            return
-    await message.answer(text, reply_markup=reply_markup, parse_mode=None)
+            return message
+    sent = await message.answer(text, reply_markup=reply_markup, parse_mode=None)
     await _answer_after_delivery(callback, answer_text)
+    return sent

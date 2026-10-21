@@ -37,6 +37,13 @@ MENU_LIST_BUTTON_TEXT: Final[str] = "Мои товары"
 MENU_HELP_BUTTON_TEXT: Final[str] = "Помощь"
 MENU_MAIN_BUTTON_TEXT: Final[str] = "Главное меню"
 
+FALLBACK_TEXT: Final[str] = (
+    "Не понял сообщение. Выберите действие ниже или пришлите ссылку на "
+    "товар Wildberries или Ozon, либо артикул Wildberries."
+)
+
+ADD_REF_BUTTON_TEXT: Final[str] = "➕ Добавить этот товар"
+
 MENU_STALE_ALERT_TEXT: Final[str] = "Кнопка устарела. Откройте меню командой /start."
 
 
@@ -250,6 +257,11 @@ def direction_arrow(direction: AlertDirection) -> str:
             return "↑"
         case _:
             assert_never(direction)
+
+
+def add_ref_offer_text(marketplace: Marketplace, article: int) -> str:
+    """Offer to add a product recognised in free text (plain text, no markup)."""
+    return f"Добавить этот товар? {marketplace_title(marketplace)}, артикул {article}."
 
 
 def product_found_text(name: str, current_price: int) -> str:

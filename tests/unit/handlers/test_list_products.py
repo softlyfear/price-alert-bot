@@ -617,7 +617,11 @@ async def test_remove_alert_with_product_edits_to_the_summary_and_nav_row(
     [
         (AlertRemoval.removed, True, texts.ALERT_REMOVED_TEXT),
         (AlertRemoval.removed, False, texts.ALERT_REMOVED_TEXT),
-        (AlertRemoval.removed_with_product, False, texts.ALERT_REMOVED_TEXT),
+        (
+            AlertRemoval.removed_with_product,
+            False,
+            texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT,
+        ),
         (AlertRemoval.not_found, True, texts.ALERT_ALREADY_REMOVED_TEXT),
         (AlertRemoval.not_found, False, texts.PRODUCT_ALREADY_GONE_TEXT),
     ],
@@ -696,7 +700,7 @@ async def test_remove_alert_swallows_a_failed_callback_answer_after_the_edit(
     assert one.sent == []  # no UNEXPECTED_ERROR_TEXT from the errors handler
     warnings = [r for r in log_records if r["level"].name == "WARNING"]
     assert len(warnings) == 1
-    assert "TelegramBadRequest" in warnings[0]["message"]
+    assert warnings[0]["extra"]["error_type"] == "TelegramBadRequest"
 
 
 @pytest.mark.asyncio

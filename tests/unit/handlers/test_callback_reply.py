@@ -338,8 +338,10 @@ async def test_failed_answer_after_delivery_is_swallowed_and_logged_as_warning(
         r for r in _warnings(log_records) if "answer" in r["message"].lower()
     ]
     assert len(answer_failures) == 1
-    assert "TelegramBadRequest" in answer_failures[0]["message"]
+    assert answer_failures[0]["extra"]["error_type"] == "TelegramBadRequest"
+    assert answer_failures[0]["extra"]["user_id"] == _USER
     assert _SECRET_SCREEN not in answer_failures[0]["message"]
+    assert _SECRET_SCREEN not in str(answer_failures[0]["extra"])
 
 
 @pytest.mark.asyncio
@@ -377,7 +379,8 @@ async def test_refused_edit_is_logged_with_the_error_type_and_without_screen_tex
     assert len(session.of(SendMessage)) == 1  # positive control: fallback ran
     refusals = _warnings(log_records)
     assert len(refusals) == 1
-    assert "TelegramBadRequest" in refusals[0]["message"]
+    assert refusals[0]["extra"]["error_type"] == "TelegramBadRequest"
+    assert refusals[0]["extra"]["user_id"] == _USER
     assert _SECRET_SCREEN not in refusals[0]["message"]
     assert _SECRET_SCREEN not in str(refusals[0]["extra"])
 

@@ -1489,6 +1489,9 @@ async def test_in_flight_handler_through_the_real_create_dispatcher_is_tracked()
         events.append("handler_finished")
 
     dispatcher.include_router(extra_router)
+    # The root's ``fallback`` router answers any message in the empty state,
+    # so the slow handler must be asked first.
+    dispatcher.sub_routers.insert(0, dispatcher.sub_routers.pop())
 
     bot = build_fake_bot()
     update = make_command_update(
