@@ -448,7 +448,9 @@ async def test_open_card_edits_the_list_in_place_with_all_card_parts(
     )
     assert request.text.count(PRICE_DISCLAIMER_SHORT) == 1
     assert _rows(request) == [
+        [(f"Изменить порог: 1{_NB}000{_NB}₽", "aedit:11:5")],
         [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:5")],
+        [(f"Изменить порог: 2{_NB}000{_NB}₽", "aedit:12:5")],
         [(f"Убрать порог: 2{_NB}000{_NB}₽", "adel:12:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -529,6 +531,7 @@ _REMOVE_CASES = [
         True,
         _CARD_ONE_ALERT,
         [
+            [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
             [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,
@@ -549,6 +552,7 @@ _REMOVE_CASES = [
         True,
         _CARD_ONE_ALERT,
         [
+            [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
             [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,

@@ -43,6 +43,14 @@ class AlertRemoval(StrEnum):
     removed_with_product = "removed_with_product"
 
 
+class AlertChange(StrEnum):
+    """Outcome of changing the threshold of a single alert."""
+
+    changed = "changed"
+    unchanged = "unchanged"
+    not_found = "not_found"
+
+
 class TrackingService:
     """Orchestrates adding a product to tracking and managing the list.
 
@@ -161,6 +169,45 @@ class TrackingService:
         await self._products.delete_for_user(product_id, user.id)
         return AlertRemoval.removed_with_product
 
+    async def change_alert_target(
+        self, tg_user_id: int, alert_id: int, target_price: int
+    ) -> AlertChange:
+        """Change the caller's alert threshold; direction follows the price.
+
+        Raises `TargetEqualsCurrentPriceError` for a threshold equal to the
+        product's current price and `DuplicateAlertError` when another alert
+        of the product already has the same (target, direction). The same
+        (target, direction) as the alert's own is `unchanged`: nothing is
+        written and `triggered_at` (cooldown) stays. Runs in the caller's
+        transaction; the write is wrapped in a SAVEPOINT.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        alert = await self._alerts.get_by_id_for_user(alert_id, user.id)
+        if alert is None:
+            return AlertChange.not_found
+        product = await self._products.get_by_id_for_user(alert.product_id, user.id)
+        if product is None:
+            return AlertChange.not_found
+        direction = choose_direction(product.current_price, target_price)
+        if alert.direction is direction and alert.target_price == target_price:
+            return AlertChange.unchanged
+        if await self._find_duplicate(
+            user.id, product.id, target_price, direction, exclude_alert_id=alert.id
+        ):
+            raise DuplicateAlertError
+        try:
+            async with self._session.begin_nested():
+                updated = await self._alerts.update_target_for_user(
+                    alert_id, user.id, target_price, direction
+                )
+        except IntegrityError as exc:
+            if await self._find_duplicate(
+                user.id, product.id, target_price, direction, exclude_alert_id=alert.id
+            ):
+                raise DuplicateAlertError from exc
+            raise
+        return AlertChange.changed if updated else AlertChange.not_found
+
     async def _ensure_within_limit(
         self, user_id: int, marketplace: Marketplace, article: int
     ) -> None:
@@ -233,9 +280,12 @@ class TrackingService:
         product_id: int,
         target_price: int,
         direction: AlertDirection,
+        exclude_alert_id: int | None = None,
     ) -> bool:
         alerts = await self._alerts.get_by_user_and_product(user_id, product_id)
         return any(
-            alert.direction is direction and alert.target_price == target_price
+            alert.id != exclude_alert_id
+            and alert.direction is direction
+            and alert.target_price == target_price
             for alert in alerts
         )

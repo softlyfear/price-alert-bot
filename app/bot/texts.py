@@ -62,8 +62,8 @@ def help_text(max_products: int) -> str:
         "активным: я напишу снова, если цена опять окажется за порогом, но "
         "не чаще, чем раз в установленный интервал.\n\n"
         f"Лимит товаров: {max_products}.\n\n"
-        "Свои товары и пороги видны в /list. Там же можно убрать порог или "
-        "перестать следить за товаром.\n\n"
+        "Свои товары и пороги видны в /list. Там же, в карточке товара, можно "
+        "изменить порог, убрать его или перестать следить за товаром.\n\n"
         "Ozon защищается от автоматических запросов и иногда блокирует их. "
         "Тогда я скажу об этом честно; обычно помогает повторить попытку "
         "чуть позже.\n\n" + SOUND_REMINDER_TEXT + "\n\n"
@@ -363,3 +363,52 @@ def remove_alert_button_text(
     """
     arrow = f"{direction_arrow(direction)} " if with_arrow else ""
     return f"Убрать порог: {arrow}{format_price(price)}"
+
+
+def edit_alert_button_text(
+    direction: AlertDirection, price: int, *, with_arrow: bool = False
+) -> str:
+    """Label of the button that changes one threshold (arrow rule as for removal)."""
+    arrow = f"{direction_arrow(direction)} " if with_arrow else ""
+    return f"Изменить порог: {arrow}{format_price(price)}"
+
+
+# --- changing a threshold from the card ------------------------------------
+
+EDIT_DUPLICATE_TEXT: Final[str] = (
+    "Такой порог у этого товара уже есть. Введите другую сумму либо нажмите «Отмена»."
+)
+
+EDIT_NOT_TEXT_TEXT: Final[str] = (
+    "Я понимаю только текст. Пришлите новую сумму в рублях сообщением, "
+    "либо нажмите «Отмена»."
+)
+
+EDIT_STALE_TEXT: Final[str] = (
+    "Это действие устарело. Откройте товар в /list и нажмите «Изменить порог» заново."
+)
+
+EDIT_UNCHANGED_TEXT: Final[str] = "Порог не изменился."
+
+
+def edit_prompt_text(
+    name: str, current_price: int, direction: AlertDirection, target_price: int
+) -> str:
+    """Prompt of the threshold edit step (plain text, no markup)."""
+    return (
+        f"{name}\n"
+        f"Текущая цена: {format_price(current_price)}\n"
+        f"{PRICE_DISCLAIMER_SHORT}.\n"
+        f"Изменяемый порог: {direction_arrow(direction)} "
+        f"{format_price(target_price)}\n\n"
+        "Введите новую сумму в рублях, например 1990 или 1990,50. Если она "
+        "ниже текущей цены — сообщу, когда цена снизится до неё; если выше — "
+        "когда вырастет. Чтобы выйти, нажмите «Отмена»."
+    )
+
+
+def edit_changed_text(direction: AlertDirection | None, target_price: int) -> str:
+    """Outcome line of a changed threshold; the direction is spelled out."""
+    if direction is None:
+        return "Порог изменён."
+    return f"Порог изменён. Сообщу, когда {direction_phrase(direction, target_price)}."
