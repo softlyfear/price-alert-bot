@@ -149,3 +149,15 @@ def test_profile_and_intro_texts_mention_both_directions(text: str) -> None:
 def test_unexpected_error_text_says_the_action_may_not_have_happened() -> None:
     assert "могло не выполниться" in texts.UNEXPECTED_ERROR_TEXT
     assert "ничего не сохранено" not in texts.UNEXPECTED_ERROR_TEXT.lower()
+
+
+def test_checking_text_is_short_plain_and_has_no_price() -> None:
+    """The notice is edited into the outcome and carries no price (PAB-090 AC6)."""
+    text = texts.ADD_CHECKING_TEXT
+
+    assert text.strip() != ""
+    assert len(text) <= 200
+    assert not any(ch.isdigit() for ch in text)
+    assert "₽" not in text
+    assert "<" not in text
+    assert ">" not in text

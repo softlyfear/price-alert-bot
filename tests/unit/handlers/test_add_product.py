@@ -10,6 +10,7 @@ the service and are covered by ``tests/unit/services/test_tracking_service.py``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
@@ -20,11 +21,16 @@ import httpx
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
+from aiogram.client.default import Default
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import AnswerCallbackQuery
+from aiogram.methods import EditMessageText
 from aiogram.methods import SendMessage
+from aiogram.methods import TelegramMethod
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from aiogram.types import Update
@@ -48,6 +54,8 @@ from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
+from tests.unit.conftest import FAKE_BOT_USER
+from tests.unit.conftest import FakeTelegramSession
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
@@ -79,11 +87,14 @@ class _TrackingStub:
         self.preview_error: Exception | None = None
         self.add_error: Exception | None = None
         self.add_direction = AlertDirection.below
+        self.on_preview: Callable[[], None] | None = None
 
     async def preview(
         self, tg_user_id: int, marketplace: Marketplace, article: int
     ) -> Any:
         self.preview_calls.append((tg_user_id, marketplace, article))
+        if self.on_preview is not None:
+            self.on_preview()
         if self.preview_error is not None:
             raise self.preview_error
         return self.preview_result
@@ -116,9 +127,10 @@ def stub(monkeypatch: pytest.MonkeyPatch) -> _TrackingStub:
 class _Dialog:
     """Drives one user's dialog and exposes what the bot sent."""
 
-    def __init__(self, dispatcher: Dispatcher, bot: Bot) -> None:
+    def __init__(self, dispatcher: Dispatcher, bot: Bot, faults: _Faults) -> None:
         self.dispatcher = dispatcher
         self.bot = bot
+        self.faults = faults
         self._update_id = 0
 
     def _next(self) -> int:
@@ -171,6 +183,18 @@ class _Dialog:
         return [r for r in self.requests if isinstance(r, SendMessage)]
 
     @property
+    def edits(self) -> list[EditMessageText]:
+        return [r for r in self.requests if isinstance(r, EditMessageText)]
+
+    @property
+    def outcome(self) -> SendMessage | EditMessageText:
+        """The last message-text request: how the step's outcome was shown."""
+        shown = [
+            r for r in self.requests if isinstance(r, (SendMessage, EditMessageText))
+        ]
+        return shown[-1]
+
+    @property
     def callback_answers(self) -> list[AnswerCallbackQuery]:
         return [r for r in self.requests if isinstance(r, AnswerCallbackQuery)]
 
@@ -195,10 +219,63 @@ class _Dialog:
         await self.dispatcher.storage.set_data(self.key, data or {})
 
 
+class _Faults:
+    """Bot API failures the fake session raises on demand."""
+
+    def __init__(self) -> None:
+        self.next_send_error: Exception | None = None  # one-shot
+        self.edit_error: Exception | None = None
+
+
+class _BoundSession(FakeTelegramSession):
+    """Fake session that mounts returned messages on the bot, like the real one.
+
+    ``Message.edit_text`` needs a bot-bound message; a raw model from the
+    responder would fail with "not mounted to a bot instance".
+    """
+
+    async def make_request(
+        self,
+        bot: Bot,
+        method: TelegramMethod[Any],
+        timeout: int | None = None,  # noqa: ASYNC109 -- overrides BaseSession's signature
+    ) -> Any:
+        result: Any = await super().make_request(bot, method, timeout)
+        if isinstance(result, Message):
+            result.as_(bot)
+        return result
+
+
+def _responder(faults: _Faults) -> Callable[[TelegramMethod[Any]], Any]:
+    sends = send_message_responder()
+
+    async def respond(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, SendMessage):
+            if faults.next_send_error is not None:
+                error, faults.next_send_error = faults.next_send_error, None
+                raise error
+            return await sends(method)
+        if isinstance(method, EditMessageText):
+            if faults.edit_error is not None:
+                raise faults.edit_error
+            return Message.model_validate(
+                {
+                    "message_id": method.message_id,
+                    "date": 1,
+                    "chat": {"id": method.chat_id, "type": "private"},
+                }
+            )
+        return await sends(method)
+
+    return respond
+
+
 @pytest.fixture
 def dialog(real_dispatcher: Dispatcher) -> _Dialog:
-    bot = build_fake_bot(responder=send_message_responder())
-    return _Dialog(real_dispatcher, bot)
+    faults = _Faults()
+    bot = Bot(token="1:test-token", session=_BoundSession(_responder(faults)))
+    bot._me = FAKE_BOT_USER
+    return _Dialog(real_dispatcher, bot, faults)
 
 
 _CONFIRMING_DATA: dict[str, Any] = {
@@ -215,7 +292,7 @@ async def _at_confirming(dialog: _Dialog) -> None:
     await dialog.set_state(AddProduct.confirming.state, dict(_CONFIRMING_DATA))
 
 
-def _keyboard_callbacks(request: SendMessage) -> list[str | None]:
+def _keyboard_callbacks(request: SendMessage | EditMessageText) -> list[str | None]:
     markup = request.reply_markup
     assert isinstance(markup, InlineKeyboardMarkup)
     return [b.callback_data for row in markup.inline_keyboard for b in row]
@@ -275,12 +352,13 @@ async def test_unsupported_marketplace_at_link_step_keeps_dialog_with_cancel_key
     await dialog.say("https://www.ozon.ru/product/slug-1234567/")
 
     assert stub.preview_calls == [(_USER, Marketplace.ozon, 1234567)]
-    assert dialog.last_text == texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT
+    assert dialog.outcome.text == texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT
     assert (
-        dialog.last_text != texts.ADD_FETCH_FAILURE_TEXTS[FetchFailureReason.not_found]
+        dialog.outcome.text
+        != texts.ADD_FETCH_FAILURE_TEXTS[FetchFailureReason.not_found]
     )
     assert await dialog.state() == AddProduct.waiting_link.state
-    assert _keyboard_callbacks(dialog.sent[-1]) == [CB_ADD_CANCEL]
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CANCEL]
 
 
 def test_unsupported_marketplace_text_is_true_in_both_places_it_is_shown() -> None:
@@ -308,7 +386,7 @@ async def test_preview_limit_shows_the_limit_and_clears_the_state(
 
     await dialog.say(_WB_LINK)
 
-    assert "37" in dialog.last_text
+    assert "37" in dialog.outcome.text
     assert await dialog.state() is None
 
 
@@ -344,10 +422,10 @@ async def test_each_fetch_failure_has_its_own_text_and_keeps_the_state(
 
     await dialog.say(_WB_LINK)
 
-    assert keyword in dialog.last_text
-    assert "SECRET-DETAIL-MARKER" not in dialog.last_text
+    assert keyword in dialog.outcome.text
+    assert "SECRET-DETAIL-MARKER" not in dialog.outcome.text
     assert await dialog.state() == AddProduct.waiting_link.state
-    assert _keyboard_callbacks(dialog.sent[-1]) == [CB_ADD_CANCEL]
+    assert _keyboard_callbacks(dialog.outcome) == [CB_ADD_CANCEL]
 
 
 def test_fetch_failure_texts_are_five_distinct_strings() -> None:
@@ -376,7 +454,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
 
     await dialog.say(_WB_LINK)
 
-    card = dialog.sent[-1]
+    card = dialog.outcome
     assert _NAME in card.text
     assert f"1{_NBSP}990{_NBSP}₽" in card.text
     assert PRICE_DISCLAIMER_SHORT in card.text
@@ -968,7 +1046,9 @@ async def test_commit_failure_after_a_successful_confirm_adds_the_error_text(
         50,
         stub_client_factory(),
     )
-    dialog = _Dialog(dispatcher, build_fake_bot(responder=send_message_responder()))
+    dialog = _Dialog(
+        dispatcher, build_fake_bot(responder=send_message_responder()), _Faults()
+    )
     await _at_confirming(dialog)
 
     await dialog.press(CB_ADD_CONFIRM)
@@ -1072,3 +1152,241 @@ async def test_link_handler_ignores_a_message_without_text() -> None:
 
     message.answer.assert_not_called()
     tracking.preview.assert_not_called()
+
+
+# --- "checking" notice on the link step (PAB-090) ---------------------------------
+
+
+class _Outcome:
+    """One of the four ways the link step ends, with what the user must see."""
+
+    def __init__(
+        self,
+        configure: Callable[[_TrackingStub], None],
+        text: str,
+        *,
+        keyboard: list[str | None] | None,
+        plain: bool,
+        state: str | None,
+    ) -> None:
+        self.configure = configure
+        self.text = text
+        self.keyboard = keyboard
+        self.plain = plain  # card: parse_mode=None; others: the bot default
+        self.state = state
+
+
+def _limit(stub: _TrackingStub) -> None:
+    stub.preview_error = ProductLimitExceededError(37)
+
+
+def _unsupported(stub: _TrackingStub) -> None:
+    stub.preview_error = MarketplaceNotSupportedError("ozon")
+
+
+def _blocked(stub: _TrackingStub) -> None:
+    stub.preview_result = MarketplaceFetchFailure(
+        reason=FetchFailureReason.blocked, detail="d"
+    )
+
+
+def _card(stub: _TrackingStub) -> None:
+    """Default stub result: a found product."""
+
+
+_OUTCOMES = [
+    pytest.param(
+        _Outcome(
+            _limit,
+            texts.limit_exceeded_text(37),
+            keyboard=None,
+            plain=False,
+            state=None,
+        ),
+        id="limit",
+    ),
+    pytest.param(
+        _Outcome(
+            _unsupported,
+            texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
+            keyboard=[CB_ADD_CANCEL],
+            plain=False,
+            state=AddProduct.waiting_link.state,
+        ),
+        id="unsupported",
+    ),
+    pytest.param(
+        _Outcome(
+            _blocked,
+            texts.ADD_FETCH_FAILURE_TEXTS[FetchFailureReason.blocked],
+            keyboard=[CB_ADD_CANCEL],
+            plain=False,
+            state=AddProduct.waiting_link.state,
+        ),
+        id="fetch-failure",
+    ),
+    pytest.param(
+        _Outcome(
+            _card,
+            texts.product_found_text(_NAME, _PRICE),
+            keyboard=[CB_ADD_CANCEL],
+            plain=True,
+            state=AddProduct.waiting_target_price.state,
+        ),
+        id="card",
+    ),
+]
+
+
+def _assert_shown_as(request: SendMessage | EditMessageText, outcome: _Outcome) -> None:
+    assert request.text == outcome.text
+    if outcome.keyboard is None:
+        assert request.reply_markup is None
+    else:
+        assert _keyboard_callbacks(request) == outcome.keyboard
+    if outcome.plain:
+        assert request.parse_mode is None
+    else:
+        assert isinstance(request.parse_mode, Default)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", _OUTCOMES)
+async def test_notice_is_sent_without_keyboard_before_preview_is_called(
+    dialog: _Dialog, stub: _TrackingStub, outcome: _Outcome
+) -> None:
+    outcome.configure(stub)
+    await dialog.command("add")
+    base = len(dialog.requests)
+    at_preview: list[list[Any]] = []
+    stub.on_preview = lambda: at_preview.append(dialog.requests[base:])
+
+    await dialog.say(_WB_LINK)
+
+    assert len(at_preview) == 1
+    assert [type(r) for r in at_preview[0]] == [SendMessage]
+    notice = at_preview[0][0]
+    assert notice.text == texts.ADD_CHECKING_TEXT
+    assert notice.reply_markup is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", _OUTCOMES)
+async def test_outcome_replaces_the_notice_in_place_and_is_the_last_request(
+    dialog: _Dialog, stub: _TrackingStub, outcome: _Outcome
+) -> None:
+    outcome.configure(stub)
+    await dialog.command("add")
+    base = len(dialog.requests)
+
+    await dialog.say(_WB_LINK)
+
+    step = dialog.requests[base:]
+    assert [type(r) for r in step] == [SendMessage, EditMessageText]
+    notice, edit = step
+    assert isinstance(notice, SendMessage)
+    assert isinstance(edit, EditMessageText)
+    assert edit.message_id == sent_message_id(1)  # 0 is the /add prompt
+    assert edit.chat_id == _CHAT
+    _assert_shown_as(edit, outcome)
+    assert await dialog.state() == outcome.state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["hello", "https://evil.com/x", "0", "   "])
+async def test_unparseable_link_sends_only_the_hint_without_notice_or_edit(
+    dialog: _Dialog, stub: _TrackingStub, bad: str
+) -> None:
+    await dialog.command("add")
+    base = len(dialog.requests)
+
+    await dialog.say(bad)
+
+    step = dialog.requests[base:]
+    assert [type(r) for r in step] == [SendMessage]
+    assert step[0].text == texts.ADD_LINK_FORMAT_HINT_TEXT
+    assert stub.preview_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", _OUTCOMES)
+async def test_failed_notice_does_not_break_the_step_and_outcome_comes_as_new_message(
+    dialog: _Dialog,
+    stub: _TrackingStub,
+    log_records: list[Record],
+    outcome: _Outcome,
+) -> None:
+    outcome.configure(stub)
+    await dialog.command("add")
+    base = len(dialog.requests)
+    dialog.faults.next_send_error = TelegramNetworkError(
+        method=SendMessage(chat_id=_CHAT, text="x"), message="SECRET-NET-DETAIL"
+    )
+
+    await dialog.say(_WB_LINK)
+
+    step = dialog.requests[base:]
+    assert [type(r) for r in step] == [SendMessage, SendMessage]
+    assert step[0].text == texts.ADD_CHECKING_TEXT  # the attempt that failed
+    assert isinstance(step[1], SendMessage)
+    _assert_shown_as(step[1], outcome)
+    assert await dialog.state() == outcome.state
+    warnings = [r for r in log_records if r["level"].name == "WARNING"]
+    assert len(warnings) == 1
+    assert warnings[0]["extra"]["error_type"] == "TelegramNetworkError"
+    assert _WB_LINK not in warnings[0]["message"]
+    assert "SECRET-NET-DETAIL" not in warnings[0]["message"]
+    assert [r for r in log_records if r["level"].name == "ERROR"] == []
+    assert texts.UNEXPECTED_ERROR_TEXT not in [s.text for s in dialog.sent]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", _OUTCOMES)
+async def test_rejected_edit_delivers_the_same_outcome_as_new_message(
+    dialog: _Dialog,
+    stub: _TrackingStub,
+    log_records: list[Record],
+    outcome: _Outcome,
+) -> None:
+    outcome.configure(stub)
+    dialog.faults.edit_error = TelegramBadRequest(
+        method=EditMessageText(chat_id=_CHAT, message_id=1, text="x"),
+        message="Bad Request: message to edit not found",
+    )
+    await dialog.command("add")
+    base = len(dialog.requests)
+
+    await dialog.say(_WB_LINK)
+
+    step = dialog.requests[base:]
+    assert [type(r) for r in step] == [SendMessage, EditMessageText, SendMessage]
+    delivered = step[2]
+    assert isinstance(delivered, SendMessage)
+    _assert_shown_as(delivered, outcome)
+    assert await dialog.state() == outcome.state
+    assert [r for r in log_records if r["level"].name in ("WARNING", "ERROR")] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", _OUTCOMES)
+async def test_network_error_on_edit_is_not_resent_and_goes_to_the_errors_handler(
+    dialog: _Dialog,
+    stub: _TrackingStub,
+    log_records: list[Record],
+    outcome: _Outcome,
+) -> None:
+    outcome.configure(stub)
+    dialog.faults.edit_error = TelegramNetworkError(
+        method=EditMessageText(chat_id=_CHAT, message_id=1, text="x"), message="down"
+    )
+    await dialog.command("add")
+    base = len(dialog.requests)
+
+    await dialog.say(_WB_LINK)
+
+    sent_texts = [r.text for r in dialog.requests[base:] if isinstance(r, SendMessage)]
+    assert outcome.text not in sent_texts
+    assert sent_texts == [texts.ADD_CHECKING_TEXT, texts.UNEXPECTED_ERROR_TEXT]
+    errors = [r for r in log_records if r["level"].name == "ERROR"]
+    assert len(errors) == 1
+    assert isinstance(errors[0]["exception"].value, TelegramNetworkError)  # type: ignore[union-attr]

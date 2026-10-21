@@ -3,7 +3,7 @@
 The alias is only a declaration, so the behaviour worth pinning is the wiring:
 a route that asks for ``SessionDep`` must receive whatever FastAPI resolves
 for ``get_async_session``. The provider is replaced through
-``app.dependency_overrides`` with a stub yielding a marker object, so no
+``app.dependency_overrides`` with a stub returning a marker object, so no
 database, network or real session is involved.
 """
 
@@ -35,7 +35,7 @@ async def test_session_dep_injects_object_provided_by_get_async_session() -> Non
     async def fake_session() -> _SessionMarker:
         return _SessionMarker()
 
-    app.dependency_overrides[get_async_session] = cast("Any", fake_session)
+    app.dependency_overrides[get_async_session] = fake_session
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
