@@ -21,31 +21,33 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 
 from app.bot import texts
-from app.bot.keyboards import CB_EDIT_CANCEL
 from app.bot.keyboards import CB_LIST_PREFIXES
 from app.bot.keyboards import CB_MENU_LIST
 from app.bot.keyboards import MAX_LIST_BUTTONS
+from app.bot.keyboards import AlertAddCb
 from app.bot.keyboards import AlertEditCb
 from app.bot.keyboards import AlertRemoveCb
+from app.bot.keyboards import EditCancelCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRemoveCb
+from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import edit_cancel_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.bot.keyboards import nav_keyboard
-from app.bot.keyboards import product_card_keyboard
 from app.bot.keyboards import product_list_keyboard
+from app.bot.states import AddProduct
 from app.bot.states import EditAlert
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import InvalidPriceInputError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
-from app.domain.links import build_product_url
 from app.domain.money import rubles_to_kopecks
 from app.handlers.add_product import MAX_TEXT_LENGTH
 from app.handlers.add_product import TrackingServiceMiddleware
+from app.handlers.add_product import enter_price_step
 from app.handlers.callback_reply import edit_callback_message
+from app.handlers.product_card import card_screen
 from app.services.tracking import AlertChange
 from app.services.tracking import AlertRemoval
-from app.services.tracking import ProductCard
 from app.services.tracking import TrackingService
 
 _KEY_ALERT_ID = "alert_id"
@@ -62,19 +64,6 @@ async def _list_screen(
         return texts.LIST_EMPTY_TEXT, keyboard
     shown = min(len(products), MAX_LIST_BUTTONS)
     return texts.list_text(shown, len(products)), keyboard
-
-
-def _card_screen(card: ProductCard) -> tuple[str, InlineKeyboardMarkup]:
-    """Text and keyboard of the product card screen."""
-    product = card.product
-    text = texts.product_card_text(
-        product.product_name,
-        product.marketplace,
-        build_product_url(product.marketplace, product.article),
-        product.current_price,
-        [(alert.direction, alert.target_price) for alert in card.alerts],
-    )
-    return text, product_card_keyboard(product.id, card.alerts)
 
 
 def create_router() -> Router:
@@ -116,7 +105,7 @@ def create_router() -> Router:
         if card is None:
             await callback.answer(texts.LIST_GONE_ALERT_TEXT, show_alert=True)
             return
-        text, keyboard = _card_screen(card)
+        text, keyboard = card_screen(card)
         await edit_callback_message(
             callback,
             text,
@@ -160,7 +149,7 @@ def create_router() -> Router:
                 alert_text=gone_text,
             )
             return
-        text, keyboard = _card_screen(card)
+        text, keyboard = card_screen(card)
         await edit_callback_message(
             callback,
             text,
@@ -197,7 +186,7 @@ def create_router() -> Router:
             return
         alert = next((a for a in card.alerts if a.id == callback_data.alert_id), None)
         if alert is None:
-            text, keyboard = _card_screen(card)
+            text, keyboard = card_screen(card)
             await edit_callback_message(
                 callback,
                 text,
@@ -219,7 +208,50 @@ def create_router() -> Router:
                 alert.direction,
                 alert.target_price,
             ),
-            reply_markup=edit_cancel_keyboard(),
+            reply_markup=edit_cancel_keyboard(card.product.id),
+            alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
+        )
+
+    @router.callback_query(AlertAddCb.filter())
+    async def on_add_alert(
+        callback: CallbackQuery,
+        callback_data: AlertAddCb,
+        state: FSMContext,
+        tracking: TrackingService,
+    ) -> None:
+        """Start the threshold step of /add for a product of the pressing user.
+
+        The product and its price come from the database, scoped to the
+        pressing user; nothing is written and no marketplace is asked. An
+        explicit press replaces any running dialog.
+        """
+        if callback.message is None:
+            await callback.answer(texts.LIST_STALE_BUTTON_ALERT_TEXT, show_alert=True)
+            return
+        card = await tracking.get_product_card(
+            callback.from_user.id, callback_data.product_id
+        )
+        if card is None:
+            await edit_callback_message(
+                callback,
+                texts.PRODUCT_ALREADY_GONE_TEXT,
+                reply_markup=nav_keyboard(),
+                alert_text=texts.PRODUCT_ALREADY_GONE_TEXT,
+            )
+            return
+        product = card.product
+        await state.clear()
+        await enter_price_step(
+            state,
+            product.marketplace,
+            product.article,
+            product.product_name,
+            product.current_price,
+        )
+        await edit_callback_message(
+            callback,
+            texts.product_found_text(product.product_name, product.current_price),
+            reply_markup=cancel_keyboard(),
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
         )
 
@@ -249,7 +281,8 @@ def create_router() -> Router:
             target_price = rubles_to_kopecks(message.text[:MAX_TEXT_LENGTH])
         except InvalidPriceInputError:
             await message.answer(
-                texts.ADD_PRICE_INVALID_TEXT, reply_markup=edit_cancel_keyboard()
+                texts.ADD_PRICE_INVALID_TEXT,
+                reply_markup=edit_cancel_keyboard(product_id),
             )
             return
         try:
@@ -258,12 +291,14 @@ def create_router() -> Router:
             )
         except TargetEqualsCurrentPriceError:
             await message.answer(
-                texts.ADD_TARGET_EQUALS_TEXT, reply_markup=edit_cancel_keyboard()
+                texts.ADD_TARGET_EQUALS_TEXT,
+                reply_markup=edit_cancel_keyboard(product_id),
             )
             return
         except DuplicateAlertError:
             await message.answer(
-                texts.EDIT_DUPLICATE_TEXT, reply_markup=edit_cancel_keyboard()
+                texts.EDIT_DUPLICATE_TEXT,
+                reply_markup=edit_cancel_keyboard(product_id),
             )
             return
         await state.clear()
@@ -284,25 +319,49 @@ def create_router() -> Router:
             summary = texts.ALERT_ALREADY_REMOVED_TEXT
         else:
             assert_never(outcome)
-        card_text, keyboard = _card_screen(card)
+        card_text, keyboard = card_screen(card)
         await message.answer(
             f"{summary}\n\n{card_text}", reply_markup=keyboard, parse_mode=None
         )
 
     @router.message(StateFilter(EditAlert.waiting_target_price), ~F.text)
-    async def on_edit_not_text(message: Message) -> None:
+    async def on_edit_not_text(message: Message, state: FSMContext) -> None:
         """Non-text input on the edit step: explain, keep the state."""
+        product_id = (await state.get_data()).get(_KEY_PRODUCT_ID)
+        if not isinstance(product_id, int):
+            await state.clear()
+            await message.answer(
+                texts.EDIT_STALE_TEXT, reply_markup=main_menu_keyboard()
+            )
+            return
         await message.answer(
-            texts.EDIT_NOT_TEXT_TEXT, reply_markup=edit_cancel_keyboard()
+            texts.EDIT_NOT_TEXT_TEXT, reply_markup=edit_cancel_keyboard(product_id)
         )
 
-    @router.callback_query(F.data == CB_EDIT_CANCEL)
+    @router.callback_query(EditCancelCb.filter(), StateFilter(AddProduct))
+    async def on_stale_edit_cancel(callback: CallbackQuery) -> None:
+        """Old edit "Cancel" must not end an /add dialog."""
+        await callback.answer(texts.LIST_STALE_BUTTON_ALERT_TEXT, show_alert=True)
+
+    @router.callback_query(EditCancelCb.filter())
     async def on_edit_cancel(
-        callback: CallbackQuery, state: FSMContext, tracking: TrackingService
+        callback: CallbackQuery,
+        callback_data: EditCancelCb,
+        state: FSMContext,
+        tracking: TrackingService,
     ) -> None:
-        """Leave the edit step and put the product card back in place."""
+        """Leave the edit step and put the product card back in place.
+
+        A "Cancel" of another product's edit dialog is stale: it changes nothing.
+        """
         data = await state.get_data()
         product_id = data.get(_KEY_PRODUCT_ID)
+        if (
+            await state.get_state() == EditAlert.waiting_target_price.state
+            and product_id != callback_data.product_id
+        ):
+            await callback.answer(texts.LIST_STALE_BUTTON_ALERT_TEXT, show_alert=True)
+            return
         await state.clear()
         card = (
             await tracking.get_product_card(callback.from_user.id, product_id)
@@ -317,7 +376,7 @@ def create_router() -> Router:
                 alert_text=texts.CANCEL_TEXT,
             )
             return
-        text, keyboard = _card_screen(card)
+        text, keyboard = card_screen(card)
         await edit_callback_message(
             callback,
             text,

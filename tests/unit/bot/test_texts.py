@@ -107,7 +107,8 @@ def test_help_text_does_not_name_a_cooldown_number() -> None:
 
 
 def test_help_text_says_a_threshold_can_be_changed_from_the_product_card() -> None:
-    assert "изменить порог" in texts.help_text(50)
+    assert "изменить" in texts.help_text(50)
+    assert "Добавить порог" in texts.help_text(50)
 
 
 _NBSP = "\u00a0"

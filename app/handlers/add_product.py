@@ -12,6 +12,7 @@ one is sent with ``parse_mode=None``.
 
 from collections.abc import Awaitable
 from collections.abc import Callable
+from enum import Enum
 from typing import Any
 from typing import assert_never
 
@@ -42,6 +43,7 @@ from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.bot.states import AddProduct
+from app.bot.states import EditAlert
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import InvalidPriceInputError
 from app.domain.exceptions import MarketplaceNotSupportedError
@@ -54,9 +56,11 @@ from app.domain.money import rubles_to_kopecks
 from app.domain.thresholds import choose_direction
 from app.handlers.callback_reply import edit_callback_message
 from app.handlers.callback_reply import reply_to_callback
+from app.handlers.product_card import card_screen
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
+from app.services.tracking import ProductCard
 from app.services.tracking import TrackingService
 
 _KEY_MARKETPLACE = "marketplace"
@@ -159,6 +163,55 @@ async def _discard_if_stale(
     return True
 
 
+class _Skip(Enum):
+    """Why the tracked-product lookup produced no card."""
+
+    no_match = "no_match"
+    stale = "stale"
+
+
+async def _lookup_tracked(
+    marker: int,
+    ref: ProductRef,
+    user_id: int,
+    state: FSMContext,
+    tracking: TrackingService,
+) -> ProductCard | _Skip:
+    """Find the caller's already tracked product for this link step.
+
+    A card is returned only for a current step, with the dialog already
+    cleared; a superseded step yields ``stale`` and changes nothing.
+    """
+    card = await tracking.find_tracked_product(user_id, ref.marketplace, ref.article)
+    if card is None:
+        return _Skip.no_match
+    if await _discard_if_stale(marker, None, state, user_id):
+        return _Skip.stale
+    await state.clear()
+    return card
+
+
+def _already_tracked_screen(card: ProductCard) -> tuple[str, InlineKeyboardMarkup]:
+    """Product card prefixed with the "already tracked" line."""
+    text, keyboard = card_screen(card)
+    return f"{texts.ADD_ALREADY_TRACKED_TEXT}\n\n{text}", keyboard
+
+
+async def enter_price_step(
+    state: FSMContext, marketplace: Marketplace, article: int, name: str, price: int
+) -> None:
+    """Move the dialog to the threshold step with the product draft in FSM."""
+    await state.update_data(
+        {
+            _KEY_MARKETPLACE: marketplace.value,
+            _KEY_ARTICLE: article,
+            _KEY_NAME: name,
+            _KEY_CURRENT_PRICE: price,
+        }
+    )
+    await state.set_state(AddProduct.waiting_target_price)
+
+
 async def _deliver_outcome(
     message: Message | InaccessibleMessage,
     notice: Message | None,
@@ -234,15 +287,9 @@ async def _check_and_deliver(
         return
     # Accepted window: an interrupt landing between the check above and
     # these writes (a few Redis round-trips) can still be overwritten.
-    await state.update_data(
-        {
-            _KEY_MARKETPLACE: ref.marketplace.value,
-            _KEY_ARTICLE: ref.article,
-            _KEY_NAME: result.name,
-            _KEY_CURRENT_PRICE: result.price,
-        }
+    await enter_price_step(
+        state, ref.marketplace, ref.article, result.name, result.price
     )
-    await state.set_state(AddProduct.waiting_target_price)
     await _deliver_outcome(
         anchor,
         notice,
@@ -293,14 +340,30 @@ def create_router() -> Router:
         await state.clear()
         await state.set_state(AddProduct.waiting_link)
         await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
+        ref = ProductRef(
+            marketplace=callback_data.marketplace, article=callback_data.article
+        )
+        found = await _lookup_tracked(
+            message.message_id, ref, callback.from_user.id, state, tracking
+        )
+        if isinstance(found, ProductCard):
+            text, keyboard = _already_tracked_screen(found)
+            await edit_callback_message(
+                callback,
+                text,
+                reply_markup=keyboard,
+                alert_text=texts.ADD_STALE_ALERT_TEXT,
+            )
+            return
+        if found is _Skip.stale:
+            await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+            return
         notice = await edit_callback_message(callback, texts.ADD_CHECKING_TEXT)
         await _check_and_deliver(
             message,
             message.message_id,
             notice,
-            ProductRef(
-                marketplace=callback_data.marketplace, article=callback_data.article
-            ),
+            ref,
             callback.from_user.id,
             state,
             tracking,
@@ -328,6 +391,15 @@ def create_router() -> Router:
             return
         # Window accepted: RedisStorage.update_data reads and writes in separate steps.
         await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
+        found = await _lookup_tracked(
+            message.message_id, ref, message.from_user.id, state, tracking
+        )
+        if isinstance(found, ProductCard):
+            text, keyboard = _already_tracked_screen(found)
+            await message.answer(text, reply_markup=keyboard, parse_mode=None)
+            return
+        if found is _Skip.stale:
+            return
         notice = await _send_checking_notice(message)
         await _check_and_deliver(
             message,
@@ -395,6 +467,11 @@ def create_router() -> Router:
             texts.ADD_CONFIRM_HINT_TEXT, reply_markup=confirm_keyboard()
         )
         await state.update_data({_KEY_CONFIRM_MESSAGE_ID: hint.message_id})
+
+    @router.callback_query(StateFilter(EditAlert), F.data == CB_ADD_CANCEL)
+    async def on_stale_cancel(callback: CallbackQuery) -> None:
+        """Old "Cancel" of the /add dialog must not end a threshold edit."""
+        await callback.answer(texts.LIST_STALE_BUTTON_ALERT_TEXT, show_alert=True)
 
     @router.callback_query(F.data == CB_ADD_CANCEL)
     async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:

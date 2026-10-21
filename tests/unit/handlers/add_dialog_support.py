@@ -71,6 +71,12 @@ class _TrackingStub:
         self.add_direction = AlertDirection.below
         self.on_preview: Callable[[], None] | None = None
 
+    async def find_tracked_product(
+        self, tg_user_id: int, marketplace: Marketplace, article: int
+    ) -> None:
+        """The user tracks nothing: the link step goes on to ``preview``."""
+        return None
+
     async def preview(
         self, tg_user_id: int, marketplace: Marketplace, article: int
     ) -> Any:

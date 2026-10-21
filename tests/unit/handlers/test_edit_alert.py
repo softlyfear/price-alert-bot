@@ -52,7 +52,7 @@ from tests.unit.handlers.add_dialog_support import _responder
 _NB = "\u00a0"
 _MENU = ["menu:add", "menu:list", "menu:help"]
 _CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
-_CANCEL_ROWS = [[("Отмена", "edit:cancel")]]
+_CANCEL_ROWS = [[("Отмена", "ecancel:5")]]
 _LEGEND = "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
 _CARD_HEAD = (
     f"{_NAME}\n"
@@ -98,6 +98,7 @@ def _rows(request: SendMessage | EditMessageText) -> list[list[tuple[str, str | 
 def service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
     mock.get_product_card.return_value = None
+    mock.find_tracked_product.return_value = None
     mock.change_alert_target.return_value = AlertChange.changed
     monkeypatch.setattr(add_product_module, "TrackingService", lambda **_kw: mock)
     return mock
@@ -189,6 +190,7 @@ async def test_press_edit_for_a_removed_alert_redraws_the_card_and_sets_no_state
     assert _rows(dialog.edits[0]) == [
         [(f"Изменить порог: 2{_NB}500{_NB}₽", "aedit:12:5")],
         [(f"Убрать порог: 2{_NB}500{_NB}₽", "adel:12:5")],
+        [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
     ]
@@ -280,6 +282,7 @@ async def test_changed_sends_one_new_message_with_the_outcome_and_the_redrawn_ca
     assert _rows(sent) == [
         [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
         [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+        [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
     ]
@@ -534,7 +537,7 @@ async def test_cancel_puts_the_card_back_in_place_and_clears_the_state(
     )
     await _at_edit(dialog)
 
-    await dialog.press("edit:cancel")
+    await dialog.press("ecancel:5")
 
     service.get_product_card.assert_awaited_once_with(_USER, 5)
     service.change_alert_target.assert_not_called()
@@ -554,7 +557,7 @@ async def test_cancel_puts_the_card_back_in_place_and_clears_the_state(
 async def test_stale_cancel_without_state_data_says_cancelled_with_the_main_menu(
     dialog: _Dialog, service: MagicMock
 ) -> None:
-    await dialog.press("edit:cancel")
+    await dialog.press("ecancel:5")
 
     service.get_product_card.assert_not_called()
     assert [e.text for e in dialog.edits] == [texts.CANCEL_TEXT]
@@ -570,7 +573,7 @@ async def test_cancel_with_a_vanished_product_says_cancelled_with_the_main_menu(
     service.get_product_card.return_value = None
     await _at_edit(dialog)
 
-    await dialog.press("edit:cancel")
+    await dialog.press("ecancel:5")
 
     service.get_product_card.assert_awaited_once_with(_USER, 5)
     assert [e.text for e in dialog.edits] == [texts.CANCEL_TEXT]
@@ -578,16 +581,23 @@ async def test_cancel_with_a_vanished_product_says_cancelled_with_the_main_menu(
 
 
 @pytest.mark.asyncio
-async def test_cancel_with_a_non_integer_product_id_never_reads_the_card(
+async def test_cancel_with_a_non_integer_product_id_in_data_is_stale(
     dialog: _Dialog, service: MagicMock
 ) -> None:
-    await _at_edit(dialog, {"alert_id": 11, "product_id": "5"})
+    data = {"alert_id": 11, "product_id": "5"}
+    await _at_edit(dialog, dict(data))
 
-    await dialog.press("edit:cancel")
+    await dialog.press("ecancel:5")
 
     service.get_product_card.assert_not_called()
-    assert [e.text for e in dialog.edits] == [texts.CANCEL_TEXT]
-    assert await dialog.state() is None
+    assert [(a.text, a.show_alert) for a in dialog.callback_answers] == [
+        (texts.LIST_STALE_BUTTON_ALERT_TEXT, True)
+    ]
+    assert dialog.requests[-1] is dialog.callback_answers[0]
+    assert dialog.edits == []
+    assert dialog.sent == []
+    assert await dialog.state() == _EDIT_STATE
+    assert await dialog.data() == data
 
 
 @pytest.mark.asyncio
@@ -600,7 +610,7 @@ async def test_cancel_without_a_message_pops_up_cancelled_and_still_clears_the_s
     await storage.set_state(key, _EDIT_STATE)
     await storage.set_data(key, dict(_EDIT_DATA))
 
-    await dialog.press("edit:cancel", with_message=False)
+    await dialog.press("ecancel:5", with_message=False)
 
     assert [(a.text, a.show_alert) for a in dialog.callback_answers] == [
         (texts.CANCEL_TEXT, True)
