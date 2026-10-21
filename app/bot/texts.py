@@ -20,27 +20,54 @@ from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 
+SOUND_REMINDER_TEXT: Final[str] = (
+    "Чтобы не пропустить сигнал о цене, включите уведомления от этого чата."
+)
+
 START_TEXT: Final[str] = (
     "Привет! Я слежу за ценами товаров Wildberries и Ozon и сообщу, "
     "когда цена снизится или вырастет до заданного вами порога.\n\n"
-    "Команды:\n"
-    "/add — добавить товар в отслеживание\n"
-    "/list — мои товары и пороги\n"
-    "/help — подробнее о боте\n"
-    "/cancel — отменить текущее действие\n\n" + PRICE_DISCLAIMER_FULL
+    + SOUND_REMINDER_TEXT
+    + "\n\n"
+    + PRICE_DISCLAIMER_FULL
 )
 
-HELP_TEXT: Final[str] = (
-    "Добавьте товар со ссылкой или артикулом Wildberries или Ozon и "
-    "укажите пороговую цену: ниже текущей — сообщу о снижении, выше "
-    "текущей — сообщу о росте. Я буду регулярно проверять цену и напишу "
-    "вам, как только она дойдёт до заданного порога.\n\n"
-    "Команды:\n"
-    "/add — добавить товар в отслеживание\n"
-    "/list — мои товары и пороги\n"
-    "/start — начать заново\n"
-    "/cancel — отменить текущее действие\n\n" + PRICE_DISCLAIMER_FULL
-)
+MENU_ADD_BUTTON_TEXT: Final[str] = "➕ Добавить товар"
+MENU_LIST_BUTTON_TEXT: Final[str] = "Мои товары"
+MENU_HELP_BUTTON_TEXT: Final[str] = "Помощь"
+MENU_MAIN_BUTTON_TEXT: Final[str] = "Главное меню"
+
+MENU_STALE_ALERT_TEXT: Final[str] = "Кнопка устарела. Откройте меню командой /start."
+
+
+def help_text(max_products: int) -> str:
+    """Detailed help; the product limit comes from the settings."""
+    return (
+        "Я слежу за ценами на Wildberries и Ozon и пишу вам, когда цена "
+        "товара доходит до нужного вам порога.\n\n"
+        "Как добавить товар. Отправьте команду /add и пришлите ссылку на "
+        "товар Wildberries или Ozon. Артикул без ссылки я понимаю только "
+        "для Wildberries. Я покажу найденный товар и его текущую цену, "
+        "затем попрошу указать порог в рублях.\n\n"
+        "Как работает порог. Если порог ниже текущей цены, я сообщу, когда "
+        "цена снизится до него. Если выше — когда цена вырастет до него. "
+        "Порог, равный текущей цене, не подойдёт. Сработав, порог остаётся "
+        "активным: я напишу снова, если цена опять окажется за порогом, но "
+        "не чаще, чем раз в установленный интервал.\n\n"
+        f"Лимит: можно следить не более чем за {max_products} товарами.\n\n"
+        "Свои товары и пороги видны в /list. Там же можно убрать порог или "
+        "перестать следить за товаром.\n\n"
+        "Ozon защищается от автоматических запросов и иногда блокирует их. "
+        "Тогда я скажу об этом честно; обычно помогает повторить попытку "
+        "чуть позже.\n\n" + SOUND_REMINDER_TEXT + "\n\n"
+        "Команды:\n"
+        "/start — главное меню\n"
+        "/add — добавить товар в отслеживание\n"
+        "/list — мои товары и пороги\n"
+        "/help — эта справка\n"
+        "/cancel — отменить текущее действие\n\n" + PRICE_DISCLAIMER_FULL
+    )
+
 
 CANCEL_TEXT: Final[str] = "Действие отменено."
 
@@ -59,10 +86,8 @@ BOT_SHORT_DESCRIPTION: Final[str] = (
 )
 
 BOT_COMMANDS: Final[list[BotCommand]] = [
-    BotCommand(command="start", description="Начать и узнать, что умеет бот"),
-    BotCommand(command="add", description="Добавить товар в отслеживание"),
-    BotCommand(command="list", description="Мои товары и пороги"),
-    BotCommand(command="help", description="Подробнее о том, как пользоваться ботом"),
+    BotCommand(command="start", description="Главное меню"),
+    BotCommand(command="help", description="Как пользоваться ботом"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 ]
 
@@ -166,7 +191,8 @@ UNEXPECTED_ERROR_TEXT: Final[str] = (
 # --- /list: products, card, removal ----------------------------------------
 
 LIST_EMPTY_TEXT: Final[str] = (
-    "Вы пока ни за чем не следите. Добавьте первый товар командой /add."
+    "Вы пока ни за чем не следите. Нажмите «➕ Добавить товар» ниже, "
+    "чтобы добавить первый."
 )
 
 LIST_STALE_BUTTON_ALERT_TEXT: Final[str] = (
@@ -243,7 +269,7 @@ def added_text(name: str, target_price: int, direction: AlertDirection) -> str:
     return (
         f"Отслеживание добавлено: {name}.\n"
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
-        f"{PRICE_DISCLAIMER_SHORT}."
+        f"{PRICE_DISCLAIMER_SHORT}.\n\n" + SOUND_REMINDER_TEXT
     )
 
 

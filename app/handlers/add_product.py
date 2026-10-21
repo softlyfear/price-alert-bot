@@ -35,8 +35,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot import texts
 from app.bot.keyboards import CB_ADD_CANCEL
 from app.bot.keyboards import CB_ADD_CONFIRM
+from app.bot.keyboards import CB_MENU_ADD
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
+from app.bot.keyboards import main_menu_keyboard
 from app.bot.states import AddProduct
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import InvalidPriceInputError
@@ -47,6 +49,7 @@ from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.links import parse_product_ref
 from app.domain.money import rubles_to_kopecks
 from app.domain.thresholds import choose_direction
+from app.handlers.callback_reply import edit_callback_message
 from app.handlers.callback_reply import reply_to_callback
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
@@ -112,7 +115,7 @@ def _failure_text(reason: FetchFailureReason) -> str:
 async def _finish(callback: CallbackQuery, state: FSMContext, text: str) -> None:
     """Clear the dialog, then report the outcome through the single exit point."""
     await state.clear()
-    await reply_to_callback(callback, text)
+    await reply_to_callback(callback, text, reply_markup=main_menu_keyboard())
 
 
 async def _send_checking_notice(message: Message) -> Message | None:
@@ -192,6 +195,18 @@ def create_router() -> Router:
         await state.set_state(AddProduct.waiting_link)
         await message.answer(texts.ADD_PROMPT_LINK_TEXT, reply_markup=cancel_keyboard())
 
+    @router.callback_query(F.data == CB_MENU_ADD)
+    async def on_menu_add(callback: CallbackQuery, state: FSMContext) -> None:
+        """ "Add a product" button: same effect as /add, edited in place."""
+        await state.clear()
+        await state.set_state(AddProduct.waiting_link)
+        await edit_callback_message(
+            callback,
+            texts.ADD_PROMPT_LINK_TEXT,
+            reply_markup=cancel_keyboard(),
+            alert_text=texts.MENU_STALE_ALERT_TEXT,
+        )
+
     @router.message(StateFilter(AddProduct.waiting_link), F.text)
     async def on_link(
         message: Message, state: FSMContext, tracking: TrackingService
@@ -219,7 +234,10 @@ def create_router() -> Router:
                 return
             await state.clear()
             await _deliver_outcome(
-                message, notice, texts.limit_exceeded_text(exc.limit)
+                message,
+                notice,
+                texts.limit_exceeded_text(exc.limit),
+                reply_markup=main_menu_keyboard(),
             )
             return
         except MarketplaceNotSupportedError:
@@ -278,7 +296,9 @@ def create_router() -> Router:
         current_price = data.get(_KEY_CURRENT_PRICE)
         if not isinstance(name, str) or not isinstance(current_price, int):
             await state.clear()
-            await message.answer(texts.ADD_STALE_TEXT)
+            await message.answer(
+                texts.ADD_STALE_TEXT, reply_markup=main_menu_keyboard()
+            )
             return
         try:
             direction = choose_direction(current_price, target_price)

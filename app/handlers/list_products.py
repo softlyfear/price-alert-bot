@@ -14,10 +14,12 @@ from aiogram import F
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 
 from app.bot import texts
 from app.bot.keyboards import CB_LIST_PREFIXES
+from app.bot.keyboards import CB_MENU_LIST
 from app.bot.keyboards import MAX_LIST_BUTTONS
 from app.bot.keyboards import AlertRemoveCb
 from app.bot.keyboards import ProductCardCb
@@ -26,9 +28,22 @@ from app.bot.keyboards import product_card_keyboard
 from app.bot.keyboards import product_list_keyboard
 from app.domain.links import build_product_url
 from app.handlers.add_product import TrackingServiceMiddleware
+from app.handlers.callback_reply import edit_callback_message
 from app.handlers.callback_reply import reply_to_callback as _reply
 from app.services.tracking import AlertRemoval
 from app.services.tracking import TrackingService
+
+
+async def _list_screen(
+    tracking: TrackingService, user_id: int
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Text and keyboard of the list screen, shared by /list and the menu."""
+    products = await tracking.list_products(user_id)
+    keyboard = product_list_keyboard(products)
+    if not products:
+        return texts.LIST_EMPTY_TEXT, keyboard
+    shown = min(len(products), MAX_LIST_BUTTONS)
+    return texts.list_text(shown, len(products)), keyboard
 
 
 def create_router() -> Router:
@@ -43,15 +58,18 @@ def create_router() -> Router:
         """Show the caller's products; leaves the FSM state alone."""
         if message.from_user is None:
             return
-        products = await tracking.list_products(message.from_user.id)
-        if not products:
-            await message.answer(texts.LIST_EMPTY_TEXT)
-            return
-        shown = min(len(products), MAX_LIST_BUTTONS)
-        await message.answer(
-            texts.list_text(shown, len(products)),
-            reply_markup=product_list_keyboard(products),
-            parse_mode=None,
+        text, keyboard = await _list_screen(tracking, message.from_user.id)
+        await message.answer(text, reply_markup=keyboard, parse_mode=None)
+
+    @router.callback_query(F.data == CB_MENU_LIST)
+    async def on_menu_list(callback: CallbackQuery, tracking: TrackingService) -> None:
+        """ "My products" button: the /list screen in place, for the presser."""
+        text, keyboard = await _list_screen(tracking, callback.from_user.id)
+        await edit_callback_message(
+            callback,
+            text,
+            reply_markup=keyboard,
+            alert_text=texts.MENU_STALE_ALERT_TEXT,
         )
 
     @router.callback_query(ProductCardCb.filter())

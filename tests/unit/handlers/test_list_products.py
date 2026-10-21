@@ -19,6 +19,7 @@ from aiogram import Bot
 from aiogram import Dispatcher
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.methods import AnswerCallbackQuery
+from aiogram.methods import EditMessageText
 from aiogram.methods import SendMessage
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Update
@@ -44,6 +45,7 @@ _USER = 4_242  # deliberately different from the chat id
 _MAX_ID = 2_147_483_647
 _NAME = "Кроссовки <b>x*"
 _NB = "\u00a0"
+_NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
 
 
 def _product(product_id: int, name: str = _NAME, price: int = 199_000) -> Product:
@@ -103,6 +105,11 @@ class _Bot:
         return [r for r in requests if isinstance(r, SendMessage)]
 
     @property
+    def edits(self) -> list[EditMessageText]:
+        requests = cast(Any, self.bot.session).requests
+        return [r for r in requests if isinstance(r, EditMessageText)]
+
+    @property
     def answers(self) -> list[AnswerCallbackQuery]:
         requests = cast(Any, self.bot.session).requests
         return [r for r in requests if isinstance(r, AnswerCallbackQuery)]
@@ -143,7 +150,7 @@ def _no_service_call(service: MagicMock) -> None:
     service.remove_alert.assert_not_called()
 
 
-def _keyboard(request: SendMessage) -> InlineKeyboardMarkup:
+def _keyboard(request: SendMessage | EditMessageText) -> InlineKeyboardMarkup:
     assert isinstance(request.reply_markup, InlineKeyboardMarkup)
     return request.reply_markup
 
@@ -152,13 +159,14 @@ def _keyboard(request: SendMessage) -> InlineKeyboardMarkup:
 
 
 @pytest.mark.asyncio
-async def test_list_with_no_products_hints_at_add_without_keyboard(
+async def test_list_with_no_products_shows_only_the_navigation_row(
     bot: _Bot, service: MagicMock
 ) -> None:
     await bot.command("list")
 
     assert [r.text for r in bot.sent] == [texts.LIST_EMPTY_TEXT]
-    assert bot.sent[0].reply_markup is None
+    rows = _keyboard(bot.sent[0]).inline_keyboard
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
     service.list_products.assert_awaited_once_with(_USER)
 
 
@@ -179,6 +187,7 @@ async def test_list_shows_one_button_per_product_and_one_disclaimer(
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
         [(f"{_NAME} — 1{_NB}990{_NB}₽", "pcard:5")],
         [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        _NAV_ROW,
     ]
 
 
@@ -190,7 +199,10 @@ async def test_list_with_exactly_fifty_products_shows_fifty_and_no_cut_note(
 
     await bot.command("list")
 
-    assert len(_keyboard(bot.sent[0]).inline_keyboard) == 50
+    rows = _keyboard(bot.sent[0]).inline_keyboard
+    assert len(rows) == 50 + 1
+    assert rows[49][0].callback_data == "pcard:50"
+    assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
     assert "Показаны первые" not in bot.sent[0].text
     assert "товарами: 50." in bot.sent[0].text
 
@@ -203,7 +215,10 @@ async def test_list_with_fifty_one_products_shows_fifty_and_names_the_cut(
 
     await bot.command("list")
 
-    assert len(_keyboard(bot.sent[0]).inline_keyboard) == 50
+    rows = _keyboard(bot.sent[0]).inline_keyboard
+    assert len(rows) == 50 + 1
+    assert rows[49][0].callback_data == "pcard:50"
+    assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
     assert "Показаны первые 50 из 51" in bot.sent[0].text
 
 
@@ -227,6 +242,106 @@ async def test_list_from_a_message_without_sender_is_ignored(
 
     assert bot.sent == []
     service.list_products.assert_not_called()
+
+
+# --- "My products" menu button (PAB-092) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_asks_the_service_for_the_presser_not_the_chat(
+    bot: _Bot, service: MagicMock
+) -> None:
+    await bot.press("menu:list")
+
+    service.list_products.assert_awaited_once_with(_USER)
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_edits_in_place_with_the_same_screen_as_the_command(
+    bot: _Bot, service: MagicMock
+) -> None:
+    service.list_products.return_value = [_product(5), _product(9, "Шапка", 50)]
+    await bot.command("list")
+
+    await bot.press("menu:list")
+
+    assert bot.edits[0].parse_mode is None
+    assert len(bot.sent) == 1  # only the command's message; the button sent none
+    assert bot.edits[0].text == bot.sent[0].text
+    assert bot.edits[0].reply_markup == bot.sent[0].reply_markup
+    rows = _keyboard(bot.edits[0]).inline_keyboard
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        [(f"{_NAME} — 1{_NB}990{_NB}₽", "pcard:5")],
+        [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        _NAV_ROW,
+    ]
+    assert len(bot.answers) == 1
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_with_no_products_shows_empty_text_and_nav_row(
+    bot: _Bot, service: MagicMock
+) -> None:
+    await bot.press("menu:list")
+
+    assert [e.text for e in bot.edits] == [texts.LIST_EMPTY_TEXT]
+    rows = _keyboard(bot.edits[0]).inline_keyboard
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_still_cuts_the_list_at_fifty(
+    bot: _Bot, service: MagicMock
+) -> None:
+    service.list_products.return_value = [_product(i) for i in range(1, 52)]
+
+    await bot.press("menu:list")
+
+    rows = _keyboard(bot.edits[0]).inline_keyboard
+    assert len(rows) == 50 + 1
+    assert rows[49][0].callback_data == "pcard:50"
+    assert "Показаны первые 50 из 51" in bot.edits[0].text
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_on_an_inaccessible_message_sends_the_list_as_new(
+    bot: _Bot, service: MagicMock
+) -> None:
+    service.list_products.return_value = [_product(5)]
+
+    await bot.press("menu:list", accessible=False)
+
+    assert bot.edits == []
+    assert [r.text.startswith("Вы следите за товарами: 1.") for r in bot.sent] == [True]
+    assert len(bot.answers) == 1
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_without_a_message_gives_a_popup_and_no_message(
+    bot: _Bot, service: MagicMock
+) -> None:
+    await bot.press("menu:list", with_message=False)
+
+    assert bot.sent == []
+    assert bot.edits == []
+    assert [(a.text, a.show_alert) for a in bot.answers] == [
+        (texts.MENU_STALE_ALERT_TEXT, True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_menu_list_button_keeps_the_fsm_state_and_draft(
+    bot: _Bot, service: MagicMock
+) -> None:
+    state, data = "some-state", {"k": 1}
+    storage = bot.dispatcher.storage
+    await storage.set_state(bot.key, state)
+    await storage.set_data(bot.key, dict(data))
+
+    await bot.press("menu:list")
+
+    assert await storage.get_state(bot.key) == state
+    assert await storage.get_data(bot.key) == data
 
 
 _DIALOG_STATES = [

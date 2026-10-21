@@ -14,16 +14,29 @@ their own ``chat_id``/``user_id`` pair (fixture ``unique_chat_id``) for
 clarity, though a collision is no longer possible even without it.
 """
 
+from typing import Any
+from typing import cast
+
+import httpx
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
 from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.methods import AnswerCallbackQuery
+from aiogram.methods import EditMessageText
 from aiogram.methods import SendMessage
+from aiogram.types import InlineKeyboardMarkup
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot import texts
+from app.bot.setup import create_dispatcher
 from app.domain.money import PRICE_DISCLAIMER_FULL
 from tests.unit.conftest import build_fake_bot
+from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
+from tests.unit.wb_access_stub import stub_client_factory
 
 
 @pytest.fixture
@@ -52,17 +65,20 @@ async def test_start_replies_with_text_containing_full_disclaimer(
     assert len(sent) == 1
     assert sent[0] == texts.START_TEXT
     assert PRICE_DISCLAIMER_FULL in sent[0]
+    assert texts.SOUND_REMINDER_TEXT in sent[0]
+    assert "/add" not in sent[0]
+    assert "/list" not in sent[0]
 
 
 @pytest.mark.asyncio
 async def test_help_replies_with_text_containing_full_disclaimer(
     real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int
 ) -> None:
-    """Mutation target: replacing the reply with a copy of ``HELP_TEXT``
-    that has one character changed instead of the imported constant --
+    """Mutation target: replacing the reply with a copy of the help text
+    that has one character changed instead of the imported builder --
     caught here because the reply is compared for exact equality with
-    ``texts.HELP_TEXT``, and ``PRICE_DISCLAIMER_FULL in sent[0]`` catches a
-    change specifically inside the disclaimer substring.
+    ``texts.help_text(50)``, and ``PRICE_DISCLAIMER_FULL in sent[0]`` catches
+    a change specifically inside the disclaimer substring.
     """
     await real_dispatcher.feed_update(
         bot, make_command_update("help", chat_id=unique_chat_id, user_id=unique_chat_id)
@@ -70,8 +86,9 @@ async def test_help_replies_with_text_containing_full_disclaimer(
 
     sent = _sent_texts(bot.session.requests)  # type: ignore[attr-defined]
     assert len(sent) == 1
-    assert sent[0] == texts.HELP_TEXT
+    assert sent[0] == texts.help_text(50)
     assert PRICE_DISCLAIMER_FULL in sent[0]
+    assert texts.SOUND_REMINDER_TEXT in sent[0]
 
 
 @pytest.mark.asyncio
@@ -135,3 +152,146 @@ async def test_cancel_without_active_state_replies_with_nothing_to_cancel_text(
     sent = _sent_texts(bot.session.requests)  # type: ignore[attr-defined]
     assert sent == [texts.NOTHING_TO_CANCEL_TEXT]
     assert texts.NOTHING_TO_CANCEL_TEXT != texts.CANCEL_TEXT
+
+
+# --- main menu (PAB-092) -------------------------------------------------------
+
+_MENU = ["menu:add", "menu:list", "menu:help"]
+
+
+def _requests(bot: Bot) -> list[Any]:
+    return cast(Any, bot.session).requests  # type: ignore[no-any-return]
+
+
+def _callbacks(request: SendMessage | EditMessageText) -> list[str | None]:
+    markup = request.reply_markup
+    assert isinstance(markup, InlineKeyboardMarkup)
+    return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+def _dispatcher(max_products: int) -> Dispatcher:
+    return create_dispatcher(
+        MemoryStorage(),
+        async_sessionmaker(class_=AsyncSession),
+        httpx.AsyncClient(),
+        max_products,
+        stub_client_factory(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["start", "help", "cancel"])
+async def test_command_replies_carry_the_main_menu(
+    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int, command: str
+) -> None:
+    await real_dispatcher.feed_update(
+        bot,
+        make_command_update(command, chat_id=unique_chat_id, user_id=unique_chat_id),
+    )
+
+    sent = [r for r in _requests(bot) if isinstance(r, SendMessage)]
+    assert len(sent) == 1
+    assert _callbacks(sent[0]) == _MENU
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_active_state_replies_with_the_main_menu(
+    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int
+) -> None:
+    await real_dispatcher.storage.set_state(
+        _storage_key(bot.id, unique_chat_id), "some-dialog-state"
+    )
+
+    await real_dispatcher.feed_update(
+        bot,
+        make_command_update("cancel", chat_id=unique_chat_id, user_id=unique_chat_id),
+    )
+
+    sent = [r for r in _requests(bot) if isinstance(r, SendMessage)]
+    assert [m.text for m in sent] == [texts.CANCEL_TEXT]
+    assert _callbacks(sent[0]) == _MENU
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [3, 77])
+async def test_help_command_names_the_limit_from_workflow_data(
+    bot: Bot, unique_chat_id: int, limit: int
+) -> None:
+    await _dispatcher(limit).feed_update(
+        bot, make_command_update("help", chat_id=unique_chat_id, user_id=unique_chat_id)
+    )
+
+    sent = _sent_texts(_requests(bot))
+    assert sent == [texts.help_text(limit)]
+    assert f"не более чем за {limit} товарами" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_menu_start_button_edits_to_the_start_screen_and_keeps_fsm(
+    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int
+) -> None:
+    key = _storage_key(bot.id, unique_chat_id)
+    await real_dispatcher.storage.set_state(key, "some-dialog-state")
+    await real_dispatcher.storage.set_data(key, {"draft": 1})
+
+    await real_dispatcher.feed_update(
+        bot,
+        make_callback_update(
+            "menu:start", chat_id=unique_chat_id, user_id=unique_chat_id
+        ),
+    )
+
+    edits = [r for r in _requests(bot) if isinstance(r, EditMessageText)]
+    assert [(e.text, e.parse_mode) for e in edits] == [(texts.START_TEXT, None)]
+    assert _callbacks(edits[0]) == _MENU
+    assert len([r for r in _requests(bot) if isinstance(r, AnswerCallbackQuery)]) == 1
+    assert await real_dispatcher.storage.get_state(key) == "some-dialog-state"
+    assert await real_dispatcher.storage.get_data(key) == {"draft": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [3, 77])
+async def test_menu_help_button_edits_to_help_with_the_limit_and_keeps_fsm(
+    bot: Bot, unique_chat_id: int, limit: int
+) -> None:
+    dispatcher = _dispatcher(limit)
+    key = _storage_key(bot.id, unique_chat_id)
+    await dispatcher.storage.set_state(key, "some-dialog-state")
+    await dispatcher.storage.set_data(key, {"draft": 1})
+
+    await dispatcher.feed_update(
+        bot,
+        make_callback_update(
+            "menu:help", chat_id=unique_chat_id, user_id=unique_chat_id
+        ),
+    )
+
+    edits = [r for r in _requests(bot) if isinstance(r, EditMessageText)]
+    assert [(e.text, e.parse_mode) for e in edits] == [(texts.help_text(limit), None)]
+    assert f"не более чем за {limit} товарами" in edits[0].text
+    assert _callbacks(edits[0]) == _MENU
+    assert len([r for r in _requests(bot) if isinstance(r, AnswerCallbackQuery)]) == 1
+    assert await dispatcher.storage.get_state(key) == "some-dialog-state"
+    assert await dispatcher.storage.get_data(key) == {"draft": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", ["menu:", "menu:nope", "menu:add:1", "menu:ADD"])
+async def test_unknown_menu_button_gives_a_popup_and_changes_nothing(
+    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int, data: str
+) -> None:
+    key = _storage_key(bot.id, unique_chat_id)
+    await real_dispatcher.storage.set_state(key, "some-dialog-state")
+
+    await real_dispatcher.feed_update(
+        bot,
+        make_callback_update(data, chat_id=unique_chat_id, user_id=unique_chat_id),
+    )
+
+    requests = _requests(bot)
+    assert [type(r) for r in requests] == [AnswerCallbackQuery]
+    assert (requests[0].text, requests[0].show_alert) == (
+        texts.MENU_STALE_ALERT_TEXT,
+        True,
+    )
+    assert await real_dispatcher.storage.get_state(key) == "some-dialog-state"

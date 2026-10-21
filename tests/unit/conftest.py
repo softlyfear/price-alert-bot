@@ -28,6 +28,7 @@ from aiogram.methods import GetUpdates
 from aiogram.methods import SendMessage
 from aiogram.methods import TelegramMethod
 from aiogram.methods.base import TelegramType
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from aiogram.types import Update
 from aiogram.types import User
@@ -248,12 +249,16 @@ def make_callback_update(
     accessible: bool = True,
     message_id: int = 5,
     with_message: bool = True,
+    message_text: str | None = None,
+    message_markup: InlineKeyboardMarkup | None = None,
 ) -> Update:
     """Build an ``Update`` with an inline-button press.
 
     ``accessible=False`` makes the attached message ``date == 0``, which
     aiogram models as an inaccessible message. ``with_message=False`` omits
-    the message altogether (``callback.message is None``).
+    the message altogether (``callback.message is None``). ``message_text``
+    and ``message_markup`` give the pressed message its current content (for
+    "same content, nothing to edit" scenarios).
     """
     callback: dict[str, Any] = {
         "id": "cb-1",
@@ -267,6 +272,12 @@ def make_callback_update(
             "date": 1 if accessible else 0,
             "chat": {"id": chat_id, "type": "private"},
         }
+        if message_text is not None:
+            callback["message"]["text"] = message_text
+        if message_markup is not None:
+            callback["message"]["reply_markup"] = message_markup.model_dump(
+                mode="json", exclude_none=True
+            )
     return Update.model_validate({"update_id": update_id, "callback_query": callback})
 
 

@@ -49,27 +49,49 @@ def test_start_text_contains_full_disclaimer() -> None:
 
 
 def test_help_text_contains_full_disclaimer() -> None:
-    assert PRICE_DISCLAIMER_FULL in texts.HELP_TEXT
+    assert PRICE_DISCLAIMER_FULL in texts.help_text(50)
 
 
-def test_bot_commands_list_is_start_add_list_help_cancel_in_that_order() -> None:
-    assert [c.command for c in texts.BOT_COMMANDS] == [
-        "start",
-        "add",
-        "list",
-        "help",
-        "cancel",
-    ]
+def test_bot_commands_list_is_start_help_cancel_in_that_order() -> None:
+    assert [c.command for c in texts.BOT_COMMANDS] == ["start", "help", "cancel"]
 
 
-def test_start_and_help_texts_mention_the_add_command() -> None:
-    assert "/add" in texts.START_TEXT
-    assert "/add" in texts.HELP_TEXT
+def test_start_text_lists_no_commands() -> None:
+    assert "/add" not in texts.START_TEXT
+    assert "/list" not in texts.START_TEXT
 
 
-def test_start_and_help_texts_mention_the_list_command() -> None:
-    assert "/list" in texts.START_TEXT
-    assert "/list" in texts.HELP_TEXT
+@pytest.mark.parametrize("command", ["/start", "/add", "/list", "/help", "/cancel"])
+def test_help_text_lists_every_command(command: str) -> None:
+    assert command in texts.help_text(50)
+
+
+@pytest.mark.parametrize("limit", [7, 50])
+def test_help_text_names_the_given_product_limit(limit: int) -> None:
+    other = 50 if limit == 7 else 7
+
+    assert f"не более чем за {limit} товарами" in texts.help_text(limit)
+    assert f"за {other} товарами" not in texts.help_text(limit)
+
+
+@pytest.mark.parametrize("limit", [1, 50, 1000])
+def test_help_text_fits_the_telegram_message_limit(limit: int) -> None:
+    assert len(texts.help_text(limit)) <= 4096
+
+
+def test_start_help_and_added_texts_carry_the_one_sound_reminder() -> None:
+    assert texts.SOUND_REMINDER_TEXT in texts.START_TEXT
+    assert texts.SOUND_REMINDER_TEXT in texts.help_text(50)
+    assert texts.SOUND_REMINDER_TEXT in texts.added_text(
+        "Item", 150_000, AlertDirection.below
+    )
+
+
+def test_help_text_does_not_name_a_cooldown_number_or_promise_editing() -> None:
+    text = texts.help_text(50)
+
+    assert "изменить" not in text.lower()
+    assert "минут" not in text
 
 
 _NBSP = "\u00a0"
@@ -134,7 +156,7 @@ def test_price_prompt_explains_both_outcomes() -> None:
     "text",
     [
         texts.START_TEXT,
-        texts.HELP_TEXT,
+        texts.help_text(50),
         texts.BOT_DESCRIPTION,
         texts.BOT_SHORT_DESCRIPTION,
     ],
