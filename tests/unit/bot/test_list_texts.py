@@ -61,7 +61,9 @@ def test_product_card_text_shows_short_arrow_thresholds_and_one_legend() -> None
         "Пороги:\n"
         f"• ↓ 1{_NB}000{_NB}₽\n"
         f"• ↑ 2{_NB}000{_NB}₽\n"
-        "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+        "\n"
+        "↓ — сообщу, когда цена снизится до порога\n"
+        "↑ — сообщу, когда вырастет до него"
     )
     assert "цена станет" not in text
     assert text.count("↓ — сообщу") == 1
@@ -79,9 +81,15 @@ def test_product_card_text_without_thresholds_says_there_are_none() -> None:
     assert "Маркетплейс: Ozon" in text
 
 
-def test_remove_alert_button_text_has_no_arrow_by_default() -> None:
-    assert texts.remove_alert_button_text(AlertDirection.above, 3_000_00) == (
-        f"Убрать порог: 3{_NB}000{_NB}₽"
+def test_remove_alert_button_text_is_the_fixed_label_without_an_amount() -> None:
+    assert texts.remove_alert_button_text() == "🗑 Убрать"
+
+
+def test_edit_alert_button_text_puts_the_amount_first_without_arrow_by_default() -> (
+    None
+):
+    assert texts.edit_alert_button_text(AlertDirection.above, 3_000_00) == (
+        f"✏️ 3{_NB}000{_NB}₽"
     )
 
 
@@ -89,12 +97,40 @@ def test_remove_alert_button_text_has_no_arrow_by_default() -> None:
     ("direction", "expected"),
     [(AlertDirection.below, "↓"), (AlertDirection.above, "↑")],
 )
-def test_remove_alert_button_text_with_arrow_names_the_direction(
+def test_edit_alert_button_text_with_arrow_puts_it_before_the_amount(
     direction: AlertDirection, expected: str
 ) -> None:
-    assert texts.remove_alert_button_text(direction, 1_000_00, with_arrow=True) == (
-        f"Убрать порог: {expected} 1{_NB}000{_NB}₽"
+    assert texts.edit_alert_button_text(direction, 1_000_00, with_arrow=True) == (
+        f"✏️ {expected} 1{_NB}000{_NB}₽"
     )
+
+
+def test_card_text_with_thresholds_has_a_blank_line_before_the_two_line_legend() -> (
+    None
+):
+    lines = texts.product_card_text(
+        "Item",
+        Marketplace.wb,
+        "https://www.wildberries.ru/catalog/1/detail.aspx",
+        1_990_00,
+        [(AlertDirection.below, 1_000_00)],
+    ).split("\n")
+
+    assert lines[-4:] == [
+        f"• ↓ 1{_NB}000{_NB}₽",
+        "",
+        "↓ — сообщу, когда цена снизится до порога",
+        "↑ — сообщу, когда вырастет до него",
+    ]
+
+
+def test_card_text_without_thresholds_has_no_legend_and_no_blank_tail() -> None:
+    text = texts.product_card_text(
+        "Item", Marketplace.wb, "https://x.example/1", 1_990_00, []
+    )
+
+    assert text.endswith(f"{_DISCLAIMER}.\n\nПорогов нет.")
+    assert "сообщу" not in text
 
 
 def test_direction_arrow_rejects_a_value_outside_the_enum() -> None:
@@ -138,8 +174,16 @@ def test_removal_outcome_texts_are_distinct_and_removed_ones_point_to_add() -> N
     }
 
     assert len(outcomes) == 6
-    assert "/add" in texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT
-    assert "/add" in texts.LIST_PRODUCT_REMOVED_TEXT
+    for removed in (
+        texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT,
+        texts.LIST_PRODUCT_REMOVED_TEXT,
+    ):
+        assert removed.endswith(
+            "Чтобы вернуть товар, добавьте его заново: "
+            "«Главное меню» → «➕ Добавить товар»."
+        ) or removed.endswith(
+            "добавьте его заново: «Главное меню» → «➕ Добавить товар»."
+        )
     assert "➕ Добавить товар" in texts.LIST_EMPTY_TEXT
 
 

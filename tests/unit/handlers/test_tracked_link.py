@@ -40,8 +40,7 @@ from tests.unit.handlers.card_dialog_support import rows
 _REF_PAYLOAD = f"addref:wb:{DB_ARTICLE}"
 _ALREADY = "Товар уже отслеживается"
 _EXPECTED_ROWS = [
-    [(f"Изменить порог: 1{NB}500{NB}₽", "aedit:11:5")],
-    [(f"Убрать порог: 1{NB}500{NB}₽", "adel:11:5")],
+    [(f"✏️ 1{NB}500{NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
     [("➕ Добавить порог", "aadd:5")],
     [("Перестать следить", "pdel:5")],
     CARD_NAV,

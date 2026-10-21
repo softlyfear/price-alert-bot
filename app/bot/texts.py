@@ -45,7 +45,9 @@ FALLBACK_TEXT: Final[str] = (
 
 ADD_REF_BUTTON_TEXT: Final[str] = "➕ Добавить этот товар"
 
-MENU_STALE_ALERT_TEXT: Final[str] = "Кнопка устарела. Откройте меню командой /start."
+MENU_STALE_ALERT_TEXT: Final[str] = (
+    "Кнопка устарела. Воспользуйтесь кнопками последнего сообщения бота."
+)
 
 
 def help_text(max_products: int) -> str:
@@ -53,7 +55,7 @@ def help_text(max_products: int) -> str:
     return (
         "Я слежу за ценами на Wildberries и Ozon и пишу вам, когда цена "
         "товара доходит до нужного вам порога.\n\n"
-        "Как добавить товар. Отправьте команду /add и пришлите ссылку на "
+        "Как добавить товар. Нажмите «➕ Добавить товар» и пришлите ссылку на "
         "товар Wildberries или Ozon. Артикул без ссылки я понимаю только "
         "для Wildberries. Я покажу найденный товар и его текущую цену, "
         "затем попрошу указать порог в рублях.\n\n"
@@ -63,7 +65,7 @@ def help_text(max_products: int) -> str:
         "активным: я напишу снова, если цена опять окажется за порогом, но "
         "не чаще, чем раз в установленный интервал.\n\n"
         f"Лимит товаров: {max_products}.\n\n"
-        "Свои товары и пороги видны в /list. Там же, в карточке товара, можно "
+        "Свои товары и пороги видны в «Мои товары». Там же, в карточке товара, можно "
         "нажать «Добавить порог», изменить или убрать существующий порог либо "
         "перестать следить за товаром.\n\n"
         "Ozon защищается от автоматических запросов и иногда блокирует их. "
@@ -104,7 +106,7 @@ BOT_COMMANDS: Final[list[BotCommand]] = [
 
 ADD_PROMPT_LINK_TEXT: Final[str] = (
     "Пришлите ссылку на товар Wildberries или Ozon либо артикул Wildberries "
-    "(только цифры). Чтобы выйти, нажмите «Отмена» или отправьте /cancel."
+    "(только цифры). Чтобы выйти, нажмите «Отмена»."
 )
 
 ADD_CHECKING_TEXT: Final[str] = (
@@ -174,12 +176,17 @@ ADD_TARGET_EQUALS_TEXT: Final[str] = (
 
 ADD_TARGET_EQUALS_RESTART_TEXT: Final[str] = (
     "Порог совпал с текущей ценой, поэтому отслеживание не добавлено. "
-    "Начните заново командой /add и укажите цену ниже или выше текущей."
+    "Начните заново кнопкой «➕ Добавить товар» и укажите цену ниже или выше "
+    "текущей."
 )
 
-ADD_STALE_TEXT: Final[str] = "Это действие устарело. Начните заново командой /add."
+ADD_STALE_TEXT: Final[str] = (
+    "Это действие устарело. Начните заново кнопкой «➕ Добавить товар»."
+)
 
-ADD_STALE_ALERT_TEXT: Final[str] = "Кнопка устарела. Начните заново: /add"
+ADD_STALE_ALERT_TEXT: Final[str] = (
+    "Кнопка устарела. Чтобы добавить товар, нажмите «➕ Добавить товар» в главном меню."
+)
 
 ADD_OLD_CARD_ALERT_TEXT: Final[str] = "Эта карточка устарела — подтвердите последнюю."
 
@@ -187,10 +194,12 @@ ADD_CONFIRM_HINT_TEXT: Final[str] = (
     "Нажмите «Подтвердить», чтобы начать следить за ценой, или «Отмена»."
 )
 
-ADD_DUPLICATE_TEXT: Final[str] = (
-    "Вы уже следите за этим товаром с таким порогом. Укажите другой порог "
-    "через /add или откажитесь от добавления."
+ALERT_DUPLICATE_TEXT: Final[str] = (
+    "У вас уже есть такой порог. Введите другую сумму в рублях, например "
+    "1990 или 1990,50."
 )
+
+LIST_BACK_TO_LIST_BUTTON_TEXT: Final[str] = "← К списку товаров"
 
 UNEXPECTED_ERROR_TEXT: Final[str] = (
     "Что-то пошло не так, и действие могло не выполниться. Попробуйте ещё "
@@ -205,11 +214,12 @@ LIST_EMPTY_TEXT: Final[str] = (
 )
 
 LIST_STALE_BUTTON_ALERT_TEXT: Final[str] = (
-    "Кнопка устарела. Откройте актуальный список командой /list."
+    "Кнопка устарела. Откройте актуальный список: «Главное меню» → «Мои товары»."
 )
 
 LIST_GONE_ALERT_TEXT: Final[str] = (
-    "Товар или порог уже не отслеживается. Откройте актуальный список командой /list."
+    "Товар или порог уже не отслеживается. Откройте актуальный список: "
+    "«Главное меню» → «Мои товары»."
 )
 
 ALERT_REMOVED_TEXT: Final[str] = "Порог удалён"
@@ -222,12 +232,13 @@ ADD_ALREADY_TRACKED_TEXT: Final[str] = "Товар уже отслеживает
 
 LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT: Final[str] = (
     "Порог удалён. Других порогов у товара не было, поэтому я перестал за ним "
-    "следить. Чтобы вернуть товар, добавьте его заново командой /add."
+    "следить. Чтобы вернуть товар, добавьте его заново: "
+    "«Главное меню» → «➕ Добавить товар»."
 )
 
 LIST_PRODUCT_REMOVED_TEXT: Final[str] = (
     "Больше не слежу за этим товаром, его пороги удалены. Чтобы вернуть "
-    "товар, добавьте его заново командой /add."
+    "товар, добавьте его заново: «Главное меню» → «➕ Добавить товар»."
 )
 
 ADD_ALERT_BUTTON_TEXT: Final[str] = "➕ Добавить порог"
@@ -236,7 +247,7 @@ STOP_TRACKING_BUTTON_TEXT: Final[str] = "Перестать следить"
 LIST_BACK_BUTTON_TEXT: Final[str] = "← К списку"
 
 CARD_ARROWS_LEGEND_TEXT: Final[str] = (
-    "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+    "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
 )
 
 CONFIRM_BUTTON_TEXT: Final[str] = "Подтвердить"
@@ -353,37 +364,34 @@ def product_card_text(
             f"• {direction_arrow(direction)} {format_price(price)}"
             for direction, price in alerts
         )
+        lines.append("")
         lines.append(CARD_ARROWS_LEGEND_TEXT)
     else:
         lines.append("Порогов нет.")
     return "\n".join(lines)
 
 
-def remove_alert_button_text(
-    direction: AlertDirection, price: int, *, with_arrow: bool = False
-) -> str:
-    """Label of the button that removes one threshold.
+def remove_alert_button_text() -> str:
+    """Label of the button that removes the threshold of its row.
 
-    The arrow is shown only when another threshold of the same product has the
-    same amount, so the label stays unambiguous.
+    The amount is carried by the edit button of the same row.
     """
-    arrow = f"{direction_arrow(direction)} " if with_arrow else ""
-    return f"Убрать порог: {arrow}{format_price(price)}"
+    return "🗑 Убрать"
 
 
 def edit_alert_button_text(
     direction: AlertDirection, price: int, *, with_arrow: bool = False
 ) -> str:
-    """Label of the button that changes one threshold (arrow rule as for removal)."""
+    """Label of the button that changes one threshold, amount first.
+
+    The arrow is shown only when another threshold of the same product has the
+    same amount, so the label stays unambiguous.
+    """
     arrow = f"{direction_arrow(direction)} " if with_arrow else ""
-    return f"Изменить порог: {arrow}{format_price(price)}"
+    return f"✏️ {arrow}{format_price(price)}"
 
 
 # --- changing a threshold from the card ------------------------------------
-
-EDIT_DUPLICATE_TEXT: Final[str] = (
-    "Такой порог у этого товара уже есть. Введите другую сумму либо нажмите «Отмена»."
-)
 
 EDIT_NOT_TEXT_TEXT: Final[str] = (
     "Я понимаю только текст. Пришлите новую сумму в рублях сообщением, "
@@ -391,7 +399,8 @@ EDIT_NOT_TEXT_TEXT: Final[str] = (
 )
 
 EDIT_STALE_TEXT: Final[str] = (
-    "Это действие устарело. Откройте товар в /list и нажмите «Изменить порог» заново."
+    "Это действие устарело. Откройте товар в «Мои товары» и нажмите ✏️ у "
+    "нужного порога заново."
 )
 
 EDIT_UNCHANGED_TEXT: Final[str] = "Порог не изменился."

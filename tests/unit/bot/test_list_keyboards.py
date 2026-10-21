@@ -12,10 +12,12 @@ from app.bot.keyboards import AlertRemoveCb
 from app.bot.keyboards import EditCancelCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRemoveCb
+from app.bot.keyboards import duplicate_exit_keyboard
 from app.bot.keyboards import edit_cancel_keyboard
 from app.bot.keyboards import nav_keyboard
 from app.bot.keyboards import product_card_keyboard
 from app.bot.keyboards import product_list_keyboard
+from app.domain.money import MAX_PRICE_KOPECKS
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
@@ -100,9 +102,7 @@ def test_list_keyboard_without_products_is_only_the_navigation_row() -> None:
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
 
 
-def test_card_keyboard_has_edit_then_remove_per_alert_then_stop_tracking_then_nav() -> (
-    None
-):
+def test_card_keyboard_has_one_row_per_alert_then_stop_tracking_then_nav() -> None:
     rows = product_card_keyboard(
         4,
         [
@@ -112,10 +112,8 @@ def test_card_keyboard_has_edit_then_remove_per_alert_then_stop_tracking_then_na
     ).inline_keyboard
 
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
-        [(f"Изменить порог: 1{_NB}000{_NB}₽", "aedit:11:4")],
-        [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:4")],
-        [(f"Изменить порог: 3{_NB}000{_NB}₽", "aedit:12:4")],
-        [(f"Убрать порог: 3{_NB}000{_NB}₽", "adel:12:4")],
+        [(f"✏️ 1{_NB}000{_NB}₽", "aedit:11:4"), ("🗑 Убрать", "adel:11:4")],
+        [(f"✏️ 3{_NB}000{_NB}₽", "aedit:12:4"), ("🗑 Убрать", "adel:12:4")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:4")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
         _CARD_NAV_ROW,
@@ -132,13 +130,10 @@ def test_card_keyboard_shows_arrows_only_on_buttons_with_a_same_amount_twin() ->
         ],
     ).inline_keyboard
 
-    assert [row[0].text for row in rows[:6]] == [
-        f"Изменить порог: ↓ 1{_NB}000{_NB}₽",
-        f"Убрать порог: ↓ 1{_NB}000{_NB}₽",
-        f"Изменить порог: ↑ 1{_NB}000{_NB}₽",
-        f"Убрать порог: ↑ 1{_NB}000{_NB}₽",
-        f"Изменить порог: 500{_NB}₽",
-        f"Убрать порог: 500{_NB}₽",
+    assert [[b.text for b in row] for row in rows[:3]] == [
+        [f"✏️ ↓ 1{_NB}000{_NB}₽", "🗑 Убрать"],
+        [f"✏️ ↑ 1{_NB}000{_NB}₽", "🗑 Убрать"],
+        [f"✏️ 500{_NB}₽", "🗑 Убрать"],
     ]
 
 
@@ -162,7 +157,7 @@ def test_card_keyboard_callbacks_fit_the_telegram_limit_at_the_largest_ids() -> 
     assert all(d is not None and len(d.encode()) <= 64 for d in data)
 
 
-def test_card_keyboard_puts_each_edit_row_right_before_its_remove_row() -> None:
+def test_card_keyboard_keeps_the_alert_order_edit_button_first_in_each_row() -> None:
     alerts = [
         _alert(21, AlertDirection.below, 100_000),
         _alert(22, AlertDirection.above, 300_000),
@@ -170,17 +165,14 @@ def test_card_keyboard_puts_each_edit_row_right_before_its_remove_row() -> None:
     ]
 
     data = [
-        row[0].callback_data
+        [b.callback_data for b in row]
         for row in product_card_keyboard(4, alerts).inline_keyboard[:-3]
     ]
 
     assert data == [
-        "aedit:21:4",
-        "adel:21:4",
-        "aedit:22:4",
-        "adel:22:4",
-        "aedit:23:4",
-        "adel:23:4",
+        ["aedit:21:4", "adel:21:4"],
+        ["aedit:22:4", "adel:22:4"],
+        ["aedit:23:4", "adel:23:4"],
     ]
 
 
@@ -309,3 +301,67 @@ def test_add_and_edit_cancel_factories_accept_the_range_boundaries(good: int) ->
 
 def test_add_and_edit_cancel_prefixes_are_list_prefixes_with_the_legacy_one() -> None:
     assert {"aadd", "ecancel", "edit:cancel"} <= set(CB_LIST_PREFIXES)
+
+
+# --- PAB-098: one row per threshold, duplicate-exit keyboard ----------------------
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 5])
+def test_card_keyboard_has_k_plus_three_rows_and_two_buttons_per_alert_row(
+    count: int,
+) -> None:
+    alerts = [_alert(40 + i, AlertDirection.below, 100_000 + i) for i in range(count)]
+
+    rows = product_card_keyboard(4, alerts).inline_keyboard
+
+    assert len(rows) == count + 3
+    for i, row in enumerate(rows[:count]):
+        assert [b.callback_data for b in row] == [
+            f"aedit:{40 + i}:4",
+            f"adel:{40 + i}:4",
+        ]
+        assert row[0].text.startswith("✏️ ")
+        assert row[1].text == "🗑 Убрать"
+    assert [len(row) for row in rows[count:]] == [1, 1, 2]  # add, stop, navigation
+
+
+def test_card_keyboard_arrow_stands_only_on_the_matching_amounts() -> None:
+    rows = product_card_keyboard(
+        4,
+        [
+            _alert(11, AlertDirection.below, 100_000),
+            _alert(12, AlertDirection.above, 100_000),
+            _alert(13, AlertDirection.above, 200_000),
+        ],
+    ).inline_keyboard
+
+    assert [row[0].text for row in rows[:3]] == [
+        f"✏️ ↓ 1{_NB}000{_NB}₽",
+        f"✏️ ↑ 1{_NB}000{_NB}₽",
+        f"✏️ 2{_NB}000{_NB}₽",
+    ]
+
+
+def test_card_keyboard_edit_label_at_the_maximum_price_with_arrow_fits_20_chars() -> (
+    None
+):
+    rows = product_card_keyboard(
+        4,
+        [
+            _alert(11, AlertDirection.below, MAX_PRICE_KOPECKS),
+            _alert(12, AlertDirection.above, MAX_PRICE_KOPECKS),
+        ],
+    ).inline_keyboard
+
+    labels = [row[0].text for row in rows[:2]]
+    assert labels[0] == f"✏️ ↓ 21{_NB}474{_NB}836,47{_NB}₽"
+    assert all(len(label) <= 20 for label in labels)
+
+
+def test_duplicate_exit_keyboard_is_list_row_then_main_menu_row() -> None:
+    rows = duplicate_exit_keyboard().inline_keyboard
+
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        [("← К списку товаров", "dlg:list")],
+        [("Главное меню", "dlg:menu")],
+    ]

@@ -27,6 +27,11 @@ CB_ADD_CANCEL: Final[str] = "add:cancel"
 CB_EDIT_CANCEL: Final[str] = "edit:cancel"
 CB_NOTICE_MENU: Final[str] = "notice:menu"
 
+CB_DLG_PREFIX: Final[str] = "dlg:"
+CB_DLG_LIST: Final[str] = "dlg:list"
+CB_DLG_MENU: Final[str] = "dlg:menu"
+CB_DLG_ALL: Final[frozenset[str]] = frozenset({CB_DLG_LIST, CB_DLG_MENU})
+
 CB_MENU_PREFIX: Final[str] = "menu:"
 CB_MENU_ADD: Final[str] = "menu:add"
 CB_MENU_LIST: Final[str] = "menu:list"
@@ -177,6 +182,16 @@ def edit_cancel_keyboard(product_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def duplicate_exit_keyboard() -> InlineKeyboardMarkup:
+    """Exit buttons of the duplicate-threshold screen; the dialog stays open."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button(texts.LIST_BACK_TO_LIST_BUTTON_TEXT, CB_DLG_LIST)],
+            [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_DLG_MENU)],
+        ]
+    )
+
+
 def confirm_keyboard() -> InlineKeyboardMarkup:
     """Keyboard of the confirmation step."""
     return InlineKeyboardMarkup(
@@ -254,19 +269,13 @@ def product_card_keyboard(
                     callback_data=AlertEditCb(
                         alert_id=alert.id, product_id=product_id
                     ).pack(),
-                )
-            ]
-        )
-        rows.append(
-            [
+                ),
                 InlineKeyboardButton(
-                    text=texts.remove_alert_button_text(
-                        alert.direction, alert.target_price, with_arrow=with_arrow
-                    ),
+                    text=texts.remove_alert_button_text(),
                     callback_data=AlertRemoveCb(
                         alert_id=alert.id, product_id=product_id
                     ).pack(),
-                )
+                ),
             ]
         )
     rows.append(
