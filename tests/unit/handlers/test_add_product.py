@@ -10,6 +10,7 @@ the service and are covered by ``tests/unit/services/test_tracking_service.py``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 from typing import Any
@@ -147,10 +148,14 @@ class _Dialog:
             )
         )
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, message_id: int = 1) -> None:
         await self.feed(
             make_message_update(
-                text=text, update_id=self._next(), chat_id=_CHAT, user_id=_USER
+                text=text,
+                update_id=self._next(),
+                chat_id=_CHAT,
+                user_id=_USER,
+                message_id=message_id,
             )
         )
 
@@ -452,7 +457,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
 ) -> None:
     await dialog.command("add")
 
-    await dialog.say(_WB_LINK)
+    await dialog.say(_WB_LINK, message_id=77)
 
     card = dialog.outcome
     assert _NAME in card.text
@@ -466,6 +471,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
         "article": 12345678,
         "product_name": _NAME,
         "current_price": _PRICE,
+        "link_message_id": 77,  # PAB-091 marker: the id of the link message
     }
 
 
@@ -1390,3 +1396,389 @@ async def test_network_error_on_edit_is_not_resent_and_goes_to_the_errors_handle
     errors = [r for r in log_records if r["level"].name == "ERROR"]
     assert len(errors) == 1
     assert isinstance(errors[0]["exception"].value, TelegramNetworkError)  # type: ignore[union-attr]
+
+
+# --- a late check result must not override the user's last action (PAB-091) ------
+
+_LINK_A = "https://www.wildberries.ru/catalog/11111111/detail.aspx"
+_LINK_B = "https://www.wildberries.ru/catalog/22222222/detail.aspx"
+_NAME_A = "Товар-A"
+_NAME_B = "Товар-B"
+_MSG_A = 101  # message_id of the first link message
+_MSG_B = 102  # message_id of the second link message
+_WAIT = 5.0  # failsafe against a hung test, never used to synchronise
+
+
+class _Call:
+    """One scripted ``preview`` call; ``release`` (if set) holds it open."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release: asyncio.Event | None = None
+        self.result: Any = None
+        self.error: Exception | None = None
+
+
+class _GatedTracking(_TrackingStub):
+    """``preview`` double whose n-th call can wait for an explicit ``Event``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: dict[int, _Call] = {}
+
+    def script(
+        self,
+        index: int,
+        *,
+        gated: bool = True,
+        result: Any = None,
+        error: Exception | None = None,
+    ) -> _Call:
+        call = _Call()
+        call.release = asyncio.Event() if gated else None
+        call.result = result
+        call.error = error
+        self.calls[index] = call
+        return call
+
+    async def preview(
+        self, tg_user_id: int, marketplace: Marketplace, article: int
+    ) -> Any:
+        call = self.calls.setdefault(len(self.preview_calls), _Call())
+        self.preview_calls.append((tg_user_id, marketplace, article))
+        call.entered.set()
+        if call.release is not None:
+            await call.release.wait()
+        if call.error is not None:
+            raise call.error
+        if call.result is not None:
+            return call.result
+        return MarketplaceProductData(name=_NAME, price=_PRICE)
+
+
+@pytest.fixture
+def gated(monkeypatch: pytest.MonkeyPatch) -> _GatedTracking:
+    tracking = _GatedTracking()
+    monkeypatch.setattr(add_product_module, "TrackingService", lambda **_: tracking)
+    return tracking
+
+
+async def _start_link(
+    dialog: _Dialog, call: _Call, link: str, message_id: int
+) -> asyncio.Task[None]:
+    """Feed a link and return once its ``preview`` is parked inside the double."""
+    task = asyncio.create_task(dialog.say(link, message_id=message_id))
+    async with asyncio.timeout(_WAIT):
+        await call.entered.wait()
+    return task
+
+
+async def _finish_link(task: asyncio.Task[None], call: _Call) -> None:
+    assert call.release is not None
+    call.release.set()
+    async with asyncio.timeout(_WAIT):
+        await task
+
+
+def _checking_notice_id(dialog: _Dialog, nth: int = 0) -> int:
+    """``message_id`` the fake Bot API gave the ``nth`` "checking" notice."""
+    ids = [
+        sent_message_id(i)
+        for i, m in enumerate(dialog.sent)
+        if m.text == texts.ADD_CHECKING_TEXT
+    ]
+    return ids[nth]
+
+
+def _assert_only_dropped_edit(dialog: _Dialog, base: int, notice_id: int) -> None:
+    step = dialog.requests[base:]
+    assert [type(r) for r in step] == [EditMessageText]
+    edit = step[0]
+    assert isinstance(edit, EditMessageText)
+    assert edit.text == texts.ADD_CHECK_DROPPED_TEXT
+    assert (edit.chat_id, edit.message_id) == (_CHAT, notice_id)
+    assert edit.reply_markup is None
+    assert edit.parse_mode is None
+
+
+def _shown_texts(dialog: _Dialog) -> str:
+    return "\n".join(
+        r.text for r in dialog.requests if isinstance(r, (SendMessage, EditMessageText))
+    )
+
+
+def _dropped_infos(log_records: list[Record]) -> list[Record]:
+    return [
+        r
+        for r in log_records
+        if r["level"].name == "INFO" and r["extra"].get("user_id") == _USER
+    ]
+
+
+async def _press_cancel(dialog: _Dialog) -> None:
+    await dialog.press(CB_ADD_CANCEL)
+
+
+async def _send_cancel_command(dialog: _Dialog) -> None:
+    await dialog.command("cancel")
+
+
+async def _send_add_command(dialog: _Dialog) -> None:
+    await dialog.command("add")
+
+
+_INTERRUPTS = [
+    pytest.param(_press_cancel, None, "state_changed", id="cancel-button"),
+    pytest.param(_send_cancel_command, None, "state_changed", id="cancel-command"),
+    pytest.param(
+        _send_add_command,
+        AddProduct.waiting_link.state,
+        "marker_mismatch",
+        id="add-again",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("interrupt", "state_after", "reason"), _INTERRUPTS)
+async def test_interrupt_during_check_wins_and_late_result_only_retitles_the_notice(
+    dialog: _Dialog,
+    gated: _GatedTracking,
+    interrupt: Callable[[_Dialog], Any],
+    state_after: str | None,
+    reason: str,
+    log_records: list[Record],
+) -> None:
+    call = gated.script(0)
+    await dialog.command("add")
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    notice_id = _checking_notice_id(dialog)
+
+    await interrupt(dialog)
+    base = len(dialog.requests)
+    await _finish_link(task, call)
+
+    assert await dialog.state() == state_after
+    assert await dialog.data() == {}
+    _assert_only_dropped_edit(dialog, base, notice_id)
+    assert [r["extra"]["reason"] for r in _dropped_infos(log_records)] == [reason]
+
+
+@pytest.mark.asyncio
+async def test_second_link_finishing_first_wins_and_first_is_dropped(
+    dialog: _Dialog, gated: _GatedTracking
+) -> None:
+    call_a = gated.script(0, result=MarketplaceProductData(name=_NAME_A, price=111))
+    call_b = gated.script(1, result=MarketplaceProductData(name=_NAME_B, price=222))
+    await dialog.command("add")
+    task_a = await _start_link(dialog, call_a, _LINK_A, _MSG_A)
+    task_b = await _start_link(dialog, call_b, _LINK_B, _MSG_B)
+    notice_a, notice_b = _checking_notice_id(dialog, 0), _checking_notice_id(dialog, 1)
+
+    await _finish_link(task_b, call_b)
+    base = len(dialog.requests)
+    await _finish_link(task_a, call_a)
+
+    _assert_only_dropped_edit(dialog, base, notice_a)
+    assert await dialog.state() == AddProduct.waiting_target_price.state
+    assert await dialog.data() == {
+        "marketplace": "wb",
+        "article": 22222222,
+        "product_name": _NAME_B,
+        "current_price": 222,
+        "link_message_id": _MSG_B,
+    }
+    card = [(e.message_id, e.text) for e in dialog.edits if _NAME_B in e.text]
+    assert card == [(notice_b, texts.product_found_text(_NAME_B, 222))]
+    assert _NAME_A not in _shown_texts(dialog)
+
+
+@pytest.mark.asyncio
+async def test_first_link_finishing_first_is_dropped_by_foreign_marker_second_applies(
+    dialog: _Dialog, gated: _GatedTracking, log_records: list[Record]
+) -> None:
+    call_a = gated.script(0, result=MarketplaceProductData(name=_NAME_A, price=111))
+    call_b = gated.script(1, result=MarketplaceProductData(name=_NAME_B, price=222))
+    await dialog.command("add")
+    task_a = await _start_link(dialog, call_a, _LINK_A, _MSG_A)
+    task_b = await _start_link(dialog, call_b, _LINK_B, _MSG_B)
+    notice_a, notice_b = _checking_notice_id(dialog, 0), _checking_notice_id(dialog, 1)
+
+    base = len(dialog.requests)
+    await _finish_link(task_a, call_a)
+
+    _assert_only_dropped_edit(dialog, base, notice_a)
+    assert [r["extra"]["reason"] for r in _dropped_infos(log_records)] == [
+        "marker_mismatch"
+    ]
+    assert await dialog.state() == AddProduct.waiting_link.state
+    assert await dialog.data() == {"link_message_id": _MSG_B}
+
+    await _finish_link(task_b, call_b)
+
+    assert await dialog.state() == AddProduct.waiting_target_price.state
+    assert (await dialog.data())["product_name"] == _NAME_B
+    assert (await dialog.data())["link_message_id"] == _MSG_B
+    last = dialog.outcome
+    assert isinstance(last, EditMessageText)
+    assert last.message_id == notice_b
+    assert _NAME_B in last.text
+    assert _NAME_A not in _shown_texts(dialog)
+
+
+@pytest.mark.asyncio
+async def test_result_is_dropped_when_state_moved_on_even_if_the_marker_is_still_ours(
+    dialog: _Dialog, gated: _GatedTracking
+) -> None:
+    call = gated.script(0)
+    await dialog.command("add")
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    notice_id = _checking_notice_id(dialog)
+    moved = {"link_message_id": _MSG_A}
+    await dialog.set_state(AddProduct.waiting_target_price.state, moved)
+
+    base = len(dialog.requests)
+    await _finish_link(task, call)
+
+    _assert_only_dropped_edit(dialog, base, notice_id)
+    assert await dialog.state() == AddProduct.waiting_target_price.state
+    assert await dialog.data() == moved
+
+
+_LATE_OUTCOMES = [
+    pytest.param({"error": ProductLimitExceededError(37)}, id="limit"),
+    pytest.param({"error": MarketplaceNotSupportedError("ozon")}, id="unsupported"),
+    pytest.param(
+        {
+            "result": MarketplaceFetchFailure(
+                reason=FetchFailureReason.blocked, detail="d"
+            )
+        },
+        id="fetch-failure",
+    ),
+    pytest.param(
+        {"result": MarketplaceProductData(name=_NAME_A, price=111)}, id="success"
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scripted", _LATE_OUTCOMES)
+async def test_late_outcome_of_every_branch_writes_no_fsm_and_shows_no_outcome(
+    dialog: _Dialog, gated: _GatedTracking, scripted: dict[str, Any]
+) -> None:
+    call = gated.script(0, **scripted)
+    await dialog.command("add")
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    notice_id = _checking_notice_id(dialog)
+    await dialog.command("add")  # restart: state waiting_link, data empty
+    base = len(dialog.requests)
+
+    await _finish_link(task, call)
+
+    # a state.clear() in the limit branch would leave None here
+    assert await dialog.state() == AddProduct.waiting_link.state
+    assert await dialog.data() == {}
+    _assert_only_dropped_edit(dialog, base, notice_id)
+
+
+_EDIT_FAILURES = [
+    pytest.param(
+        TelegramBadRequest(
+            method=EditMessageText(chat_id=_CHAT, message_id=1, text="x"),
+            message="Bad Request: SECRET-EDIT-DETAIL",
+        ),
+        "TelegramBadRequest",
+        id="bad-request",
+    ),
+    pytest.param(
+        TelegramNetworkError(
+            method=EditMessageText(chat_id=_CHAT, message_id=1, text="x"),
+            message="SECRET-EDIT-DETAIL",
+        ),
+        "TelegramNetworkError",
+        id="network",
+    ),
+    pytest.param(RuntimeError("SECRET-EDIT-DETAIL"), "RuntimeError", id="other"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("failure", "error_type"), _EDIT_FAILURES)
+async def test_failed_retitle_of_dropped_notice_is_swallowed_with_one_warning(
+    dialog: _Dialog,
+    gated: _GatedTracking,
+    log_records: list[Record],
+    failure: Exception,
+    error_type: str,
+) -> None:
+    call = gated.script(0)
+    await dialog.command("add")
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    await dialog.command("cancel")
+    dialog.faults.edit_error = failure
+    base = len(dialog.requests)
+
+    await _finish_link(task, call)  # must not raise
+
+    step = dialog.requests[base:]
+    assert [type(r) for r in step] == [EditMessageText]  # attempted, no new message
+    warnings = [r for r in log_records if r["level"].name == "WARNING"]
+    assert len(warnings) == 1
+    assert warnings[0]["extra"]["error_type"] == error_type
+    assert "SECRET-EDIT-DETAIL" not in warnings[0]["message"]
+    assert [r for r in log_records if r["level"].name == "ERROR"] == []
+    assert await dialog.state() is None
+
+
+@pytest.mark.asyncio
+async def test_dropped_check_without_a_notice_makes_no_bot_api_call(
+    dialog: _Dialog, gated: _GatedTracking, log_records: list[Record]
+) -> None:
+    call = gated.script(0)
+    await dialog.command("add")
+    dialog.faults.next_send_error = TelegramNetworkError(
+        method=SendMessage(chat_id=_CHAT, text="x"), message="down"
+    )
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    await dialog.command("cancel")
+    base = len(dialog.requests)
+
+    await _finish_link(task, call)
+
+    assert dialog.requests[base:] == []
+    assert len(_dropped_infos(log_records)) == 1
+
+
+@pytest.mark.asyncio
+async def test_dropped_check_logs_exactly_one_info_with_user_id_and_no_link(
+    dialog: _Dialog, gated: _GatedTracking, log_records: list[Record]
+) -> None:
+    call = gated.script(0)
+    await dialog.command("add")
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    await dialog.command("cancel")
+    assert _dropped_infos(log_records) == []
+
+    await _finish_link(task, call)
+
+    infos = _dropped_infos(log_records)
+    assert len(infos) == 1
+    assert "11111111" not in infos[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_current_check_logs_no_dropped_info_and_keeps_the_pab090_request_count(
+    dialog: _Dialog, gated: _GatedTracking, log_records: list[Record]
+) -> None:
+    call = gated.script(0, gated=False)
+    await dialog.command("add")
+    base = len(dialog.requests)
+
+    task = await _start_link(dialog, call, _LINK_A, _MSG_A)
+    async with asyncio.timeout(_WAIT):
+        await task
+
+    assert [type(r) for r in dialog.requests[base:]] == [SendMessage, EditMessageText]
+    assert _dropped_infos(log_records) == []
+    assert (await dialog.data())["link_message_id"] == _MSG_A
