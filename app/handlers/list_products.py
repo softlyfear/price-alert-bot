@@ -125,7 +125,6 @@ def create_router() -> Router:
                 callback,
                 texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT,
                 reply_markup=nav_keyboard(),
-                alert_text=texts.ALERT_REMOVED_TEXT,
             )
             return
         if outcome is AlertRemoval.removed:
