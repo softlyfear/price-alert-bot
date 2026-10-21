@@ -27,7 +27,7 @@ PRODUCT_ID = 5
 WB_LINK = f"https://www.wildberries.ru/catalog/{DB_ARTICLE}/detail.aspx"
 MENU = ["menu:add", "menu:list", "menu:help"]
 CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
-LEGEND = "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+LEGEND = "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
 EDIT_STATE = "EditAlert:waiting_target_price"
 EDIT_DATA: dict[str, Any] = {"alert_id": 11, "product_id": PRODUCT_ID}
 ADD_STATES = [
@@ -53,6 +53,7 @@ CARD_TEXT = (
     "\n"
     "Пороги:\n"
     f"• ↓ 1{NB}500{NB}₽\n"
+    "\n"
     f"{LEGEND}"
 )
 

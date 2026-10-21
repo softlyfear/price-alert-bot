@@ -54,7 +54,9 @@ _NAME = "Кроссовки <b>x*"
 _NB = "\u00a0"
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
 _CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
-_LEGEND = "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+_LEGEND = (
+    "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
+)
 _CARD_HEAD = (
     f"{_NAME}\n"
     "Маркетплейс: Wildberries\n"
@@ -64,7 +66,7 @@ _CARD_HEAD = (
     "\n"
     "Пороги:\n"
 )
-_CARD_ONE_ALERT = f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n{_LEGEND}"
+_CARD_ONE_ALERT = f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n\n{_LEGEND}"
 
 
 def _product(product_id: int, name: str = _NAME, price: int = 199_000) -> Product:
@@ -445,14 +447,12 @@ async def test_open_card_edits_the_list_in_place_with_all_card_parts(
     request = bot.edits[0]
     assert request.parse_mode is None
     assert request.text == (
-        f"{_CARD_HEAD}• ↓ 1{_NB}000{_NB}₽\n• ↑ 2{_NB}000{_NB}₽\n{_LEGEND}"
+        f"{_CARD_HEAD}• ↓ 1{_NB}000{_NB}₽\n• ↑ 2{_NB}000{_NB}₽\n\n{_LEGEND}"
     )
     assert request.text.count(PRICE_DISCLAIMER_SHORT) == 1
     assert _rows(request) == [
-        [(f"Изменить порог: 1{_NB}000{_NB}₽", "aedit:11:5")],
-        [(f"Убрать порог: 1{_NB}000{_NB}₽", "adel:11:5")],
-        [(f"Изменить порог: 2{_NB}000{_NB}₽", "aedit:12:5")],
-        [(f"Убрать порог: 2{_NB}000{_NB}₽", "adel:12:5")],
+        [(f"✏️ 1{_NB}000{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
+        [(f"✏️ 2{_NB}000{_NB}₽", "aedit:12:5"), ("🗑 Убрать", "adel:12:5")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -533,8 +533,7 @@ _REMOVE_CASES = [
         True,
         _CARD_ONE_ALERT,
         [
-            [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
-            [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+            [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
             [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,
@@ -555,8 +554,7 @@ _REMOVE_CASES = [
         True,
         _CARD_ONE_ALERT,
         [
-            [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
-            [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+            [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
             [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,
@@ -759,7 +757,9 @@ async def test_remove_product_success_names_how_to_return(
 
     await bot.press("pdel:5")
 
-    assert "/add" in bot.edits[0].text
+    assert bot.edits[0].text.endswith(
+        "добавьте его заново: «Главное меню» → «➕ Добавить товар»."
+    )
 
 
 @pytest.mark.asyncio

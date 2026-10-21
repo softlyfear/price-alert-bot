@@ -41,6 +41,7 @@ from app.bot.keyboards import CB_MENU_ADD
 from app.bot.keyboards import AddRefCb
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
+from app.bot.keyboards import duplicate_exit_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.bot.states import AddProduct
 from app.bot.states import EditAlert
@@ -519,7 +520,13 @@ def create_router() -> Router:
         except ProductLimitExceededError as exc:
             await _finish(callback, state, texts.limit_exceeded_text(exc.limit))
         except DuplicateAlertError:
-            await _finish(callback, state, texts.ADD_DUPLICATE_TEXT)
+            await state.set_state(AddProduct.waiting_target_price)
+            await edit_callback_message(
+                callback,
+                texts.ALERT_DUPLICATE_TEXT,
+                reply_markup=duplicate_exit_keyboard(),
+                alert_text=texts.ALERT_DUPLICATE_TEXT,
+            )
         except MarketplaceNotSupportedError:
             await _finish(callback, state, texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT)
         except TargetEqualsCurrentPriceError:

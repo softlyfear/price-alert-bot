@@ -53,7 +53,9 @@ _NB = "\u00a0"
 _MENU = ["menu:add", "menu:list", "menu:help"]
 _CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _CANCEL_ROWS = [[("Отмена", "ecancel:5")]]
-_LEGEND = "↓ — сообщу, когда цена снизится до порога, ↑ — когда вырастет до него."
+_LEGEND = (
+    "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
+)
 _CARD_HEAD = (
     f"{_NAME}\n"
     "Маркетплейс: Wildberries\n"
@@ -185,11 +187,10 @@ async def test_press_edit_for_a_removed_alert_redraws_the_card_and_sets_no_state
         (texts.ALERT_ALREADY_REMOVED_TEXT, None)
     ]
     assert [(e.text, e.parse_mode) for e in dialog.edits] == [
-        (f"{_CARD_HEAD}• ↑ 2{_NB}500{_NB}₽\n{_LEGEND}", None)
+        (f"{_CARD_HEAD}• ↑ 2{_NB}500{_NB}₽\n\n{_LEGEND}", None)
     ]
     assert _rows(dialog.edits[0]) == [
-        [(f"Изменить порог: 2{_NB}500{_NB}₽", "aedit:12:5")],
-        [(f"Убрать порог: 2{_NB}500{_NB}₽", "adel:12:5")],
+        [(f"✏️ 2{_NB}500{_NB}₽", "aedit:12:5"), ("🗑 Убрать", "adel:12:5")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -276,12 +277,11 @@ async def test_changed_sends_one_new_message_with_the_outcome_and_the_redrawn_ca
     arrow = "↓" if direction is AlertDirection.below else "↑"
     assert sent.text == (
         f"Порог изменён. Сообщу, когда {phrase}.\n\n"
-        f"{_CARD_HEAD}• {arrow} 1{_NB}500{_NB}₽\n{_LEGEND}"
+        f"{_CARD_HEAD}• {arrow} 1{_NB}500{_NB}₽\n\n{_LEGEND}"
     )
     assert sent.parse_mode is None
     assert _rows(sent) == [
-        [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")],
-        [(f"Убрать порог: 1{_NB}500{_NB}₽", "adel:11:5")],
+        [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -328,7 +328,7 @@ async def test_unchanged_and_not_found_end_with_their_line_and_the_card(
     await dialog.say("1500")
 
     assert [m.text for m in dialog.sent] == [
-        f"{summary}\n\n{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n{_LEGEND}"
+        f"{summary}\n\n{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n\n{_LEGEND}"
     ]
     assert _rows(dialog.sent[0])[-1] == _CARD_NAV
     assert dialog.edits == []
@@ -382,11 +382,8 @@ async def test_invalid_amount_keeps_the_step_and_never_calls_the_service(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "expected"),
-    [
-        (TargetEqualsCurrentPriceError(), texts.ADD_TARGET_EQUALS_TEXT),
-        (DuplicateAlertError(), texts.EDIT_DUPLICATE_TEXT),
-    ],
-    ids=["equals-current-price", "duplicate"],
+    [(TargetEqualsCurrentPriceError(), texts.ADD_TARGET_EQUALS_TEXT)],
+    ids=["equals-current-price"],
 )
 async def test_domain_refusal_keeps_the_step_and_asks_for_another_amount(
     dialog: _Dialog, service: MagicMock, error: Exception, expected: str
@@ -543,10 +540,10 @@ async def test_cancel_puts_the_card_back_in_place_and_clears_the_state(
     service.change_alert_target.assert_not_called()
     assert dialog.sent == []
     assert [(e.message_id, e.text, e.parse_mode) for e in dialog.edits] == [
-        (_CARD_ID, f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n{_LEGEND}", None)
+        (_CARD_ID, f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n\n{_LEGEND}", None)
     ]
     assert _rows(dialog.edits[0])[0] == (
-        [(f"Изменить порог: 1{_NB}500{_NB}₽", "aedit:11:5")]
+        [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")]
     )
     assert len(dialog.callback_answers) == 1
     assert await dialog.state() is None
@@ -633,3 +630,56 @@ async def test_cancel_command_clears_the_edit_state_and_free_text_gets_the_fallb
 
     assert [m.text for m in dialog.sent][-1] == texts.FALLBACK_TEXT
     service.change_alert_target.assert_not_called()
+
+
+# --- PAB-098 AC3: a duplicate amount keeps the edit step open -----------------------
+
+_DUPLICATE_ROWS = [
+    [("← К списку товаров", "dlg:list")],
+    [("Главное меню", "dlg:menu")],
+]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_amount_answers_with_the_exit_screen_and_keeps_step_and_data(
+    dialog: _Dialog, service: MagicMock
+) -> None:
+    service.change_alert_target.side_effect = DuplicateAlertError()
+    await _at_edit(dialog)
+
+    await dialog.say("1990")
+
+    service.change_alert_target.assert_awaited_once_with(_USER, 11, 199_000)
+    service.get_product_card.assert_not_called()
+    assert [m.text for m in dialog.sent] == [
+        "У вас уже есть такой порог. Введите другую сумму в рублях, "
+        "например 1990 или 1990,50."
+    ]
+    assert _rows(dialog.sent[0]) == _DUPLICATE_ROWS
+    assert dialog.edits == []
+    assert await dialog.state() == _EDIT_STATE
+    assert await dialog.data() == _EDIT_DATA
+
+
+@pytest.mark.asyncio
+async def test_amount_after_a_duplicate_changes_the_threshold(
+    dialog: _Dialog, service: MagicMock
+) -> None:
+    service.change_alert_target.side_effect = [
+        DuplicateAlertError(),
+        AlertChange.changed,
+    ]
+    service.get_product_card.return_value = _card(
+        _alert(11, AlertDirection.below, 150_000)
+    )
+    await _at_edit(dialog)
+    await dialog.say("1990")
+
+    await dialog.say("1500")
+
+    assert [c.args for c in service.change_alert_target.await_args_list] == [
+        (_USER, 11, 199_000),
+        (_USER, 11, 150_000),
+    ]
+    assert dialog.sent[-1].text.startswith("Порог изменён.")
+    assert await dialog.state() is None

@@ -39,7 +39,6 @@ from app.bot.keyboards import CB_ADD_CANCEL
 from app.bot.keyboards import CB_ADD_CONFIRM
 from app.bot.setup import create_dispatcher
 from app.bot.states import AddProduct
-from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
@@ -444,14 +443,13 @@ async def test_confirm_adds_tracking_for_the_pressing_user_and_clears_the_state(
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        (DuplicateAlertError(), texts.ADD_DUPLICATE_TEXT),
         (ProductLimitExceededError(37), texts.limit_exceeded_text(37)),
         (
             MarketplaceNotSupportedError("ozon"),
             texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
         ),
     ],
-    ids=["duplicate", "limit", "unsupported"],
+    ids=["limit", "unsupported"],
 )
 async def test_confirm_refusals_have_their_own_text_and_clear_the_state(
     dialog: _Dialog, stub: _TrackingStub, error: Exception, expected: str
@@ -468,8 +466,8 @@ async def test_confirm_refusals_have_their_own_text_and_clear_the_state(
 
 def test_refusal_texts_differ_from_each_other_and_the_limit_shows_its_number() -> None:
     assert "37" in texts.limit_exceeded_text(37)
-    assert texts.limit_exceeded_text(37) != texts.ADD_DUPLICATE_TEXT
-    assert texts.ADD_DUPLICATE_TEXT != texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT
+    assert texts.limit_exceeded_text(37) != texts.ALERT_DUPLICATE_TEXT
+    assert texts.ALERT_DUPLICATE_TEXT != texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT
 
 
 @pytest.mark.asyncio
@@ -1532,12 +1530,11 @@ async def test_link_after_menu_add_button_starts_a_normal_check(
     ("error", "expected"),
     [
         (None, None),
-        (DuplicateAlertError(), texts.ADD_DUPLICATE_TEXT),
         (ProductLimitExceededError(37), texts.limit_exceeded_text(37)),
         (MarketplaceNotSupportedError("ozon"), texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT),
         (TargetEqualsCurrentPriceError(), texts.ADD_TARGET_EQUALS_RESTART_TEXT),
     ],
-    ids=["success", "duplicate", "limit", "unsupported", "equals-price"],
+    ids=["success", "limit", "unsupported", "equals-price"],
 )
 async def test_every_confirm_outcome_carries_the_main_menu(
     dialog: _Dialog, stub: _TrackingStub, error: Exception | None, expected: str | None

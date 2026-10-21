@@ -12,6 +12,9 @@ from aiogram.types import CallbackQuery
 from aiogram.types import Message
 
 from app.bot import texts
+from app.bot.keyboards import CB_DLG_ALL
+from app.bot.keyboards import CB_DLG_MENU
+from app.bot.keyboards import CB_DLG_PREFIX
 from app.bot.keyboards import CB_MENU_ALL
 from app.bot.keyboards import CB_MENU_HELP
 from app.bot.keyboards import CB_MENU_PREFIX
@@ -65,6 +68,17 @@ def create_router() -> Router:
             alert_text=texts.MENU_STALE_ALERT_TEXT,
         )
 
+    @router.callback_query(F.data == CB_DLG_MENU)
+    async def on_dialog_menu(callback: CallbackQuery, state: FSMContext) -> None:
+        """Leave any dialog to the main menu: clear the FSM, screen in place."""
+        await state.clear()
+        await edit_callback_message(
+            callback,
+            texts.START_TEXT,
+            reply_markup=main_menu_keyboard(),
+            alert_text=texts.MENU_STALE_ALERT_TEXT,
+        )
+
     @router.callback_query(F.data == CB_NOTICE_MENU)
     async def on_notice_menu(callback: CallbackQuery) -> None:
         """Notification "Main menu": a new message, the notice stays; FSM untouched."""
@@ -90,6 +104,11 @@ def create_router() -> Router:
     )
     async def on_unknown_menu(callback: CallbackQuery) -> None:
         """Unknown menu payload: popup only, never touch the service or FSM."""
+        await callback.answer(texts.MENU_STALE_ALERT_TEXT, show_alert=True)
+
+    @router.callback_query(F.data.startswith(CB_DLG_PREFIX), F.data.not_in(CB_DLG_ALL))
+    async def on_unknown_dialog_exit(callback: CallbackQuery) -> None:
+        """Unknown dialog-exit payload: popup only, FSM untouched."""
         await callback.answer(texts.MENU_STALE_ALERT_TEXT, show_alert=True)
 
     return router

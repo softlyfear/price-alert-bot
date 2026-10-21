@@ -21,6 +21,7 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 
 from app.bot import texts
+from app.bot.keyboards import CB_DLG_LIST
 from app.bot.keyboards import CB_LIST_PREFIXES
 from app.bot.keyboards import CB_MENU_LIST
 from app.bot.keyboards import MAX_LIST_BUTTONS
@@ -32,6 +33,7 @@ from app.bot.keyboards import NoticeCardCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRemoveCb
 from app.bot.keyboards import cancel_keyboard
+from app.bot.keyboards import duplicate_exit_keyboard
 from app.bot.keyboards import edit_cancel_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.bot.keyboards import nav_keyboard
@@ -281,6 +283,20 @@ def create_router() -> Router:
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
         )
 
+    @router.callback_query(F.data == CB_DLG_LIST)
+    async def on_dialog_list(
+        callback: CallbackQuery, state: FSMContext, tracking: TrackingService
+    ) -> None:
+        """Leave a dialog to the presser's list: clear the FSM, screen in place."""
+        await state.clear()
+        text, keyboard = await _list_screen(tracking, callback.from_user.id)
+        await edit_callback_message(
+            callback,
+            text,
+            reply_markup=keyboard,
+            alert_text=texts.MENU_STALE_ALERT_TEXT,
+        )
+
     @router.message(
         StateFilter(EditAlert.waiting_target_price), ~Command("add"), F.text
     )
@@ -323,8 +339,7 @@ def create_router() -> Router:
             return
         except DuplicateAlertError:
             await message.answer(
-                texts.EDIT_DUPLICATE_TEXT,
-                reply_markup=edit_cancel_keyboard(product_id),
+                texts.ALERT_DUPLICATE_TEXT, reply_markup=duplicate_exit_keyboard()
             )
             return
         await state.clear()
