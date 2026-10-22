@@ -27,6 +27,17 @@ def card_screen(
         if fetched_at is not None
         else None
     )
+    initial_line = (
+        texts.initial_price_text(
+            product.initial_price,
+            product.current_price,
+            texts.added_date_label(
+                product.created_at, datetime.now(UTC), display_timezone
+            ),
+        )
+        if product.initial_price is not None
+        else None
+    )
     text = texts.product_card_text(
         product.product_name,
         product.marketplace,
@@ -34,5 +45,6 @@ def card_screen(
         product.current_price,
         [(alert.direction, alert.target_price) for alert in card.alerts],
         price_label,
+        initial_line=initial_line,
     )
     return text, product_card_keyboard(product.id, card.alerts)

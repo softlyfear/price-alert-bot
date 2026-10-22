@@ -66,6 +66,12 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
         datetime(2026, 10, 22, 11, 5, tzinfo=UTC),
         ZoneInfo("Europe/Moscow"),
     ),
+    "added_date_label": lambda: texts.added_date_label(
+        datetime(2026, 10, 14, 22, 30, tzinfo=UTC),
+        datetime(2026, 10, 22, 11, 5, tzinfo=UTC),
+        ZoneInfo("Europe/Moscow"),
+    ),
+    "initial_price_text": lambda: texts.initial_price_text(1_990_00, 1_799_00, "15.10"),
     "refresh_list_summary": lambda: "\n".join(
         texts.refresh_list_summary(RefreshReport(8, 1, {reason: 1}))
         for reason in RefreshFailure
