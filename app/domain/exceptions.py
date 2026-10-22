@@ -110,3 +110,11 @@ class TargetEqualsCurrentPriceError(DomainError):
 
     def __init__(self) -> None:
         super().__init__("Target price equals the current price")
+
+
+class MultipleProductRefsError(ProductRefParseError):
+    """Raised when a text contains links to several different products."""
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+        super().__init__(f"text contains {count} different product references")
