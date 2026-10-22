@@ -38,6 +38,7 @@ from app.services.wb_access import WbAccessUnavailable
 from app.services.wb_access import WbTokenFetchError
 from app.services.wb_browser import fetch_wb_token
 from app.services.wb_client import WbClient
+from tests.integration.browser_probe import observe_chromium_environments
 from tests.integration.wb_antibot_stub import WbAntibotStub
 
 _ARTICLE = 860043555
@@ -60,12 +61,6 @@ def _processes_started_by_test(marker: str) -> dict[int, str]:
         if marker in cmdline:
             found[int(entry.name)] = cmdline
     return found
-
-
-def _environ_of(pid: int) -> dict[str, str]:
-    raw = Path(f"/proc/{pid}/environ").read_bytes()
-    pairs = (item.split(b"=", 1) for item in raw.split(b"\0") if b"=" in item)
-    return {k.decode(errors="replace"): v.decode(errors="replace") for k, v in pairs}
 
 
 @pytest.fixture
@@ -234,12 +229,9 @@ async def test_browser_environment_is_the_allowlist_without_bot_settings(
         )
         try:
             await _wait_for_home_hit(stub)
-            browsers = {
-                pid: cmd
-                for pid, cmd in _processes_started_by_test(private_tmp).items()
-                if "chrom" in cmd
-            }
-            environs = [_environ_of(pid) for pid in browsers]
+            # PAB-110 AC12: wait (bounded) for a Chromium process with a
+            # readable environment instead of sampling the process list once.
+            environs = await observe_chromium_environments(private_tmp)
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

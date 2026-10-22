@@ -23,7 +23,8 @@ Telegram-бот отслеживания цен на товары Wildberries и
 | БД | PostgreSQL + `SQLAlchemy` 2.0 async + `asyncpg` | |
 | Миграции | `alembic` | |
 | HTTP | `httpx` | общий `AsyncClient` на процесс |
-| Браузер | `playwright` (Chromium) | только получение токена антибота Wildberries |
+| Браузер | `playwright` (Chromium) | только получение доступа через антибот: токен Wildberries, cookies Ozon |
+| HTTP Ozon | `curl_cffi` | TLS-отпечаток Chrome, только `ozon_client` |
 | Логи | `loguru` | контекст через `logger.bind()` |
 | Планировщик | собственный asyncio-цикл | интервал из `.env`, по умолчанию 15 минут |
 | Тесты | `pytest` + `pytest-asyncio` | unit на моках, интеграционные на реальном PostgreSQL |
@@ -37,7 +38,7 @@ Telegram-бот отслеживания цен на товары Wildberries и
 - Направление порога выбирается **автоматически** (решение 2026-10-01): порог ниже текущей цены → `below` («сообщить, когда дешевле»), выше → `above` («сообщить, когда дороже»), равный текущей цене отклоняется с просьбой ввести другой. Порог может быть любым — ограничения «только ниже цены» нет.
 - После срабатывания алерт **остаётся активным**; повторное уведомление ограничено **cooldown** из `.env`, отсчёт от `triggered_at`.
 - Лимит — **50 товаров** на пользователя, значение из `.env`.
-- Маркетплейсы: Wildberries + **Ozon через публичный `entrypoint-api`**. Ozon активно защищён антиботом — блокировка это ожидаемый режим работы, её нужно распознавать и честно сообщать, а не маскировать под «товар не найден».
+- Маркетплейсы: Wildberries + **Ozon через публичный `entrypoint-api`**. Антибот Ozon проходится браузером (решение 2026-10-22, `PROJECT.md` §2.14); неудавшийся проход — ожидаемый режим, его нужно распознавать и честно сообщать, а не маскировать под «товар не найден».
 - Деньги везде — **целое число копеек**. Пользователь вводит рубли, конвертация на границе слоя бота.
 - Бот отслеживает цену **без персональных скидок** (кошелёк или карта маркетплейса, баллы и т. п.) — на сайте цена для пользователя может быть ниже. Это честно оговаривается в текстах бота везде, где видна цена.
 - Время везде — **timezone-aware UTC**.
@@ -87,7 +88,7 @@ python-architect  → финальная приёмка, вердикт ✅ ПР
 | Модели и миграции | `db-models-agent` | `app/models/**`, `alembic/**` |
 | Схемы Pydantic | `schemas-agent` | `app/schemas/**` |
 | Репозитории | `repository-agent` | `app/repositories/**` |
-| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser}.py` |
+| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser,browser_launch,ozon_access,ozon_browser}.py` |
 | Доменная логика | `service-agent` | `app/services/**`, кроме клиентов маркетплейсов; `app/domain/**` |
 | Telegram-интерфейс | `bot-agent` | `app/bot/**`, `app/handlers/**` |
 | Инфраструктура и запуск | `core-agent` | `app/core/**`, `app/main.py`, `app/scheduler.py`, `.env.example` |

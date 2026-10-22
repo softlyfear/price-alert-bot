@@ -33,7 +33,6 @@ from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import UnsupportedMarketplaceError
-from app.services.client_factory import get_client
 from app.services.notification import NotificationService
 from app.services.price_service import PriceService
 from tests.unit.services.test_price_service import _build_harness
@@ -42,7 +41,7 @@ from tests.unit.services.test_price_service import _Harness
 from tests.unit.services.test_price_service import _make_alert
 from tests.unit.services.test_price_service import _make_product
 from tests.unit.services.test_price_service import _make_user
-from tests.unit.wb_access_stub import StubWbAccess
+from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -414,9 +413,7 @@ async def test_fetch_prices_lets_unsupported_marketplace_error_through() -> None
         product_repo_factory=lambda _s: cast(ProductRepository, MagicMock()),
         alert_repo_factory=lambda _s: cast(AlertRepository, MagicMock()),
         user_repo_factory=lambda _s: cast(UserRepository, MagicMock()),
-        client_factory=lambda marketplace, client: get_client(
-            marketplace, client, wb_access=StubWbAccess()
-        ),
+        client_factory=stub_client_factory(),
         http_client=http,
         alert_cooldown_seconds=3600,
     )
@@ -437,9 +434,7 @@ async def test_batch_size_is_one_for_ozon_and_a_hundred_for_wb() -> None:
         product_repo_factory=lambda _s: cast(ProductRepository, MagicMock()),
         alert_repo_factory=lambda _s: cast(AlertRepository, MagicMock()),
         user_repo_factory=lambda _s: cast(UserRepository, MagicMock()),
-        client_factory=lambda marketplace, client: get_client(
-            marketplace, client, wb_access=StubWbAccess()
-        ),
+        client_factory=stub_client_factory(),
         http_client=http,
         alert_cooldown_seconds=3600,
     )

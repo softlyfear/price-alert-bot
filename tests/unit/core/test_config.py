@@ -74,6 +74,7 @@ from sqlalchemy.engine import make_url
 from app.core.config import AppSettings
 from app.core.config import BotSecret
 from app.core.config import DatabaseSettings
+from app.core.config import OzonSettings
 from app.core.config import RedisSettings
 from app.core.config import Settings
 from app.core.config import WbSettings
@@ -580,6 +581,7 @@ _SETTINGS_PREFIX_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("REDIS__", RedisSettings),
     ("APP__", AppSettings),
     ("WB__", WbSettings),
+    ("OZON__", OzonSettings),
 )
 
 
@@ -934,6 +936,168 @@ def test_env_example_lists_every_wb_variable_with_its_default() -> None:
         {k.removeprefix("WB__"): v for k, v in values.items()}
     )
     assert parsed == WbSettings()
+
+
+# --- PAB-110: OzonSettings (OZON__*) -----------------------------------------
+
+
+def test_ozon_settings_defaults_are_the_numbers_of_the_architecture() -> None:
+    """Literals of `PROJECT.md` section 2.14 O8, not read from the model."""
+    ozon = OzonSettings()
+
+    assert ozon.TOKEN_TIMEOUT_SECONDS == 30.0
+    assert ozon.FAILURE_PAUSE_SECONDS == 300.0
+    assert ozon.LAUNCH_BUDGET == 8
+    assert ozon.LAUNCH_WINDOW_SECONDS == 900.0
+    assert ozon.BROWSER_SANDBOX is False
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+def test_ozon_float_field_accepts_smallest_positive_and_upper_bound(
+    field: str, upper: int
+) -> None:
+    assert getattr(OzonSettings.model_validate({field: 0.001}), field) == 0.001
+    assert getattr(OzonSettings.model_validate({field: upper}), field) == float(upper)
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+@pytest.mark.parametrize(
+    ("bad_offset", "error_type"),
+    [(None, "greater_than"), (1, "less_than_equal")],
+    ids=["zero", "above-upper"],
+)
+def test_ozon_float_field_rejects_zero_and_above_the_upper_bound(
+    field: str, upper: int, bad_offset: int | None, error_type: str
+) -> None:
+    value = 0 if bad_offset is None else upper + bad_offset
+
+    with pytest.raises(ValidationError) as excinfo:
+        OzonSettings.model_validate({field: value})
+
+    assert [(e["type"], e["loc"]) for e in excinfo.value.errors()] == [
+        (error_type, (field,))
+    ]
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+def test_ozon_float_field_rejects_negative_value(field: str, upper: int) -> None:
+    with pytest.raises(ValidationError):
+        OzonSettings.model_validate({field: -1})
+
+
+@pytest.mark.parametrize(("field", "upper"), _WB_FLOAT_BOUNDS)
+@pytest.mark.parametrize(
+    "value",
+    [float("inf"), float("-inf"), float("nan"), "inf", "nan", "1e400"],
+    ids=["inf", "-inf", "nan", "str-inf", "str-nan", "str-1e400"],
+)
+def test_ozon_float_field_rejects_non_finite_values(
+    field: str, upper: int, value: float | str
+) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        OzonSettings.model_validate({field: value})
+
+    assert [e["type"] for e in excinfo.value.errors()] == ["finite_number"]
+
+
+@pytest.mark.parametrize(
+    ("value", "accepted"),
+    [(-1, False), (0, False), (1, True), (8, True), (100, True), (101, False)],
+)
+def test_ozon_launch_budget_boundaries(value: int, accepted: bool) -> None:
+    if accepted:
+        assert value == OzonSettings(LAUNCH_BUDGET=value).LAUNCH_BUDGET
+        return
+    with pytest.raises(ValidationError) as excinfo:
+        OzonSettings(LAUNCH_BUDGET=value)
+    assert [e["loc"] for e in excinfo.value.errors()] == [("LAUNCH_BUDGET",)]
+
+
+def test_settings_without_ozon_variables_uses_ozon_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``OZON__*`` anywhere: the bot starts with an old `.env`."""
+    _delenv_settings_prefix_space(monkeypatch)
+
+    settings = Settings(
+        _env_file=None,
+        db=_make_db_settings(),
+        tg=_make_bot_secret(),
+        redis=_make_redis_settings(host="h"),
+    )
+
+    assert settings.ozon == OzonSettings()
+    assert settings.ozon.LAUNCH_BUDGET == 8
+
+
+def test_ozon_environment_variables_override_one_field_and_keep_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _delenv_settings_prefix_space(monkeypatch)
+    monkeypatch.setenv("OZON__LAUNCH_BUDGET", "3")
+    monkeypatch.setenv("OZON__BROWSER_SANDBOX", "true")
+
+    settings = Settings(
+        _env_file=None,
+        db=_make_db_settings(),
+        tg=_make_bot_secret(),
+        redis=_make_redis_settings(host="h"),
+    )
+
+    assert settings.ozon.LAUNCH_BUDGET == 3
+    assert settings.ozon.BROWSER_SANDBOX is True
+    assert settings.ozon.TOKEN_TIMEOUT_SECONDS == 30.0
+    assert settings.ozon.FAILURE_PAUSE_SECONDS == 300.0
+    assert settings.ozon.LAUNCH_WINDOW_SECONDS == 900.0
+    assert settings.wb == WbSettings()  # the WB section is independent
+
+
+def test_ozon_environment_value_out_of_bounds_fails_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _delenv_settings_prefix_space(monkeypatch)
+    monkeypatch.setenv("OZON__TOKEN_TIMEOUT_SECONDS", "1e400")
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(
+            _env_file=None,
+            db=_make_db_settings(),
+            tg=_make_bot_secret(),
+            redis=_make_redis_settings(host="h"),
+        )
+
+    assert [e["loc"] for e in excinfo.value.errors()] == [
+        ("ozon", "TOKEN_TIMEOUT_SECONDS")
+    ]
+
+
+def test_environment_clearing_covers_the_ozon_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("OZON__LAUNCH_BUDGET", "999")
+    _set_env_for_get_settings(monkeypatch)
+
+    settings = get_settings.__wrapped__()
+
+    assert settings.ozon.LAUNCH_BUDGET == 8
+
+
+def test_env_example_lists_every_ozon_variable_with_its_default() -> None:
+    example = (Path(__file__).resolve().parents[3] / ".env.example").read_text()
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1].strip()
+        for line in example.splitlines()
+        if line.startswith("OZON__")
+    }
+
+    assert sorted(values) == sorted(
+        f"OZON__{name}" for name in OzonSettings.model_fields
+    )
+    parsed = OzonSettings.model_validate(
+        {k.removeprefix("OZON__"): v for k, v in values.items()}
+    )
+    assert parsed == OzonSettings()
 
 
 # --- AppSettings.DISPLAY_TIMEZONE (PAB-100 AC10) ---------------------------
