@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import assert_never
 from urllib.parse import urlsplit
 
+from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductRefParseError
 from app.models.enums import Marketplace
 
@@ -16,6 +17,7 @@ MAX_ARTICLE = 9_223_372_036_854_775_807  # BIGINT of products.article
 
 _WB_HOSTS = frozenset({"wildberries.ru", "www.wildberries.ru", "wb.ru", "www.wb.ru"})
 _OZON_HOSTS = frozenset({"ozon.ru", "www.ozon.ru"})
+_TOKEN_EDGE_CHARS = "«»\"'()[]<>,.;:!?…"
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,37 @@ def parse_product_ref(text: str) -> ProductRef:
     if host in _OZON_HOSTS:
         return ProductRef(Marketplace.ozon, _ozon_article(parts.path))
     raise ProductRefParseError("unsupported host")
+
+
+def extract_product_ref(text: str) -> ProductRef:
+    """Find the single product link inside free text, e.g. a "Share" message.
+
+    The whole text goes through `parse_product_ref` first, so anything accepted
+    before is accepted identically. Otherwise the text is split on whitespace,
+    edge punctuation is stripped and every token except a bare number is judged
+    by the strict parser. A bare number inside a sentence is a price or a size,
+    not an article. No match re-raises the original error; several different
+    products raise `MultipleProductRefsError`.
+    """
+    try:
+        return parse_product_ref(text)
+    except ProductRefParseError as whole_text_error:
+        if len(text) > MAX_INPUT_LENGTH:
+            raise
+        refs: set[ProductRef] = set()
+        for raw in text.split():
+            token = raw.strip(_TOKEN_EDGE_CHARS)
+            if token.isascii() and token.isdigit():
+                continue
+            try:
+                refs.add(parse_product_ref(token))
+            except ProductRefParseError:
+                continue
+        if not refs:
+            raise whole_text_error from None
+        if len(refs) > 1:
+            raise MultipleProductRefsError(len(refs)) from None
+        return next(iter(refs))
 
 
 def build_product_url(marketplace: Marketplace, article: int) -> str:

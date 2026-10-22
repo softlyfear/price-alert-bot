@@ -19,8 +19,9 @@ from aiogram.types import Message
 from app.bot import texts
 from app.bot.keyboards import add_ref_keyboard
 from app.bot.keyboards import main_menu_keyboard
+from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductRefParseError
-from app.domain.links import parse_product_ref
+from app.domain.links import extract_product_ref
 from app.handlers.add_product import MAX_TEXT_LENGTH
 
 # User content worth a hint; service messages (pin, auto-delete timer,
@@ -63,7 +64,12 @@ def create_router() -> Router:
     async def on_free_text(message: Message) -> None:
         """Offer to add a recognised product, else show the main menu."""
         try:
-            ref = parse_product_ref((message.text or "")[:MAX_TEXT_LENGTH])
+            ref = extract_product_ref((message.text or "")[:MAX_TEXT_LENGTH])
+        except MultipleProductRefsError:
+            await message.answer(
+                texts.MULTIPLE_PRODUCT_REFS_TEXT, reply_markup=main_menu_keyboard()
+            )
+            return
         except ProductRefParseError:
             await message.answer(texts.FALLBACK_TEXT, reply_markup=main_menu_keyboard())
             return

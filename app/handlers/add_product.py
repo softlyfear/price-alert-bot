@@ -51,11 +51,12 @@ from app.bot.states import EditAlert
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import InvalidPriceInputError
 from app.domain.exceptions import MarketplaceNotSupportedError
+from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.links import ProductRef
-from app.domain.links import parse_product_ref
+from app.domain.links import extract_product_ref
 from app.domain.money import rubles_to_kopecks
 from app.domain.thresholds import choose_direction
 from app.handlers.callback_reply import edit_callback_message
@@ -426,7 +427,12 @@ def create_router() -> Router:
             return
         raw = message.text[:MAX_TEXT_LENGTH]
         try:
-            ref = parse_product_ref(raw)
+            ref = extract_product_ref(raw)
+        except MultipleProductRefsError:
+            await message.answer(
+                texts.MULTIPLE_PRODUCT_REFS_TEXT, reply_markup=cancel_keyboard()
+            )
+            return
         except ProductRefParseError:
             await message.answer(
                 texts.ADD_LINK_FORMAT_HINT_TEXT, reply_markup=cancel_keyboard()
