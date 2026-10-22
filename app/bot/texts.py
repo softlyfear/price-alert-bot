@@ -350,6 +350,8 @@ def product_card_text(
     current_price: int,
     alerts: list[tuple[AlertDirection, int]],
     price_label: str | None = None,
+    *,
+    initial_line: str | None = None,
 ) -> str:
     """Product card with its thresholds (plain text, no markup)."""
     when = f" (цена на {price_label})" if price_label is not None else ""
@@ -358,9 +360,10 @@ def product_card_text(
         f"Маркетплейс: {marketplace_title(marketplace)}",
         url,
         f"Текущая цена: {format_price(current_price)}{when}",
-        f"{PRICE_DISCLAIMER_SHORT}.",
-        "",
     ]
+    if initial_line is not None:
+        lines.append(initial_line)
+    lines.extend([f"{PRICE_DISCLAIMER_SHORT}.", ""])
     if alerts:
         lines.append("Пороги:")
         lines.extend(
@@ -476,6 +479,33 @@ def price_time_label(fetched_at: datetime, now: datetime, tz: ZoneInfo) -> str:
     if local.date() == now.astimezone(tz).date():
         return f"{local:%H:%M}"
     return f"{local:%d.%m %H:%M}"
+
+
+def added_date_label(created_at: datetime, now: datetime, tz: ZoneInfo) -> str:
+    """Date a product was added in the display zone; the year only if not current."""
+    local = created_at.astimezone(tz)
+    if local.year == now.astimezone(tz).year:
+        return f"{local:%d.%m}"
+    return f"{local:%d.%m.%Y}"
+
+
+def initial_price_text(initial_price: int, current_price: int, added_label: str) -> str:
+    """Card line with the price at the time of adding and the change since then."""
+    head = f"При добавлении: {format_price(initial_price)} ({added_label}) · "
+    delta = current_price - initial_price
+    if delta == 0:
+        return f"{head}без изменений"
+    sign = "+" if delta > 0 else "\u2212"
+    money = f"{sign}{format_price(abs(delta))}"
+    if initial_price == 0:
+        return f"{head}{money}"
+    # Tenths of a percent, rounded half up, in integers (no float error).
+    tenths = (2 * abs(delta) * 1000 + initial_price) // (2 * initial_price)
+    if tenths == 0:
+        percent = "менее 0,1\u00a0%"
+    else:
+        percent = f"{sign}{tenths // 10},{tenths % 10}\u00a0%"
+    return f"{head}{money} ({percent})"
 
 
 def refresh_list_summary(report: RefreshReport) -> str:
