@@ -5,6 +5,7 @@ resolution (e.g. Ozon `/t/...`) are rejected here by design.
 """
 
 from dataclasses import dataclass
+from typing import Final
 from typing import assert_never
 from urllib.parse import urlsplit
 
@@ -19,6 +20,12 @@ _WB_HOSTS = frozenset({"wildberries.ru", "www.wildberries.ru", "wb.ru", "www.wb.
 _OZON_HOSTS = frozenset({"ozon.ru", "www.ozon.ru"})
 _TOKEN_EDGE_CHARS = "«»\"'()[]<>,.;:!?…"
 
+BARE_ARTICLE_MARKETPLACES: Final[tuple[Marketplace, ...]] = (
+    Marketplace.wb,
+    Marketplace.ozon,
+)
+"""Lookup order of a bare article: the one place that fixes it (R21)."""
+
 
 @dataclass(frozen=True)
 class ProductRef:
@@ -26,6 +33,16 @@ class ProductRef:
 
     marketplace: Marketplace
     article: int
+
+
+@dataclass(frozen=True)
+class BareArticle:
+    """An article typed without a marketplace; the marketplace is searched."""
+
+    article: int
+
+
+type ProductQuery = ProductRef | BareArticle
 
 
 def _article(token: str) -> int:
@@ -56,11 +73,12 @@ def _ozon_article(path: str) -> int:
     return _article(rest.rpartition("-")[2])
 
 
-def parse_product_ref(text: str) -> ProductRef:
-    """Parse a product link or a bare article into a `ProductRef`.
+def parse_product_ref(text: str) -> ProductQuery:
+    """Parse a product link into a `ProductRef`, bare digits into `BareArticle`.
 
-    Bare digits mean Wildberries (a number carries no marketplace marker).
-    The host is compared exactly after `urlsplit`, never by substring.
+    Bare digits carry no marketplace marker, so the marketplace stays open
+    (`BARE_ARTICLE_MARKETPLACES`). The host is compared exactly after
+    `urlsplit`, never by substring.
     """
     if len(text) > MAX_INPUT_LENGTH:
         raise ProductRefParseError("input is too long")
@@ -68,7 +86,11 @@ def parse_product_ref(text: str) -> ProductRef:
     if not value:
         raise ProductRefParseError("input is empty")
     if value.isascii() and value.isdigit():
-        return ProductRef(Marketplace.wb, _article(value))
+        return BareArticle(_article(value))
+    return _parse_link(value)
+
+
+def _parse_link(value: str) -> ProductRef:
     if any(ch.isspace() or not ch.isprintable() for ch in value):
         raise ProductRefParseError("input contains whitespace")
 
@@ -91,7 +113,7 @@ def parse_product_ref(text: str) -> ProductRef:
     raise ProductRefParseError("unsupported host")
 
 
-def extract_product_ref(text: str) -> ProductRef:
+def extract_product_ref(text: str) -> ProductQuery:
     """Find the single product link inside free text, e.g. a "Share" message.
 
     The whole text goes through `parse_product_ref` first, so anything accepted
@@ -112,7 +134,7 @@ def extract_product_ref(text: str) -> ProductRef:
             if token.isascii() and token.isdigit():
                 continue
             try:
-                refs.add(parse_product_ref(token))
+                refs.add(_parse_link(token))
             except ProductRefParseError:
                 continue
         if not refs:

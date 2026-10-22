@@ -76,7 +76,7 @@ async def test_press_edits_the_card_into_the_price_prompt_with_the_price_from_th
     assert len(card_dialog.edits) == 1
     edit = card_dialog.edits[0]
     assert (edit.chat_id, edit.message_id) == (_CHAT, _CARD_ID)
-    assert edit.text == texts.product_found_text(DB_NAME, DB_PRICE)
+    assert edit.text == texts.product_found_text(Marketplace.wb, DB_NAME, DB_PRICE)
     assert f"1{NB}755{NB}₽" in edit.text
     assert DB_NAME in edit.text
     assert edit.parse_mode is None
@@ -258,7 +258,7 @@ async def test_press_on_an_inaccessible_message_sends_the_prompt_as_a_new_messag
 
     assert card_dialog.edits == []
     assert [m.text for m in card_dialog.sent] == [
-        texts.product_found_text(DB_NAME, DB_PRICE)
+        texts.product_found_text(Marketplace.wb, DB_NAME, DB_PRICE)
     ]
     assert len(card_dialog.callback_answers) == 1
     assert await card_dialog.state() == "AddProduct:waiting_target_price"
@@ -275,7 +275,9 @@ async def test_press_with_a_refused_edit_sends_the_prompt_as_a_new_message(
     await card_dialog.press(f"aadd:{PRODUCT_ID}")
 
     assert [type(m) for m in card_dialog.sent] == [SendMessage]
-    assert card_dialog.sent[0].text == texts.product_found_text(DB_NAME, DB_PRICE)
+    assert card_dialog.sent[0].text == texts.product_found_text(
+        Marketplace.wb, DB_NAME, DB_PRICE
+    )
     assert len(card_dialog.callback_answers) == 1
 
 

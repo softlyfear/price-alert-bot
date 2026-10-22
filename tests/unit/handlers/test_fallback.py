@@ -93,9 +93,6 @@ def _plain_texts(dialog: _Dialog) -> list[str]:
             "addref:ozon:1234567",
             id="ozon-link",
         ),
-        pytest.param(
-            "12345678", "Wildberries", 12345678, "addref:wb:12345678", id="bare-article"
-        ),
     ],
 )
 async def test_recognised_reference_gets_one_offer_with_the_add_button(

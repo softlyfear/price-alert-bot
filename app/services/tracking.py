@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
+from app.domain.links import BARE_ARTICLE_MARKETPLACES
 from app.domain.thresholds import choose_direction
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
@@ -22,6 +23,7 @@ from app.models.user import User
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
+from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.base_client import BaseMarketplaceClient
@@ -49,6 +51,14 @@ class ProductPage:
     total: int
     page: int
     pages: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArticlePreview:
+    """Outcome of a bare-article preview and the marketplace it came from."""
+
+    marketplace: Marketplace
+    result: MarketplaceFetchResult
 
 
 class AlertRemoval(StrEnum):
@@ -103,6 +113,52 @@ class TrackingService:
             raise MarketplaceNotSupportedError(str(marketplace)) from exc
         result = await client.get_product_data(article)
         if isinstance(result, MarketplaceFetchFailure):
+            logger.bind(
+                reason=str(result.reason),
+                marketplace=str(marketplace),
+                article=article,
+            ).log(failure_log_level(result.reason), "Marketplace fetch failed")
+        return result
+
+    async def preview_article(self, tg_user_id: int, article: int) -> ArticlePreview:
+        """Preview a bare article: Wildberries first, Ozon only on `not_found`.
+
+        Any other Wildberries failure is returned as is and Ozon is not asked:
+        the same number could be a different product there (PROJECT.md 2.15
+        R21). The limit is checked before the first network request.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        await self._ensure_within_limit_any(user, BARE_ARTICLE_MARKETPLACES, article)
+        *leading, last = BARE_ARTICLE_MARKETPLACES
+        for marketplace in leading:
+            result = await self._fetch(marketplace, article, routes_on_not_found=True)
+            if (
+                isinstance(result, MarketplaceFetchFailure)
+                and result.reason is FetchFailureReason.not_found
+            ):
+                logger.bind(
+                    reason=str(result.reason),
+                    marketplace=str(marketplace),
+                    article=article,
+                ).info("Bare article not found, trying the next marketplace")
+                continue
+            return ArticlePreview(marketplace, result)
+        return ArticlePreview(
+            last, await self._fetch(last, article, routes_on_not_found=False)
+        )
+
+    async def _fetch(
+        self, marketplace: Marketplace, article: int, *, routes_on_not_found: bool
+    ) -> MarketplaceFetchResult:
+        """Fetch and log a failure; a routed `not_found` is logged by the caller."""
+        try:
+            client = self._client_factory(marketplace, self._http_client)
+        except UnsupportedMarketplaceError as exc:
+            raise MarketplaceNotSupportedError(str(marketplace)) from exc
+        result = await client.get_product_data(article)
+        if isinstance(result, MarketplaceFetchFailure) and not (
+            routes_on_not_found and result.reason is FetchFailureReason.not_found
+        ):
             logger.bind(
                 reason=str(result.reason),
                 marketplace=str(marketplace),
@@ -212,6 +268,23 @@ class TrackingService:
             return None
         return await self._build_card(user.id, product)
 
+    async def find_tracked_article(
+        self, tg_user_id: int, article: int
+    ) -> ProductCard | None:
+        """Return the caller's product by a bare article, or None.
+
+        Candidates follow `BARE_ARTICLE_MARKETPLACES`; the first tracked one
+        wins. Reads the database only.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        for marketplace in BARE_ARTICLE_MARKETPLACES:
+            product = await self._products.get_by_article_and_user(
+                article, user.id, marketplace
+            )
+            if product is not None:
+                return await self._build_card(user.id, product)
+        return None
+
     async def _build_card(self, user_id: int, product: Product) -> ProductCard:
         alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
         before = await self._products.count_before(user_id, product.id)
@@ -292,17 +365,24 @@ class TrackingService:
         self, user: User, marketplace: Marketplace, article: int
     ) -> None:
         """Raise when at the limit, unless the product is already counted."""
+        await self._ensure_within_limit_any(user, (marketplace,), article)
+
+    async def _ensure_within_limit_any(
+        self, user: User, marketplaces: tuple[Marketplace, ...], article: int
+    ) -> None:
+        """Raise when at the limit, unless a candidate is already counted."""
         limit = self._effective_limit(user)
         user_id = user.id
         if await self._products.count_active_by_user(user_id) < limit:
             return
-        product = await self._products.get_by_article_and_user(
-            article, user_id, marketplace
-        )
-        if product is not None:
-            alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
-            if any(alert.is_active for alert in alerts):
-                return
+        for marketplace in marketplaces:
+            product = await self._products.get_by_article_and_user(
+                article, user_id, marketplace
+            )
+            if product is not None:
+                alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
+                if any(alert.is_active for alert in alerts):
+                    return
         raise ProductLimitExceededError(limit)
 
     async def _create_product(

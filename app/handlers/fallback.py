@@ -17,10 +17,12 @@ from aiogram.filters import StateFilter
 from aiogram.types import Message
 
 from app.bot import texts
+from app.bot.keyboards import add_article_keyboard
 from app.bot.keyboards import add_ref_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductRefParseError
+from app.domain.links import BareArticle
 from app.domain.links import extract_product_ref
 from app.handlers.add_product import MAX_TEXT_LENGTH
 
@@ -72,6 +74,13 @@ def create_router() -> Router:
             return
         except ProductRefParseError:
             await message.answer(texts.FALLBACK_TEXT, reply_markup=main_menu_keyboard())
+            return
+        if isinstance(ref, BareArticle):
+            await message.answer(
+                texts.add_article_offer_text(ref.article),
+                reply_markup=add_article_keyboard(ref.article),
+                parse_mode=None,
+            )
             return
         await message.answer(
             texts.add_ref_offer_text(ref.marketplace, ref.article),

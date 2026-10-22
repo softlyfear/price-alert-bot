@@ -38,6 +38,7 @@ from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
+from app.services.tracking import ArticlePreview
 from tests.unit.conftest import FakeTelegramSession
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
@@ -73,12 +74,31 @@ class _TrackingStub:
         self.add_error: Exception | None = None
         self.add_direction = AlertDirection.below
         self.on_preview: Callable[[], None] | None = None
+        self.found_article: Any = None
+        self.find_article_calls: list[tuple[int, int]] = []
+        self.preview_article_calls: list[tuple[int, int]] = []
+        self.article_preview: Any = ArticlePreview(
+            Marketplace.wb, MarketplaceProductData(name=_NAME, price=_PRICE)
+        )
 
     async def find_tracked_product(
         self, tg_user_id: int, marketplace: Marketplace, article: int
     ) -> None:
         """The user tracks nothing: the link step goes on to ``preview``."""
         return None
+
+    async def find_tracked_article(self, tg_user_id: int, article: int) -> Any:
+        """Bare-article lookup: nothing tracked unless ``found_article`` is set."""
+        self.find_article_calls.append((tg_user_id, article))
+        return self.found_article
+
+    async def preview_article(self, tg_user_id: int, article: int) -> Any:
+        self.preview_article_calls.append((tg_user_id, article))
+        if self.on_preview is not None:
+            self.on_preview()
+        if self.preview_error is not None:
+            raise self.preview_error
+        return self.article_preview
 
     async def preview(
         self, tg_user_id: int, marketplace: Marketplace, article: int
@@ -343,7 +363,7 @@ _OUTCOMES = [
     pytest.param(
         _Outcome(
             _card,
-            texts.product_found_text(_NAME, _PRICE),
+            texts.product_found_text(Marketplace.wb, _NAME, _PRICE),
             keyboard=[CB_ADD_CANCEL],
             plain=True,
             state=AddProduct.waiting_target_price.state,

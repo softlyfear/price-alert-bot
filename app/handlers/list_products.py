@@ -362,7 +362,9 @@ def create_router() -> Router:
         )
         await edit_callback_message(
             callback,
-            texts.product_found_text(product.product_name, product.current_price),
+            texts.product_found_text(
+                product.marketplace, product.product_name, product.current_price
+            ),
             reply_markup=cancel_keyboard(),
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
         )

@@ -16,6 +16,8 @@ from app.bot import texts
 from app.domain.money import PRICE_DISCLAIMER_FULL
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.models.enums import AlertDirection
+from app.models.enums import Marketplace
+from app.schemas.marketplace import FetchFailureReason
 
 
 def test_bot_description_contains_full_disclaimer_and_fits_bot_api_limit() -> None:
@@ -118,7 +120,9 @@ _NBSP = "\u00a0"
 def test_dialog_texts_with_a_price_carry_the_short_disclaimer_from_money(
     direction: AlertDirection,
 ) -> None:
-    assert PRICE_DISCLAIMER_SHORT in texts.product_found_text("Item", 199_000)
+    assert PRICE_DISCLAIMER_SHORT in texts.product_found_text(
+        Marketplace.wb, "Item", 199_000
+    )
     assert PRICE_DISCLAIMER_SHORT in texts.confirm_text(
         "Item", 199_000, 150_000, direction
     )
@@ -129,7 +133,7 @@ def test_dialog_texts_embed_the_name_verbatim_without_markup() -> None:
     name = "<b>x*"
     below = AlertDirection.below
 
-    assert name in texts.product_found_text(name, 100)
+    assert name in texts.product_found_text(Marketplace.wb, name, 100)
     assert name in texts.confirm_text(name, 100, 50, below)
     assert name in texts.added_text(name, 50, below)
 
@@ -200,3 +204,47 @@ def test_checking_text_is_short_plain_and_has_no_price() -> None:
     assert "₽" not in text
     assert "<" not in text
     assert ">" not in text
+
+
+@pytest.mark.parametrize(
+    ("marketplace", "title"),
+    [(Marketplace.wb, "Wildberries"), (Marketplace.ozon, "Ozon")],
+)
+def test_product_card_names_the_marketplace_it_came_from(
+    marketplace: Marketplace, title: str
+) -> None:
+    text = texts.product_found_text(marketplace, "Item", 199_000)
+
+    assert text.startswith(f"Нашёл товар на {title}:\nItem\n")
+    other = "Ozon" if title == "Wildberries" else "Wildberries"
+    assert other not in text.split("\n\n")[0]
+
+
+def test_bare_article_hints_say_wildberries_first_then_ozon() -> None:
+    for text in (
+        texts.ADD_PROMPT_LINK_TEXT,
+        texts.help_text(50),
+    ):
+        assert "сначала на Wildberries, затем на Ozon" in text
+    assert "артикул из цифр" in texts.FALLBACK_TEXT
+
+
+def test_no_text_calls_a_bare_article_wildberries_only() -> None:
+    strings = [texts.help_text(50), texts.FALLBACK_TEXT, texts.ADD_PROMPT_LINK_TEXT]
+    strings += list(texts.ADD_FETCH_FAILURE_TEXTS.values())
+
+    for text in strings:
+        assert "артикул Wildberries" not in text
+        assert "только для Wildberries" not in text
+
+
+def test_link_failure_texts_are_unchanged_and_still_refuse_short_links() -> None:
+    assert "Короткие ссылки не подойдут" in texts.ADD_LINK_FORMAT_HINT_TEXT
+    assert set(texts.ADD_FETCH_FAILURE_TEXTS) == set(FetchFailureReason)
+
+
+def test_article_failure_text_has_no_default_branch_for_unknown_marketplace() -> None:
+    with pytest.raises(AssertionError):
+        texts.article_failure_text(
+            cast(Marketplace, "amazon"), FetchFailureReason.not_found
+        )

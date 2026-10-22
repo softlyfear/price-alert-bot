@@ -7,7 +7,9 @@ hand-written literals, not recomputed with the parser's own logic.
 import pytest
 
 from app.domain.exceptions import ProductRefParseError
+from app.domain.links import BARE_ARTICLE_MARKETPLACES
 from app.domain.links import MAX_ARTICLE
+from app.domain.links import BareArticle
 from app.domain.links import ProductRef
 from app.domain.links import build_product_url
 from app.domain.links import parse_product_ref
@@ -41,10 +43,10 @@ OZON = Marketplace.ozon
             ProductRef(WB, 12345678),
         ),
         ("HTTPS://WWW.WILDBERRIES.RU/catalog/5/detail.aspx", ProductRef(WB, 5)),
-        ("12345678", ProductRef(WB, 12345678)),
-        ("  12345678  ", ProductRef(WB, 12345678)),
-        ("\n12345678\t", ProductRef(WB, 12345678)),
-        (str(MAX_ARTICLE), ProductRef(WB, 9_223_372_036_854_775_807)),
+        ("12345678", BareArticle(12345678)),
+        ("  12345678  ", BareArticle(12345678)),
+        ("\n12345678\t", BareArticle(12345678)),
+        (str(MAX_ARTICLE), BareArticle(9_223_372_036_854_775_807)),
         (
             "https://www.ozon.ru/product/krossovki-muzhskie-1234567/",
             ProductRef(OZON, 1234567),
@@ -206,3 +208,22 @@ def test_product_ref_is_immutable() -> None:
     ref = ProductRef(WB, 1)
     with pytest.raises(AttributeError):
         ref.article = 2  # type: ignore[misc]
+
+
+def test_bare_article_candidates_are_wildberries_then_ozon_in_that_order() -> None:
+    assert (Marketplace.wb, Marketplace.ozon) == BARE_ARTICLE_MARKETPLACES
+
+
+@pytest.mark.parametrize("text", ["1", " 5764570826 ", str(MAX_ARTICLE)])
+def test_bare_digits_name_no_marketplace(text: str) -> None:
+    parsed = parse_product_ref(text)
+
+    assert isinstance(parsed, BareArticle)
+    assert not isinstance(parsed, ProductRef)
+    assert parsed.article == int(text)
+
+
+def test_bare_article_is_immutable() -> None:
+    bare = BareArticle(1)
+    with pytest.raises(AttributeError):
+        bare.article = 2  # type: ignore[misc]

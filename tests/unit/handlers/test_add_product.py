@@ -214,7 +214,7 @@ async def test_preview_receives_telegram_user_id_of_the_sender_not_the_chat(
 ) -> None:
     await dialog.command("add")
 
-    await dialog.say("12345678")
+    await dialog.say("https://www.wildberries.ru/catalog/12345678/detail.aspx")
 
     assert stub.preview_calls == [(_USER, Marketplace.wb, 12345678)]
 
@@ -1253,7 +1253,7 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
         "link_message_id": _MSG_B,
     }
     card = [(e.message_id, e.text) for e in dialog.edits if _NAME_B in e.text]
-    assert card == [(notice_b, texts.product_found_text(_NAME_B, 222))]
+    assert card == [(notice_b, texts.product_found_text(Marketplace.wb, _NAME_B, 222))]
     assert _NAME_A not in _shown_texts(dialog)
 
 

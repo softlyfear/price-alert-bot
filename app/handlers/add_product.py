@@ -41,6 +41,7 @@ from app.bot import texts
 from app.bot.keyboards import CB_ADD_CANCEL
 from app.bot.keyboards import CB_ADD_CONFIRM
 from app.bot.keyboards import CB_MENU_ADD
+from app.bot.keyboards import AddArticleCb
 from app.bot.keyboards import AddRefCb
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
@@ -55,6 +56,8 @@ from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
+from app.domain.links import BareArticle
+from app.domain.links import ProductQuery
 from app.domain.links import ProductRef
 from app.domain.links import extract_product_ref
 from app.domain.money import rubles_to_kopecks
@@ -65,6 +68,7 @@ from app.handlers.product_card import card_screen
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
+from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.tracking import ProductCard
 from app.services.tracking import TrackingService
 
@@ -178,7 +182,7 @@ class _Skip(Enum):
 
 async def _lookup_tracked(
     marker: int,
-    ref: ProductRef,
+    ref: ProductQuery,
     user_id: int,
     state: FSMContext,
     tracking: TrackingService,
@@ -188,7 +192,12 @@ async def _lookup_tracked(
     A card is returned only for a current step, with the dialog already
     cleared; a superseded step yields ``stale`` and changes nothing.
     """
-    card = await tracking.find_tracked_product(user_id, ref.marketplace, ref.article)
+    if isinstance(ref, BareArticle):
+        card = await tracking.find_tracked_article(user_id, ref.article)
+    else:
+        card = await tracking.find_tracked_product(
+            user_id, ref.marketplace, ref.article
+        )
     if card is None:
         return _Skip.no_match
     if await _discard_if_stale(marker, None, state, user_id):
@@ -271,11 +280,23 @@ async def _deliver_outcome(
     await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
 
 
+async def _preview(
+    tracking: TrackingService, user_id: int, ref: ProductQuery
+) -> tuple[Marketplace, MarketplaceFetchResult]:
+    """Preview a link or a bare article; return where the outcome came from."""
+    if isinstance(ref, BareArticle):
+        outcome = await tracking.preview_article(user_id, ref.article)
+        return outcome.marketplace, outcome.result
+    return ref.marketplace, await tracking.preview(
+        user_id, ref.marketplace, ref.article
+    )
+
+
 async def _check_and_deliver(
     anchor: Message | InaccessibleMessage,
     marker: int,
     notice: Message | None,
-    ref: ProductRef,
+    ref: ProductQuery,
     user_id: int,
     state: FSMContext,
     tracking: TrackingService,
@@ -287,7 +308,7 @@ async def _check_and_deliver(
     notice cannot be edited.
     """
     try:
-        result = await tracking.preview(user_id, ref.marketplace, ref.article)
+        marketplace, result = await _preview(tracking, user_id, ref)
     except ProductLimitExceededError as exc:
         if await _discard_if_stale(marker, notice, state, user_id):
             return
@@ -313,10 +334,15 @@ async def _check_and_deliver(
     if await _discard_if_stale(marker, notice, state, user_id):
         return
     if isinstance(result, MarketplaceFetchFailure):
+        failure = (
+            texts.article_failure_text(marketplace, result.reason)
+            if isinstance(ref, BareArticle)
+            else _failure_text(result.reason)
+        )
         await _deliver_outcome(
             anchor,
             notice,
-            _failure_text(result.reason),
+            failure,
             reply_markup=cancel_keyboard(),
         )
         return
@@ -324,7 +350,7 @@ async def _check_and_deliver(
     # these writes (a few Redis round-trips) can still be overwritten.
     await enter_price_step(
         state,
-        ref.marketplace,
+        marketplace,
         ref.article,
         result.name,
         result.price,
@@ -333,9 +359,51 @@ async def _check_and_deliver(
     await _deliver_outcome(
         anchor,
         notice,
-        texts.product_found_text(result.name, result.price),
+        texts.product_found_text(marketplace, result.name, result.price),
         reply_markup=cancel_keyboard(),
         parse_mode=None,
+    )
+
+
+async def _start_from_button(
+    callback: CallbackQuery,
+    ref: ProductQuery,
+    state: FSMContext,
+    tracking: TrackingService,
+    display_timezone: ZoneInfo,
+) -> None:
+    """Restart the dialog at the link step with an already parsed reference."""
+    message = callback.message
+    if message is None:
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+        return
+    await state.clear()
+    await state.set_state(AddProduct.waiting_link)
+    await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
+    found = await _lookup_tracked(
+        message.message_id, ref, callback.from_user.id, state, tracking
+    )
+    if isinstance(found, ProductCard):
+        text, keyboard = _already_tracked_screen(found, display_timezone)
+        await edit_callback_message(
+            callback,
+            text,
+            reply_markup=keyboard,
+            alert_text=texts.ADD_STALE_ALERT_TEXT,
+        )
+        return
+    if found is _Skip.stale:
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+        return
+    notice = await edit_callback_message(callback, texts.ADD_CHECKING_TEXT)
+    await _check_and_deliver(
+        message,
+        message.message_id,
+        notice,
+        ref,
+        callback.from_user.id,
+        state,
+        tracking,
     )
 
 
@@ -374,41 +442,27 @@ def create_router() -> Router:
         display_timezone: ZoneInfo,
     ) -> None:
         """ "Add this product" button: restart the dialog at the link step."""
-        message = callback.message
-        if message is None:
-            await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
-            return
-        await state.clear()
-        await state.set_state(AddProduct.waiting_link)
-        await state.update_data({_KEY_LINK_MESSAGE_ID: message.message_id})
         ref = ProductRef(
             marketplace=callback_data.marketplace, article=callback_data.article
         )
-        found = await _lookup_tracked(
-            message.message_id, ref, callback.from_user.id, state, tracking
-        )
-        if isinstance(found, ProductCard):
-            text, keyboard = _already_tracked_screen(found, display_timezone)
-            await edit_callback_message(
-                callback,
-                text,
-                reply_markup=keyboard,
-                alert_text=texts.ADD_STALE_ALERT_TEXT,
-            )
-            return
-        if found is _Skip.stale:
-            await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
-            return
-        notice = await edit_callback_message(callback, texts.ADD_CHECKING_TEXT)
-        await _check_and_deliver(
-            message,
-            message.message_id,
-            notice,
-            ref,
-            callback.from_user.id,
-            state,
-            tracking,
-        )
+        await _start_from_button(callback, ref, state, tracking, display_timezone)
+
+    @router.callback_query(AddArticleCb.filter())
+    async def on_add_article(
+        callback: CallbackQuery,
+        callback_data: AddArticleCb,
+        state: FSMContext,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
+    ) -> None:
+        """ "Add this product" button under a bare article offer."""
+        ref = BareArticle(callback_data.article)
+        await _start_from_button(callback, ref, state, tracking, display_timezone)
+
+    @router.callback_query(F.data.startswith(AddArticleCb.__prefix__))
+    async def on_stale_add_article(callback: CallbackQuery) -> None:
+        """Forged or malformed payload: never touch the service."""
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
 
     @router.callback_query(F.data.startswith(AddRefCb.__prefix__))
     async def on_stale_add_ref(callback: CallbackQuery) -> None:

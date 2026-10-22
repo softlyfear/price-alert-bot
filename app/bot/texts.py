@@ -44,7 +44,7 @@ NOTICE_OPEN_BUTTON_TEXT: Final[str] = "Открыть товар"
 
 FALLBACK_TEXT: Final[str] = (
     "Не понял сообщение. Выберите действие ниже или пришлите ссылку на "
-    "товар Wildberries или Ozon, либо артикул Wildberries."
+    "товар Wildberries или Ozon, либо артикул из цифр."
 )
 
 ADD_REF_BUTTON_TEXT: Final[str] = "➕ Добавить этот товар"
@@ -60,9 +60,9 @@ def help_text(max_products: int) -> str:
         "Я слежу за ценами на Wildberries и Ozon и пишу вам, когда цена "
         "товара доходит до нужного вам порога.\n\n"
         "Как добавить товар. Нажмите «➕ Добавить товар» и пришлите ссылку на "
-        "товар Wildberries или Ozon. Артикул без ссылки я понимаю только "
-        "для Wildberries. Я покажу найденный товар и его текущую цену, "
-        "затем попрошу указать порог в рублях.\n\n"
+        "товар Wildberries или Ozon либо только артикул из цифр: его я ищу "
+        "сначала на Wildberries, затем на Ozon. Я покажу найденный товар и его "
+        "текущую цену, затем попрошу указать порог в рублях.\n\n"
         "Как работает порог. Если порог ниже текущей цены, я сообщу, когда "
         "цена снизится до него. Если выше — когда цена вырастет до него. "
         "Порог, равный текущей цене, не подойдёт. Сработав, порог остаётся "
@@ -109,8 +109,9 @@ BOT_COMMANDS: Final[list[BotCommand]] = [
 # --- /add dialog ---------------------------------------------------------
 
 ADD_PROMPT_LINK_TEXT: Final[str] = (
-    "Пришлите ссылку на товар Wildberries или Ozon либо артикул Wildberries "
-    "(только цифры). Чтобы выйти, нажмите «Отмена»."
+    "Пришлите ссылку на товар Wildberries или Ozon либо артикул из цифр: "
+    "я поищу его сначала на Wildberries, затем на Ozon. Чтобы выйти, "
+    "нажмите «Отмена»."
 )
 
 ADD_CHECKING_TEXT: Final[str] = (
@@ -162,6 +163,58 @@ ADD_FETCH_FAILURE_TEXTS: Final[dict[FetchFailureReason, str]] = {
     FetchFailureReason.out_of_stock: (
         "Товара сейчас нет в наличии, поэтому цены у него нет. Пришлите другой "
         "товар или вернитесь к этому, когда он появится."
+    ),
+}
+
+ARTICLE_WB_FAILURE_TEXTS: Final[dict[FetchFailureReason, str]] = {
+    FetchFailureReason.not_found: (
+        "Такой товар на Wildberries не нашёлся. Проверьте номер и пришлите "
+        "ещё раз либо нажмите «Отмена»."
+    ),
+    FetchFailureReason.blocked: (
+        "Wildberries заблокировал мой запрос: он защищается от автоматических "
+        "обращений. Дело не в вашем номере. Можно прислать его ещё раз чуть "
+        "позже или выбрать другой товар."
+    ),
+    FetchFailureReason.transport_error: (
+        "Не удалось получить данные с Wildberries: он не ответил или "
+        "отклонил запрос. Отправьте номер ещё раз; если ошибка повторяется, "
+        "попробуйте позже или другой товар."
+    ),
+    FetchFailureReason.bad_payload: (
+        "Wildberries ответил в неожиданном виде, и я не смог прочитать данные "
+        "о товаре. Это не ваша ошибка. Выберите другой товар или вернитесь к "
+        "этому позже."
+    ),
+    FetchFailureReason.out_of_stock: (
+        "Товара сейчас нет в наличии на Wildberries, поэтому цены у него "
+        "нет. Пришлите другой товар или вернитесь к этому, когда он появится."
+    ),
+}
+
+ARTICLE_OZON_FAILURE_TEXTS: Final[dict[FetchFailureReason, str]] = {
+    FetchFailureReason.not_found: (
+        "Такой товар не нашёлся ни на Wildberries, ни на Ozon. Проверьте "
+        "номер и пришлите ещё раз либо нажмите «Отмена»."
+    ),
+    FetchFailureReason.bad_payload: (
+        "На Wildberries такого товара нет, а Ozon не вернул данные о товаре "
+        "с этим номером. Проверьте номер или пришлите ссылку на товар."
+    ),
+    FetchFailureReason.blocked: (
+        "На Wildberries такого товара нет, а проверить Ozon сейчас не "
+        "удалось: он защищается от автоматических обращений. Попробуйте "
+        "прислать номер чуть позже или пришлите ссылку на товар."
+    ),
+    FetchFailureReason.transport_error: (
+        "На Wildberries такого товара нет, а проверить Ozon сейчас не "
+        "удалось: он не ответил. Попробуйте прислать номер чуть позже или "
+        "пришлите ссылку на товар."
+    ),
+    FetchFailureReason.out_of_stock: (
+        "На Wildberries такого товара нет, а на Ozon он есть, но сейчас не "
+        "в наличии, поэтому цены у него нет. Пришлите другой товар или "
+        "вернитесь к этому, когда он появится."
     ),
 }
 
@@ -287,10 +340,33 @@ def add_ref_offer_text(marketplace: Marketplace, article: int) -> str:
     return f"Добавить этот товар? {marketplace_title(marketplace)}, артикул {article}."
 
 
-def product_found_text(name: str, current_price: int) -> str:
+def add_article_offer_text(article: int) -> str:
+    """Offer for a bare article in free text: no single marketplace is named."""
+    return (
+        f"Добавить этот товар? Артикул {article}: поищу его сначала на "
+        "Wildberries, затем на Ozon."
+    )
+
+
+def article_failure_text(marketplace: Marketplace, reason: FetchFailureReason) -> str:
+    """Refusal for a bare article, naming where it was looked for.
+
+    ``marketplace`` is where the preview stopped: Ozon means Wildberries
+    already answered ``not_found``.
+    """
+    match marketplace:
+        case Marketplace.wb:
+            return ARTICLE_WB_FAILURE_TEXTS[reason]
+        case Marketplace.ozon:
+            return ARTICLE_OZON_FAILURE_TEXTS[reason]
+        case _:
+            assert_never(marketplace)
+
+
+def product_found_text(marketplace: Marketplace, name: str, current_price: int) -> str:
     """Product card shown after a successful preview (plain text, no markup)."""
     return (
-        f"Нашёл товар:\n{name}\n"
+        f"Нашёл товар на {marketplace_title(marketplace)}:\n{name}\n"
         f"Текущая цена: {format_price(current_price)}\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n\n" + ADD_PROMPT_PRICE_TEXT
     )

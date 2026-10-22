@@ -9,6 +9,8 @@ import pytest
 from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.links import MAX_INPUT_LENGTH
+from app.domain.links import BareArticle
+from app.domain.links import ProductQuery
 from app.domain.links import ProductRef
 from app.domain.links import extract_product_ref
 from app.domain.links import parse_product_ref
@@ -170,11 +172,11 @@ def test_bare_number_next_to_a_link_does_not_count_as_a_second_product() -> None
             ProductRef(WB, 12345678),
         ),
         ("HTTPS://WWW.WILDBERRIES.RU/catalog/5/detail.aspx", ProductRef(WB, 5)),
-        ("12345678", ProductRef(WB, 12345678)),
-        ("13511022", _WB_REF),
-        ("  12345678  ", ProductRef(WB, 12345678)),
-        ("\n12345678\t", ProductRef(WB, 12345678)),
-        ("9223372036854775807", ProductRef(WB, 9_223_372_036_854_775_807)),
+        ("12345678", BareArticle(12345678)),
+        ("13511022", BareArticle(13511022)),
+        ("  12345678  ", BareArticle(12345678)),
+        ("\n12345678\t", BareArticle(12345678)),
+        ("9223372036854775807", BareArticle(9_223_372_036_854_775_807)),
         (
             "https://www.ozon.ru/product/krossovki-muzhskie-1234567/",
             ProductRef(OZON, 1234567),
@@ -193,7 +195,7 @@ def test_bare_number_next_to_a_link_does_not_count_as_a_second_product() -> None
     ],
 )
 def test_every_input_the_strict_parser_accepts_gives_the_same_result(
-    text: str, expected: ProductRef
+    text: str, expected: ProductQuery
 ) -> None:
     assert parse_product_ref(text) == expected
     assert extract_product_ref(text) == expected
@@ -250,7 +252,7 @@ def test_over_the_limit_text_reaches_the_strict_parser_exactly_once(
 ) -> None:
     calls: list[str] = []
 
-    def counting(text: str) -> ProductRef:
+    def counting(text: str) -> ProductQuery:
         calls.append(text)
         return parse_product_ref(text)
 
@@ -277,3 +279,12 @@ def test_authority_tricks_in_a_share_text_are_not_extracted(link: str) -> None:
         extract_product_ref(f"{_TITLE}\n{link}")
 
     assert type(info.value) is ProductRefParseError
+
+
+def test_whole_text_of_digits_is_a_bare_article_without_marketplace() -> None:
+    assert extract_product_ref(" 5764570826\n") == BareArticle(5764570826)
+
+
+def test_digits_with_a_title_are_not_a_bare_article() -> None:
+    with pytest.raises(ProductRefParseError):
+        extract_product_ref("Магнит 5764570826")
