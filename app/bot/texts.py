@@ -253,6 +253,8 @@ ADD_ALERT_BUTTON_TEXT: Final[str] = "➕ Добавить порог"
 
 STOP_TRACKING_BUTTON_TEXT: Final[str] = "Перестать следить"
 LIST_BACK_BUTTON_TEXT: Final[str] = "← К списку"
+LIST_PREV_BUTTON_TEXT: Final[str] = "◀"
+LIST_NEXT_BUTTON_TEXT: Final[str] = "▶"
 
 CONFIRM_BUTTON_TEXT: Final[str] = "Подтвердить"
 CANCEL_BUTTON_TEXT: Final[str] = "Отмена"
@@ -335,14 +337,14 @@ def marketplace_title(marketplace: Marketplace) -> str:
             assert_never(marketplace)
 
 
-def list_text(shown: int, total: int, price_label: str | None = None) -> str:
-    """Header of the product list; names the truncation when buttons are cut.
+def list_text(total: int, page: int, pages: int, price_label: str | None = None) -> str:
+    """Header of the product list; names the page when there are several.
 
     ``price_label`` is the time of the oldest shown price (``price_time_label``).
     """
     head = f"Вы следите за товарами: {total}."
-    if shown < total:
-        head = f"{head} Показаны первые {shown} из {total}."
+    if pages > 1:
+        head = f"{head} Стр. {page}/{pages}."
     prices_line = f"Цены на {price_label}\n" if price_label is not None else ""
     return f"{head}\n{prices_line}{PRICE_DISCLAIMER_SHORT}."
 

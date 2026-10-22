@@ -26,6 +26,7 @@ from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.models.product import Product
 from app.models.user import User
+from app.repositories.product import ProductRepository
 from app.services.base_client import BaseMarketplaceClient
 from app.services.tracking import AlertRemoval
 from app.services.tracking import TrackingService
@@ -96,48 +97,196 @@ async def _count_statements(
     return len(calls), sum(calls)
 
 
-# --- list_products ------------------------------------------------------------
+# --- list_page / list_page_of (PAB-108) -----------------------------------------
 
 
-async def test_list_products_returns_only_own_products_ordered_by_id(
+async def _seed(service: TrackingService, tg: int, count: int) -> list[int]:
+    """Add ``count`` products for ``tg``; return their ids ascending."""
+    return [(await _add(service, tg)).product_id for _ in range(count)]
+
+
+async def test_list_page_splits_23_products_into_10_10_3_by_ascending_id(
+    db_session: AsyncSession,
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 23)
+
+    pages = [await service.list_page(tg, n) for n in (1, 2, 3)]
+
+    assert [[p.id for p in page.products] for page in pages] == [
+        ids[:10],
+        ids[10:20],
+        ids[20:],
+    ]
+    assert [(p.page, p.pages, p.total) for p in pages] == [
+        (1, 3, 23),
+        (2, 3, 23),
+        (3, 3, 23),
+    ]
+
+
+async def test_list_page_never_shows_a_foreign_product_on_any_page(
     db_session: AsyncSession,
 ) -> None:
     service = _service(db_session)
     owner, other = next(_tg_ids), next(_tg_ids)
-    first = await _add(service, owner, name="first")
-    await _add(service, other, name="foreign")
-    second = await _add(service, owner, name="second")
-    third = await _add(service, owner, name="third")
+    own = await _seed(service, owner, 12)
+    foreign = await _seed(service, other, 12)
 
-    products = await service.list_products(owner)
-
-    assert [p.id for p in products] == sorted(
-        [first.product_id, second.product_id, third.product_id]
-    )
-    assert [p.product_name for p in products] == ["first", "second", "third"]
-
-
-async def test_list_products_of_a_new_user_is_empty(db_session: AsyncSession) -> None:
-    assert await _service(db_session).list_products(next(_tg_ids)) == []
+    for number in (0, 1, 2, 3, 99):
+        for tg, mine in ((owner, own), (other, foreign)):
+            page = await service.list_page(tg, number)
+            assert {p.id for p in page.products} <= set(mine)
+            assert page.total == 12
+    owner_page = await service.list_page(owner, 2)
+    assert [p.id for p in owner_page.products] == own[10:]
 
 
-async def test_list_products_statement_count_is_the_same_for_1_and_30_products(
+@pytest.mark.parametrize(("asked", "shown"), [(0, 1), (-5, 1), (99, 3), (3, 3)])
+async def test_list_page_clamps_the_page_number_with_23_products(
+    db_session: AsyncSession, asked: int, shown: int
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 23)
+
+    page = await service.list_page(tg, asked)
+
+    assert page.page == shown
+    assert [p.id for p in page.products] == ids[(shown - 1) * 10 : shown * 10]
+
+
+@pytest.mark.parametrize(("total", "pages"), [(10, 1), (11, 2)])
+async def test_list_page_counts_ten_products_as_one_page_and_eleven_as_two(
+    db_session: AsyncSession, total: int, pages: int
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    await _seed(service, tg, total)
+
+    page = await service.list_page(tg, 1)
+
+    assert (page.total, page.pages, len(page.products)) == (total, pages, 10)
+
+
+async def test_list_page_of_a_user_without_products_is_one_empty_page(
+    db_session: AsyncSession,
+) -> None:
+    page = await _service(db_session).list_page(next(_tg_ids), 7)
+
+    assert (page.products, page.total, page.page, page.pages) == ((), 0, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("position", "page"), [(1, 1), (10, 1), (11, 2), (15, 2), (23, 3)]
+)
+async def test_list_page_of_gives_the_page_holding_the_nth_product(
+    db_session: AsyncSession, position: int, page: int
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 23)
+
+    assert await service.list_page_of(tg, ids[position - 1]) == page
+
+
+async def test_list_page_of_a_deleted_product_is_the_page_it_was_on(
+    db_session: AsyncSession,
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 23)
+    assert await service.remove_product(tg, ids[14])
+
+    assert await service.list_page_of(tg, ids[14]) == 2
+
+
+async def test_list_page_of_the_only_product_of_page_three_removed_is_page_two(
+    db_session: AsyncSession,
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 21)
+    assert await service.remove_product(tg, ids[20])
+
+    assert await service.list_page_of(tg, ids[20]) == 2
+
+
+async def test_list_page_of_a_foreign_product_reveals_nothing_about_it(
+    db_session: AsyncSession,
+) -> None:
+    service = _service(db_session)
+    owner, other = next(_tg_ids), next(_tg_ids)
+    await _seed(service, owner, 3)
+    foreign = await _seed(service, other, 25)
+
+    assert await service.list_page_of(owner, foreign[24]) == 1
+
+
+async def test_list_page_statement_count_is_the_same_for_3_and_25_products(
     db_session: AsyncSession,
 ) -> None:
     service = _service(db_session)
     small, big = next(_tg_ids), next(_tg_ids)
-    await _add(service, small)
-    for _ in range(30):
-        await _add(service, big)
+    await _seed(service, small, 3)
+    await _seed(service, big, 25)
 
     small_count = await _count_statements(
-        db_session, lambda: service.list_products(small)
+        db_session, lambda: service.list_page(small, 1)
     )
-    big_count = await _count_statements(db_session, lambda: service.list_products(big))
+    big_count = await _count_statements(db_session, lambda: service.list_page(big, 1))
 
-    assert small_count[0] >= 1  # positive control: the counter does observe SQL
-    assert big_count == small_count
-    assert len(await service.list_products(big)) == 30
+    # INSERT .. ON CONFLICT + SELECT of the existing user (get_or_create), then
+    # COUNT and the page: four, whatever N is. The ticket counted the user as one.
+    assert small_count == (4, 0)
+    assert big_count == (4, 0)
+
+
+async def test_card_costs_exactly_one_statement_more_than_without_the_page_lookup(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 25)
+
+    with_lookup = await _count_statements(
+        db_session, lambda: service.get_product_card(tg, ids[20])
+    )
+
+    async def no_lookup(_self: ProductRepository, _user: int, _product: int) -> int:
+        return 0
+
+    monkeypatch.setattr(ProductRepository, "count_before", no_lookup)
+    baseline = await _count_statements(
+        db_session, lambda: service.get_product_card(tg, ids[20])
+    )
+
+    assert baseline[0] >= 3  # positive control: user, product, alerts
+    assert with_lookup == (baseline[0] + 1, 0)
+
+
+async def test_card_list_page_is_the_page_of_the_product_for_both_entries(
+    db_session: AsyncSession,
+) -> None:
+    service = _service(db_session)
+    tg = next(_tg_ids)
+    ids = await _seed(service, tg, 23)
+    products = (await service.list_page(tg, 2)).products
+    fifteenth = ids[14]
+    assert fifteenth in [p.id for p in products]
+
+    by_id = await service.get_product_card(tg, fifteenth)
+    by_article = await service.find_tracked_product(
+        tg, _WB, next(p.article for p in products if p.id == fifteenth)
+    )
+
+    assert by_id is not None and by_id.list_page == 2
+    assert by_article is not None and by_article.list_page == 2
+    first = await service.get_product_card(tg, ids[0])
+    last = await service.get_product_card(tg, ids[22])
+    assert first is not None and first.list_page == 1
+    assert last is not None and last.list_page == 3
 
 
 # --- get_product_card -----------------------------------------------------------
@@ -150,7 +299,7 @@ async def test_card_has_the_product_and_alerts_sorted_by_target_price(
     tg, article = next(_tg_ids), next(_articles)
     for target in (20_000, 3_000, 9_000):
         await _add(service, tg, article=article, target=target)
-    product_id = (await service.list_products(tg))[0].id
+    product_id = (await service.list_page(tg, 1)).products[0].id
 
     card = await service.get_product_card(tg, product_id)
 
@@ -173,7 +322,7 @@ async def test_card_statement_count_is_the_same_for_1_and_30_alerts(
     await _add(service, tg, article=one_article, target=1_000)
     for target in range(1_000, 1_030):
         await _add(service, tg, article=many_article, target=target)
-    by_article = {p.article: p.id for p in await service.list_products(tg)}
+    by_article = {p.article: p.id for p in (await service.list_page(tg, 1)).products}
 
     one = await _count_statements(
         db_session, lambda: service.get_product_card(tg, by_article[one_article])
@@ -210,7 +359,7 @@ async def test_foreign_ids_are_refused_and_the_owners_rows_survive(
     service = _service(db_session)
     owner, intruder = next(_tg_ids), next(_tg_ids)
     alert = await _add(service, owner)
-    await service.list_products(intruder)  # the intruder exists as a user too
+    await service.list_page(intruder, 1)  # the intruder exists as a user too
     products_before = await _count(db_session, Product)
     alerts_before = await _count(db_session, Alert)
 
@@ -247,7 +396,7 @@ async def test_remove_product_after_card_flushes_cleanly_and_leaves_no_rows(
     tg, article = next(_tg_ids), next(_articles)
     await _add(service, tg, article=article, target=9_000)
     await _add(service, tg, article=article, target=8_000)
-    product_id = (await service.list_products(tg))[0].id
+    product_id = (await service.list_page(tg, 1)).products[0].id
     card = await service.get_product_card(tg, product_id)
     assert card is not None
     assert len(card.alerts) == 2  # alerts are loaded into the session
@@ -274,7 +423,9 @@ async def test_remove_product_keeps_the_other_products_of_the_user(
 
     assert await service.remove_product(tg, gone.product_id) is True
 
-    assert [p.id for p in await service.list_products(tg)] == [kept.product_id]
+    assert [p.id for p in (await service.list_page(tg, 1)).products] == [
+        kept.product_id
+    ]
     assert await _count(db_session, Alert) == 1
 
 
@@ -325,7 +476,9 @@ async def test_remove_last_alert_does_not_touch_other_products(
 
     await service.remove_alert(tg, gone.id)
 
-    assert [p.id for p in await service.list_products(tg)] == [kept.product_id]
+    assert [p.id for p in (await service.list_page(tg, 1)).products] == [
+        kept.product_id
+    ]
 
 
 async def test_remove_alert_twice_is_removed_then_not_found(

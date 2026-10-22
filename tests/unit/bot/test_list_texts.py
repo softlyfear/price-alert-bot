@@ -17,20 +17,23 @@ _NB = "\u00a0"
 _DISCLAIMER = "Цена без учёта персональных скидок"
 
 
-def test_list_text_without_truncation_names_the_total_and_has_no_cut_note() -> None:
-    assert texts.list_text(3, 3) == (f"Вы следите за товарами: 3.\n{_DISCLAIMER}.")
+def test_list_text_for_one_page_has_no_page_marker() -> None:
+    assert texts.list_text(3, 1, 1) == (f"Вы следите за товарами: 3.\n{_DISCLAIMER}.")
 
 
-def test_list_text_with_truncation_says_first_50_of_51() -> None:
-    text = texts.list_text(50, 51)
+def test_list_text_for_several_pages_names_the_page_exactly() -> None:
+    assert texts.list_text(23, 3, 3) == (
+        f"Вы следите за товарами: 23. Стр. 3/3.\n{_DISCLAIMER}."
+    )
 
-    assert "Показаны первые 50 из 51." in text
-    assert text.startswith("Вы следите за товарами: 51.")
+
+def test_list_text_never_says_first_n_of_m() -> None:
+    assert "Показаны первые" not in texts.list_text(60, 1, 6)
 
 
 def test_list_text_carries_the_short_disclaimer_exactly_once() -> None:
-    assert texts.list_text(2, 2).count(PRICE_DISCLAIMER_SHORT) == 1
-    assert texts.list_text(50, 60).count(PRICE_DISCLAIMER_SHORT) == 1
+    assert texts.list_text(2, 1, 1).count(PRICE_DISCLAIMER_SHORT) == 1
+    assert texts.list_text(60, 2, 6).count(PRICE_DISCLAIMER_SHORT) == 1
 
 
 def test_marketplace_title_is_the_human_name() -> None:
@@ -38,11 +41,11 @@ def test_marketplace_title_is_the_human_name() -> None:
     assert texts.marketplace_title(Marketplace.ozon) == "Ozon"
 
 
-def test_list_text_with_truncation_and_a_label_has_all_three_parts() -> None:
-    text = texts.list_text(50, 51, "14:05")
+def test_list_text_with_pages_and_a_label_has_all_three_parts() -> None:
+    text = texts.list_text(51, 2, 6, "14:05")
 
     assert text == (
-        "Вы следите за товарами: 51. Показаны первые 50 из 51.\n"
+        "Вы следите за товарами: 51. Стр. 2/6.\n"
         "Цены на 14:05\n"
         "Цена без учёта персональных скидок."
     )
@@ -50,7 +53,7 @@ def test_list_text_with_truncation_and_a_label_has_all_three_parts() -> None:
 
 
 def test_list_text_with_a_label_has_one_disclaimer_and_no_select_hint() -> None:
-    text = texts.list_text(3, 3, "14:05")
+    text = texts.list_text(3, 1, 1, "14:05")
 
     assert text == (
         "Вы следите за товарами: 3.\nЦены на 14:05\nЦена без учёта персональных скидок."

@@ -80,17 +80,17 @@ def test_label_of_a_price_from_the_future_is_still_formatted() -> None:
 
 
 def test_list_text_with_a_price_label_adds_one_line_above_the_disclaimer() -> None:
-    assert texts.list_text(3, 3, "14:05") == (
+    assert texts.list_text(3, 1, 1, "14:05") == (
         "Вы следите за товарами: 3.\nЦены на 14:05\nЦена без учёта персональных скидок."
     )
 
 
 def test_list_text_with_a_dated_price_label_keeps_the_date() -> None:
-    assert "\nЦены на 21.10 14:05\n" in texts.list_text(3, 3, "21.10 14:05")
+    assert "\nЦены на 21.10 14:05\n" in texts.list_text(3, 1, 1, "21.10 14:05")
 
 
 def test_list_text_without_a_price_label_has_no_prices_line() -> None:
-    assert "Цены на" not in texts.list_text(3, 3, None)
+    assert "Цены на" not in texts.list_text(3, 1, 1, None)
 
 
 def test_card_text_with_a_price_label_puts_it_in_brackets_after_the_price() -> None:

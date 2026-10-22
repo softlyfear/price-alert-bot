@@ -47,4 +47,4 @@ def card_screen(
         price_label,
         initial_line=initial_line,
     )
-    return text, product_card_keyboard(product.id, card.alerts)
+    return text, product_card_keyboard(product.id, card.alerts, card.list_page)

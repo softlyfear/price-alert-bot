@@ -20,6 +20,7 @@ from tests.unit.handlers.add_dialog_support import _Faults
 from tests.unit.handlers.add_dialog_support import _responder
 from tests.unit.handlers.card_dialog_support import SCREEN_NOW
 from tests.unit.handlers.card_dialog_support import card
+from tests.unit.handlers.card_dialog_support import page_of
 
 
 class _ScreenClock:
@@ -44,7 +45,8 @@ def card_service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
     mock.find_tracked_product.return_value = card()
     mock.get_product_card.return_value = card()
-    mock.list_products.return_value = []
+    mock.list_page.return_value = page_of([])
+    mock.list_page_of.return_value = 1
     mock.product_limit.return_value = 50
     monkeypatch.setattr(add_product_module, "TrackingService", lambda **_kw: mock)
     return mock

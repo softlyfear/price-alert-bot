@@ -35,6 +35,7 @@ from tests.unit.handlers.add_dialog_support import _BoundSession
 from tests.unit.handlers.add_dialog_support import _Dialog
 from tests.unit.handlers.add_dialog_support import _Faults
 from tests.unit.handlers.add_dialog_support import _responder
+from tests.unit.handlers.card_dialog_support import page_of
 
 if TYPE_CHECKING:
     from loguru import Record
@@ -48,7 +49,7 @@ _MENU_ROWS = [
 @pytest.fixture
 def service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
-    mock.list_products.return_value = []
+    mock.list_page.return_value = page_of([])
     mock.find_tracked_product.return_value = None
     mock.product_limit.return_value = 50
     mock.preview.return_value = MarketplaceProductData(name="Товар", price=100_00)

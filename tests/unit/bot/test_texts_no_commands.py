@@ -42,7 +42,7 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
     "limit_exceeded_text": lambda: texts.limit_exceeded_text(50),
     "added_text": lambda: texts.added_text("Item", 1_000_00, AlertDirection.above),
     "marketplace_title": lambda: texts.marketplace_title(Marketplace.ozon),
-    "list_text": lambda: texts.list_text(50, 60),
+    "list_text": lambda: texts.list_text(60, 2, 6),
     "product_card_text": lambda: texts.product_card_text(
         "Item",
         Marketplace.wb,
