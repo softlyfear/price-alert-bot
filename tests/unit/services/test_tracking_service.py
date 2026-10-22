@@ -484,6 +484,7 @@ async def test_add_tracking_creates_new_product_then_below_alert(
             "article": _ARTICLE,
             "product_name": "Fresh name",
             "current_price": 15_000,
+            "initial_price": 15_000,
             "price_fetched_at": None,
         }
     )
@@ -535,6 +536,51 @@ async def test_add_tracking_stores_the_given_stamp_on_a_new_product(
 
     assert harness.products.create.await_args is not None
     assert harness.products.create.await_args.args[0]["price_fetched_at"] == stamp
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_stores_the_given_price_as_initial_price_on_a_new_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch)
+
+    await _add(harness)
+
+    assert harness.products.create.await_args is not None
+    data = harness.products.create.await_args.args[0]
+    assert data["initial_price"] == 15_000  # the literal passed by _add
+    _assert_keys_accepted_by_real_repository(ProductRepository(_NO_SESSION), data)
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_never_writes_initial_price_of_an_existing_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = _product(product_id=42)
+    existing.initial_price = 11_111
+    harness = _build(monkeypatch, existing_product=existing)
+
+    await _add(harness)
+
+    harness.products.create.assert_not_called()
+    harness.products.patch.assert_not_called()
+    assert existing.initial_price == 11_111
+
+
+@pytest.mark.asyncio
+async def test_add_tracking_keeps_the_initial_price_of_the_race_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    winner = _product(product_id=99)
+    winner.initial_price = 11_111
+    harness = _build(monkeypatch)
+    harness.products.get_by_article_and_user.side_effect = [None, winner]
+    harness.products.create.side_effect = _integrity_error()
+
+    await _add(harness)
+
+    harness.products.patch.assert_not_called()
+    assert winner.initial_price == 11_111
 
 
 @pytest.mark.asyncio

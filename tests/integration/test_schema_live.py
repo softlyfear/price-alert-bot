@@ -47,6 +47,7 @@ TIMESTAMP_COLUMNS = tuple((t, c) for t in TABLES for c in ("created_at", "update
 EXPECTED_CHECKS = {
     ("products", "ck_products_current_price_non_negative"),
     ("products", "ck_products_previous_price_non_negative"),
+    ("products", "ck_products_initial_price_non_negative"),
     ("alerts", "ck_alerts_target_price_non_negative"),
 }
 
@@ -193,23 +194,24 @@ def test_model_server_defaults_of_all_six_timestamp_columns_are_now() -> None:
 
 
 @pytest.mark.asyncio
-async def test_catalog_check_constraints_are_exactly_the_three_price_checks(
+async def test_catalog_check_constraints_are_exactly_the_four_price_checks(
     db_session: AsyncSession,
 ) -> None:
     assert await _catalog_checks(db_session) == EXPECTED_CHECKS
 
 
-#: Model side of the same three checks: (table, name, condition text), written
+#: Model side of the same four checks: (table, name, condition text), written
 #: out by hand from PROJECT.md section 6. A weakened condition under an
 #: unchanged name (``> 0`` instead of ``>= 0``) must not pass.
 EXPECTED_MODEL_CHECKS = {
     ("products", "ck_products_current_price_non_negative", "current_price >= 0"),
     ("products", "ck_products_previous_price_non_negative", "previous_price >= 0"),
+    ("products", "ck_products_initial_price_non_negative", "initial_price >= 0"),
     ("alerts", "ck_alerts_target_price_non_negative", "target_price >= 0"),
 }
 
 
-def test_model_check_constraints_are_exactly_the_three_price_checks() -> None:
+def test_model_check_constraints_are_exactly_the_four_price_checks() -> None:
     # Column-level checks live in ``column.constraints`` and table-level ones
     # in ``table.constraints``; both places are collected.
     found: set[tuple[str, str, str]] = set()
@@ -299,7 +301,10 @@ async def test_downgrade_restores_old_schema_and_upgrade_reapplies_new_one(
     path_before = list(sys.path)
 
     await connection.run_sync(_run_revision, "downgrade")
-    assert await _catalog_checks(db_session) == set()
+    # Only the check of a later revision (PAB-103) is left.
+    assert await _catalog_checks(db_session) == {
+        ("products", "ck_products_initial_price_non_negative")
+    }
     assert await _catalog_defaults(db_session) == dict.fromkeys(
         TIMESTAMP_COLUMNS, "timezone('utc'::text, now())"
     )

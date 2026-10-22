@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.domain.exceptions import InvalidPaginationError
+from app.domain.exceptions import InvalidPatchFieldsError
 from app.models.enums import Marketplace
 from app.models.product import Product
 from app.repositories.product import ProductRepository
@@ -90,6 +91,98 @@ async def test_create_accepts_price_fetched_at_and_persists_it(
         )
     ).scalar_one()
     assert stored == stamp
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_initial_price_and_persists_it(
+    db_session: AsyncSession,
+) -> None:
+    repository = ProductRepository(db_session)
+    user = await make_user(db_session)
+
+    created = await repository.create(
+        {
+            "user_id": user.id,
+            "marketplace": Marketplace.wb,
+            "article": 4243,
+            "product_name": "Item",
+            "current_price": 1_000,
+            "initial_price": 777,
+        }
+    )
+
+    stored = (
+        await db_session.execute(
+            text("SELECT initial_price FROM products WHERE id = :id"),
+            {"id": created.id},
+        )
+    ).scalar_one()
+    assert stored == 777
+    assert created.initial_price == 777
+
+
+@pytest.mark.asyncio
+async def test_create_without_initial_price_stores_null(
+    db_session: AsyncSession,
+) -> None:
+    product = await make_product(
+        db_session, user_id=(await make_user(db_session)).id, current_price=1_000
+    )
+
+    assert product.initial_price is None
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_initial_price_and_leaves_the_value_unchanged(
+    db_session: AsyncSession,
+) -> None:
+    repository = ProductRepository(db_session)
+    user = await make_user(db_session)
+    product = await repository.create(
+        {
+            "user_id": user.id,
+            "marketplace": Marketplace.wb,
+            "article": 4244,
+            "product_name": "Item",
+            "current_price": 1_000,
+            "initial_price": 777,
+        }
+    )
+
+    with pytest.raises(InvalidPatchFieldsError) as excinfo:
+        await repository.patch(product.id, {"initial_price": 1})
+
+    assert excinfo.value.unknown_fields == {"initial_price"}
+    stored = (
+        await db_session.execute(
+            text("SELECT initial_price FROM products WHERE id = :id"),
+            {"id": product.id},
+        )
+    ).scalar_one()
+    assert stored == 777
+
+
+@pytest.mark.asyncio
+async def test_patch_current_price_does_not_touch_initial_price(
+    db_session: AsyncSession,
+) -> None:
+    repository = ProductRepository(db_session)
+    user = await make_user(db_session)
+    product = await repository.create(
+        {
+            "user_id": user.id,
+            "marketplace": Marketplace.wb,
+            "article": 4245,
+            "product_name": "Item",
+            "current_price": 1_000,
+            "initial_price": 777,
+        }
+    )
+
+    patched = await repository.patch(product.id, {"current_price": 555})
+
+    assert patched is not None
+    assert (patched.current_price, patched.initial_price) == (555, 777)
 
 
 @pytest.mark.asyncio
