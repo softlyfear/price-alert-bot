@@ -9,6 +9,7 @@ dependencies = [
     "aiogram==3.26.0",
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
+    "curl_cffi==0.16.3",
     "fastapi==0.135.1",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
@@ -138,6 +139,9 @@ source_modules = [
     "app.services.client_factory",
     "app.services.wb_access",
     "app.services.wb_browser",
+    "app.services.browser_launch",
+    "app.services.ozon_access",
+    "app.services.ozon_browser",
 ]
 forbidden_modules = [
     "app.repositories",
@@ -188,11 +192,23 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "L6: playwright is imported only by the WB browser module"
+name = "L6: playwright is imported only by the browser modules"
 type = "protected"
 protected_modules = [
     "playwright",
 ]
 allowed_importers = [
     "app.services.wb_browser",
+    "app.services.ozon_browser",
+    "app.services.browser_launch",
+]
+
+[[tool.importlinter.contracts]]
+name = "L7: curl_cffi is imported only by the Ozon client"
+type = "protected"
+protected_modules = [
+    "curl_cffi",
+]
+allowed_importers = [
+    "app.services.ozon_client",
 ]

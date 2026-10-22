@@ -20,26 +20,35 @@ Policy decisions that live here, not in the schema:
 - The tracked price is `webPrice.price`, without the Ozon card (`PROJECT.md`
   section 2.9): the site may show the user a lower price than the bot.
 
-Anti-bot is an expected mode, reported as `blocked`, never as `not_found`:
-HTTP 403/429 and an exhausted redirect chain (without cookies the anti-bot
-answers with an endless `307 ... &__rr=N`). No bypass is attempted (customer
-decision, `PROJECT.md` section 2.11). The body of a non-2xx response is never
-read. The body is read with a size cap and the whole request is bounded by one
-deadline, as in `WbClient` (`PROJECT.md` section 8.2).
+Access (`PROJECT.md` section 2.14): Ozon answers only a request that carries
+the cookies of a passed anti-bot check and the UA of the browser that passed
+it. They come from an `OzonAccessProvider` (a browser, once per process); the
+price request itself is made by `curl_cffi` with the Chrome TLS fingerprint
+(`httpx` is answered `307`/`403` - measured). Status map (O4):
 
-Redirects are followed by hand (decision R4', section 2.11): `httpx` with
-`follow_redirects=True` reads every `3xx` body unbounded and follows to any
-host or scheme. Each step here runs with `follow_redirects=False`, a redirect
-response is closed unread, the next step is its `next_request` (so cookies of
-the shared jar travel as usual), at most `MAX_REDIRECTS` hops are made, and a
-hop leaves the origin of `OzonClient.URL` only as `bad_payload` without any
-request to the foreign address.
+- provider refusal: `blocked`, no request; `429`: `blocked`, access kept;
+- `3xx` or `403`: the access is invalidated and the request repeated once
+  with a fresh one; a second `3xx`/`403` is `blocked`;
+- `404`: `not_found`; other statuses and `curl_cffi` errors:
+  `transport_error` (`detail` is `HTTP <status>` or the class name).
+
+Anti-bot is an expected mode, reported as `blocked`, never as `not_found`.
+Redirects are not followed (a `3xx` is the refusal signal, so no request goes
+to a foreign address), the body of a non-2xx response is never read, the body
+of a 2xx one is read with a size cap, cookies set by a response are
+discarded (the request is a function of access and article, no hidden state),
+and proxy environment variables are not read. Each attempt is bounded by one
+deadline. Access cookies are a secret: they are masked in `repr`, never
+logged and never put into `detail`.
 """
 
 import asyncio
+from dataclasses import dataclass
 from enum import Enum
+from typing import cast
 
-import httpx
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import RequestException
 from loguru import logger
 from pydantic import ValidationError
 
@@ -52,7 +61,9 @@ from app.schemas.ozon import OzonEntrypointResponse
 from app.schemas.ozon import OzonPriceState
 from app.schemas.ozon import OzonProductHeadingState
 from app.services.base_client import BaseMarketplaceClient
-from app.services.base_client import read_body_bounded
+from app.services.ozon_access import OzonAccess
+from app.services.ozon_access import OzonAccessProvider
+from app.services.ozon_access import OzonAccessUnavailable
 
 _HEADING = "webProductHeading"
 _PRICE = "webPrice"
@@ -83,101 +94,138 @@ def _select_widget_state(
     return _WidgetProblem.missing if found is None else found
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
-    """Return (scheme, host, port) of `url`; `httpx` drops a default port."""
-    return url.scheme, url.host, url.port
+class _BodyTooLarge(Exception):
+    """A 2xx body crossed the size cap while it was being read."""
+
+
+@dataclass(frozen=True, slots=True)
+class OzonReply:
+    """Status of a response and, for 2xx only, its body (bounded)."""
+
+    status: int
+    body: bytes | None
+
+
+class OzonSession:
+    """One `curl_cffi` `AsyncSession` per process (O7), owned by `lifespan`.
+
+    No cookie jar (`discard_cookies`), no redirects, no proxy from the
+    environment (`proxies={"all": ""}` makes libcurl ignore `ALL_PROXY`,
+    `HTTPS_PROXY`, ...; `trust_env` alone does not), Chrome fingerprint,
+    TLS verification on.
+    """
+
+    def __init__(self) -> None:
+        self._session = AsyncSession(
+            impersonate="chrome",
+            trust_env=False,
+            proxies={"all": ""},
+            discard_cookies=True,
+            allow_redirects=False,
+        )
+
+    async def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, str],
+        access: OzonAccess,
+        timeout_seconds: float,
+        max_body_bytes: int,
+    ) -> OzonReply:
+        """GET with the cookies and UA of `access`; a 2xx body is read, bounded.
+
+        Raises `RequestException` (any `curl_cffi` failure) or
+        `_BodyTooLarge`; `CancelledError` passes through. The stream is
+        aborted on every exit: after the status of a non-2xx response is
+        known, its body is not read (aborting stops the download at the next
+        chunk; closing without the abort would drain it).
+        """
+        response = await self._session.request(
+            "GET",
+            url,
+            params=params,
+            headers={"User-Agent": access.user_agent},
+            cookies=access.request_cookies(),
+            timeout=timeout_seconds,
+            stream=True,
+        )
+        try:
+            status = int(response.status_code)
+            if not 200 <= status < 300:
+                return OzonReply(status, None)
+            body = bytearray()
+            # `curl_cffi` leaves these stream methods unannotated.
+            async for chunk in response.aiter_content():  # type: ignore[no-untyped-call]
+                body.extend(chunk)
+                if len(body) > max_body_bytes:
+                    raise _BodyTooLarge
+            return OzonReply(status, bytes(body))
+        finally:
+            abort = cast("asyncio.Event | None", response.quit_now)
+            if abort is not None:
+                abort.set()
+            await response.aclose()  # type: ignore[no-untyped-call]
+
+    async def aclose(self) -> None:
+        await self._session.close()
 
 
 class OzonClient(BaseMarketplaceClient):
     URL = "https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2"
     TIMEOUT_SECONDS = 10.0
     MAX_BODY_BYTES = 4_194_304
-    MAX_REDIRECTS = 5
 
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
-        self._http = http_client
+    def __init__(self, session: OzonSession, access: OzonAccessProvider) -> None:
+        self._session = session
+        self._access = access
 
-    async def _fetch_body(
-        self, article: int, params: dict[str, str], headers: dict[str, str]
-    ) -> bytes | MarketplaceFetchFailure:
-        """Run the manual redirect loop and read the final 2xx body, bounded.
+    async def _fetch_body(self, article: int) -> bytes | MarketplaceFetchFailure:
+        """Request `article` with a provider access; on `3xx`/`403` renew once.
 
-        Raises `httpx.HTTPStatusError` for a non-2xx final status (including a
-        `3xx` without `Location`); the caller maps it. A redirect response is
-        closed without reading its body. Time `O(R + B)`, `R <= MAX_REDIRECTS`.
+        Returns the 2xx body or a marked failure; never raises (apart from
+        the caller's `CancelledError`).
         """
-        home = _origin(httpx.URL(self.URL))
-        request = self._http.build_request(
-            "GET",
-            self.URL,
-            params=params,
-            headers=headers,
-            timeout=self.TIMEOUT_SECONDS,
-        )
-        redirects = 0
+        attempt = 0
         while True:
-            response = await self._http.send(
-                request, stream=True, follow_redirects=False
-            )
-            try:
-                next_request = response.next_request
-                if next_request is None:
-                    # Status is known from headers; a non-2xx body is never read.
-                    response.raise_for_status()
-                    body = await read_body_bounded(response, self.MAX_BODY_BYTES)
-                    if isinstance(body, MarketplaceFetchFailure):
-                        logger.error(
-                            f"Oversized body for Ozon article {article}: {body.detail}"
-                        )
-                    return body
-            finally:
-                await response.aclose()
-            if _origin(next_request.url) != home:
-                logger.error(f"Ozon article {article}: redirect left the Ozon origin")
-                return MarketplaceFetchFailure(
-                    reason=FetchFailureReason.bad_payload,
-                    detail="redirect left the Ozon origin",
+            attempt += 1
+            access = await self._access.get()
+            if isinstance(access, OzonAccessUnavailable):
+                logger.warning(
+                    f"Ozon access unavailable for article {article}: {access.stage}"
                 )
-            if redirects >= self.MAX_REDIRECTS:
-                logger.warning(f"Ozon redirect limit (anti-bot) for article {article}")
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.blocked,
-                    detail=f"more than {self.MAX_REDIRECTS} redirects",
+                    detail=f"Ozon access unavailable: {access.stage}",
                 )
-            redirects += 1
-            request = next_request
-
-    async def get_product_data(self, article: int) -> MarketplaceFetchResult:
-        """Fetch name and price for a single Ozon article.
-
-        Returns either `MarketplaceProductData` or a `MarketplaceFetchFailure`
-        marking one of `blocked`, `not_found`, `transport_error` or
-        `bad_payload` - never `None`, never an exception escaping to the
-        caller (`BaseMarketplaceClient` contract).
-        """
-
-        params = {"url": f"/product/{article}/"}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-        }
-
-        try:
-            # One deadline over every hop: connect, headers and body read.
-            # httpx timeouts bound a single operation, not the whole request.
-            async with asyncio.timeout(self.TIMEOUT_SECONDS):
-                body = await self._fetch_body(article, params, headers)
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status in (403, 429):
-                logger.warning(
-                    f"Ozon blocked the request (HTTP {status}) for article {article}"
+            reply = await self._request(article, access)
+            if isinstance(reply, MarketplaceFetchFailure):
+                return reply
+            status = reply.status
+            if reply.body is not None:
+                return reply.body
+            if 300 <= status < 400 or status == 403:
+                if attempt == 2:
+                    logger.warning(
+                        f"Ozon refused renewed access (HTTP {status}) "
+                        f"for article {article}"
+                    )
+                    return MarketplaceFetchFailure(
+                        reason=FetchFailureReason.blocked,
+                        detail=f"HTTP {status}",
+                    )
+                await self._access.invalidate(access)
+                logger.info(
+                    f"Ozon refused access (HTTP {status}) for article {article}, "
+                    "renewing"
                 )
+                continue
+            logger.warning(f"Error HTTP {status} for Ozon article {article}")
+            if status == 429:
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.blocked,
                     detail=f"HTTP {status}",
                 )
-            logger.warning(f"Error HTTP {status} for Ozon article {article}")
             if status == 404:
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.not_found,
@@ -187,7 +235,27 @@ class OzonClient(BaseMarketplaceClient):
                 reason=FetchFailureReason.transport_error,
                 detail=f"HTTP {status}",
             )
-        except httpx.HTTPError as e:
+
+    async def _request(
+        self, article: int, access: OzonAccess
+    ) -> OzonReply | MarketplaceFetchFailure:
+        """One HTTP attempt under one deadline; a failure is returned, not raised."""
+        try:
+            async with asyncio.timeout(self.TIMEOUT_SECONDS):
+                return await self._session.get(
+                    self.URL,
+                    params={"url": f"/product/{article}/"},
+                    access=access,
+                    timeout_seconds=self.TIMEOUT_SECONDS,
+                    max_body_bytes=self.MAX_BODY_BYTES,
+                )
+        except _BodyTooLarge:
+            detail = f"body exceeds {self.MAX_BODY_BYTES} bytes"
+            logger.error(f"Oversized body for Ozon article {article}: {detail}")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.bad_payload, detail=detail
+            )
+        except RequestException as e:
             logger.warning(f"Couldn't get data for Ozon article {article}")
             return MarketplaceFetchFailure(
                 reason=FetchFailureReason.transport_error,
@@ -199,6 +267,16 @@ class OzonClient(BaseMarketplaceClient):
                 reason=FetchFailureReason.transport_error,
                 detail=type(e).__name__,
             )
+
+    async def get_product_data(self, article: int) -> MarketplaceFetchResult:
+        """Fetch name and price for a single Ozon article.
+
+        Returns either `MarketplaceProductData` or a `MarketplaceFetchFailure`
+        marking one of `blocked`, `not_found`, `transport_error` or
+        `bad_payload` - never `None`, never an exception escaping to the
+        caller (`BaseMarketplaceClient` contract).
+        """
+        body = await self._fetch_body(article)
 
         if isinstance(body, MarketplaceFetchFailure):
             return body

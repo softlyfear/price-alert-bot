@@ -79,6 +79,7 @@ from app.bot.setup import wait_for_inflight_updates
 from app.core.config import AppSettings
 from app.core.config import BotSecret
 from app.core.config import DatabaseSettings
+from app.core.config import OzonSettings
 from app.core.config import RedisSettings
 from app.core.config import Settings
 from app.core.config import WbSettings
@@ -90,6 +91,10 @@ from app.repositories.user import UserRepository
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.services.notification import NotificationService
+from app.services.ozon_access import BrowserOzonAccessProvider
+from app.services.ozon_access import OzonAccess
+from app.services.ozon_client import OzonReply
+from app.services.ozon_client import OzonSession
 from app.services.price_service import REFRESH_DEADLINE_SECONDS
 from app.services.price_service import PriceRefresher
 from app.services.price_service import RefreshLimiter
@@ -100,6 +105,9 @@ from app.services.wb_access import WbAccessUnavailable
 from tests.unit.conftest import FAKE_BOT_USER
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_command_update
+from tests.unit.ozon_stubs import FakeOzonSession
+from tests.unit.ozon_stubs import StubOzonAccess
+from tests.unit.ozon_stubs import make_access
 from tests.unit.wb_access_stub import StubWbAccess
 from tests.unit.wb_access_stub import stub_client_factory
 
@@ -115,6 +123,7 @@ _SETTINGS_PREFIX_MODELS = (
     ("REDIS__", RedisSettings),
     ("APP__", AppSettings),
     ("WB__", WbSettings),
+    ("OZON__", OzonSettings),
 )
 
 
@@ -317,6 +326,13 @@ def _make_orchestration_settings(
             FAILURE_PAUSE_SECONDS=222.0,
             LAUNCH_BUDGET=4,
             LAUNCH_WINDOW_SECONDS=333.0,
+            BROWSER_SANDBOX=True,
+        ),
+        ozon=OzonSettings(
+            TOKEN_TIMEOUT_SECONDS=12.0,
+            FAILURE_PAUSE_SECONDS=234.0,
+            LAUNCH_BUDGET=5,
+            LAUNCH_WINDOW_SECONDS=345.0,
             BROWSER_SANDBOX=True,
         ),
     )
@@ -954,6 +970,41 @@ class _FakeShutdownWbAccess:
             await asyncio.Event().wait()
 
 
+class _FakeShutdownOzonAccess:
+    """The Ozon access provider's ``aclose``: records, optionally fails or hangs."""
+
+    def __init__(
+        self,
+        recorder: _Recorder,
+        *,
+        raises: Exception | None = None,
+        hangs: bool = False,
+    ) -> None:
+        self._recorder = recorder
+        self._raises = raises
+        self._hangs = hangs
+
+    async def aclose(self) -> None:
+        self._recorder.events.append("close_ozon_access")
+        if self._raises is not None:
+            raise self._raises
+        if self._hangs:
+            await asyncio.Event().wait()
+
+
+class _FakeShutdownOzonSession:
+    """``OzonSession.aclose``: records, optionally fails."""
+
+    def __init__(self, recorder: _Recorder, *, raises: Exception | None = None) -> None:
+        self._recorder = recorder
+        self._raises = raises
+
+    async def aclose(self) -> None:
+        self._recorder.events.append("close_ozon_session")
+        if self._raises is not None:
+            raise self._raises
+
+
 class _RecordingStopEvent(asyncio.Event):
     """The scheduler's ``stop_event``; ``set()`` records the first step."""
 
@@ -978,6 +1029,8 @@ class _ShutdownDoubles(NamedTuple):
     http_client: httpx.AsyncClient
     storage: RedisStorage
     wb_access: BrowserWbAccessProvider
+    ozon_access: BrowserOzonAccessProvider
+    ozon_session: OzonSession
 
     async def shutdown(self) -> None:
         await main._shutdown(*self)
@@ -993,6 +1046,9 @@ def _build_shutdown_doubles(
     close_storage_raises: Exception | None = None,
     close_wb_access_raises: Exception | None = None,
     close_wb_access_hangs: bool = False,
+    close_ozon_access_raises: Exception | None = None,
+    close_ozon_access_hangs: bool = False,
+    close_ozon_session_raises: Exception | None = None,
     already_done: bool = False,
     scheduler_ignores_stop: bool = False,
     scheduler_dies_with: Exception | None = None,
@@ -1026,6 +1082,10 @@ def _build_shutdown_doubles(
     wb_access = _FakeShutdownWbAccess(
         recorder, raises=close_wb_access_raises, hangs=close_wb_access_hangs
     )
+    ozon_access = _FakeShutdownOzonAccess(
+        recorder, raises=close_ozon_access_raises, hangs=close_ozon_access_hangs
+    )
+    ozon_session = _FakeShutdownOzonSession(recorder, raises=close_ozon_session_raises)
     return _ShutdownDoubles(
         cast(Dispatcher, dispatcher),
         polling_task,
@@ -1035,6 +1095,8 @@ def _build_shutdown_doubles(
         cast(httpx.AsyncClient, http_client),
         cast(RedisStorage, storage),
         cast(BrowserWbAccessProvider, wb_access),
+        cast(BrowserOzonAccessProvider, ozon_access),
+        cast(OzonSession, ozon_session),
     )
 
 
@@ -1100,26 +1162,30 @@ def _patch_generic_shutdown_steps(
 _EXPECTED_ORDER = [
     "signal_scheduler_stop",
     "close_wb_access",
+    "close_ozon_access",
     "stop_polling",
     "wait_polling_task",
     "wait_inflight_updates",
     "wait_scheduler_task",
     "close_bot_session",
     "close_http_client",
+    "close_ozon_session",
     "close_storage",
     "dispose_engine",
 ]
 
 
 @pytest.mark.asyncio
-async def test_shutdown_runs_all_ten_steps_in_the_exact_documented_order(
+async def test_shutdown_runs_all_twelve_steps_in_the_exact_documented_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mutation targets: swapping ``close_bot_session``/``dispose_engine``
     (PAB-067); moving ``wait_scheduler_task`` after ``close_bot_session`` or
     before ``wait_inflight_updates``; moving ``signal_scheduler_stop`` off the
     first place (PAB-069, Р3); moving ``close_wb_access`` off the second place
-    (PAB-079: right after ``signal_scheduler_stop``, before polling stops) --
+    (PAB-079: right after ``signal_scheduler_stop``, before polling stops);
+    moving ``close_ozon_access`` off the third place or ``close_ozon_session``
+    off the place right after ``close_http_client`` (PAB-110) --
     each turns this exact comparison red.
     """
     recorder = _Recorder()
@@ -1170,6 +1236,10 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
         doubles_kwargs["stop_polling_raises"] = boom
     elif failing_step == "close_wb_access":
         doubles_kwargs["close_wb_access_raises"] = boom
+    elif failing_step == "close_ozon_access":
+        doubles_kwargs["close_ozon_access_raises"] = boom
+    elif failing_step == "close_ozon_session":
+        doubles_kwargs["close_ozon_session_raises"] = boom
     elif failing_step == "close_bot_session":
         doubles_kwargs["close_bot_session_raises"] = boom
     elif failing_step == "close_http_client":
@@ -1199,7 +1269,7 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
     finally:
         logger.remove(sink_id)
 
-    # All ten steps still ran, in order, despite the one failure.
+    # All twelve steps still ran, in order, despite the one failure.
     assert recorder.events == _EXPECTED_ORDER
 
     error_records = [r for r in records if r["level"].name == "ERROR"]
@@ -1272,9 +1342,10 @@ async def test_shutdown_cancels_a_scheduler_that_ignores_stop_after_a_warning(
     assert "scheduler" in warnings[0]
     assert "Timed out" in warnings[0]
     # The steps after the scheduler wait still ran.
-    assert recorder.events[-4:] == [
+    assert recorder.events[-5:] == [
         "close_bot_session",
         "close_http_client",
+        "close_ozon_session",
         "close_storage",
         "dispose_engine",
     ]
@@ -1909,6 +1980,10 @@ class _CleanupProbe:
         self.storage = _patch_orchestration_factories(monkeypatch, bot=bot)
         self.failing = failing
         self._wrap(BrowserWbAccessProvider, "aclose", "close_wb_access", monkeypatch)
+        self._wrap(
+            BrowserOzonAccessProvider, "aclose", "close_ozon_access", monkeypatch
+        )
+        self._wrap(OzonSession, "aclose", "close_ozon_session", monkeypatch)
         self._wrap(bot.session, "close", "close_bot_session")
         self._wrap(httpx.AsyncClient, "aclose", "close_http_client", monkeypatch)
         self._wrap(self.storage, "close", "close_storage", monkeypatch)
@@ -1943,8 +2018,10 @@ class _CleanupProbe:
 
 _ALL_CLEANUP_STEPS = [
     "close_wb_access",
+    "close_ozon_access",
     "close_bot_session",
     "close_http_client",
+    "close_ozon_session",
     "close_storage",
     "dispose_engine",
 ]
@@ -3066,6 +3143,330 @@ def wb_spy(monkeypatch: pytest.MonkeyPatch) -> _WbAccessSpy:
     return _WbAccessSpy(monkeypatch)
 
 
+# --- PAB-110: Ozon access provider and session wiring (AC10) -----------------
+
+
+class _SpyOzonProvider(StubOzonAccess):
+    """Answers a 404-giving access; records constructor arguments and ``aclose``."""
+
+    def __init__(
+        self,
+        fetch_access: Callable[[], Awaitable[Any]],
+        *,
+        sink: list[_SpyOzonProvider],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        self.fetch_access = fetch_access
+        self.kwargs = kwargs
+        self.aclose_calls = 0
+        sink.append(self)
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _SpyOzonSession(FakeOzonSession):
+    """A planned session (always 404) that counts its ``aclose`` calls."""
+
+    def __init__(self, *, sink: list[_SpyOzonSession]) -> None:
+        super().__init__(OzonReply(404, None))
+        self.aclose_calls = 0
+        sink.append(self)
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+class _OzonSpy:
+    """Replaces ``main.BrowserOzonAccessProvider``, ``main.OzonSession`` and
+    ``main.fetch_ozon_access``; ``fetch_calls`` records the ``sandbox``
+    argument of every real-fetcher call made through what ``lifespan`` hands
+    to the provider."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.providers: list[_SpyOzonProvider] = []
+        self.sessions: list[_SpyOzonSession] = []
+        self.fetch_calls: list[bool] = []
+
+        async def fake_fetch_ozon_access(*, sandbox: bool) -> OzonAccess:
+            self.fetch_calls.append(sandbox)
+            return make_access(1)
+
+        monkeypatch.setattr(
+            main,
+            "BrowserOzonAccessProvider",
+            functools.partial(_SpyOzonProvider, sink=self.providers),
+        )
+        monkeypatch.setattr(
+            main, "OzonSession", functools.partial(_SpyOzonSession, sink=self.sessions)
+        )
+        monkeypatch.setattr(main, "fetch_ozon_access", fake_fetch_ozon_access)
+
+
+@pytest.fixture
+def ozon_spy(monkeypatch: pytest.MonkeyPatch) -> _OzonSpy:
+    return _OzonSpy(monkeypatch)
+
+
+async def _start_lifespan_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_builds_one_ozon_provider_from_ozon_settings_without_fetching(
+    monkeypatch: pytest.MonkeyPatch, ozon_spy: _OzonSpy
+) -> None:
+    """AC10 (а): one provider and one session per process, configured by the
+    ``OZON__`` settings (non-default 12 / 234 / 5 / 345 / sandbox on); startup
+    starts no browser; the fetcher handed to the provider calls
+    ``fetch_ozon_access`` with the sandbox setting."""
+    await _start_lifespan_only(monkeypatch)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert len(ozon_spy.providers) == 1
+        assert len(ozon_spy.sessions) == 1
+        assert ozon_spy.fetch_calls == []  # lazy: nothing fetched at startup
+        provider = ozon_spy.providers[0]
+        assert await provider.fetch_access() == make_access(1)
+
+    assert ozon_spy.fetch_calls == [True]
+    assert provider.kwargs == {
+        "token_timeout_seconds": 12.0,
+        "failure_pause_seconds": 234.0,
+        "launch_budget": 5,
+        "launch_window_seconds": 345.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_the_ozon_provider_and_session_exactly_once_on_exit(
+    monkeypatch: pytest.MonkeyPatch, ozon_spy: _OzonSpy
+) -> None:
+    await _start_lifespan_only(monkeypatch)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert ozon_spy.providers[0].aclose_calls == 0
+        assert ozon_spy.sessions[0].aclose_calls == 0
+
+    assert ozon_spy.providers[0].aclose_calls == 1
+    assert ozon_spy.sessions[0].aclose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_closes_both_ozon_resources_when_they_were_created(
+    monkeypatch: pytest.MonkeyPatch, ozon_spy: _OzonSpy
+) -> None:
+    boom = RuntimeError("create_bot boom")
+
+    def raising(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    _patch_orchestration_factories(monkeypatch, bot=build_fake_bot())
+    monkeypatch.setattr(main, "create_bot", raising)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert ozon_spy.providers[0].aclose_calls == 1
+    assert ozon_spy.sessions[0].aclose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_closes_the_session_when_the_ozon_provider_never_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provider constructor fails after the session was created: the
+    cleanup closes the session (and WB's provider) but has no Ozon provider."""
+    boom = RuntimeError("ozon provider boom")
+
+    def failing_provider(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    probe = _CleanupProbe(monkeypatch, build_fake_bot())
+    monkeypatch.setattr(main, "BrowserOzonAccessProvider", failing_provider)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert probe.events == [
+        "close_wb_access",
+        "close_http_client",
+        "close_ozon_session",
+        "close_storage",
+        "dispose_engine",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_touches_no_ozon_resource_when_the_session_never_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boom = RuntimeError("ozon session boom")
+
+    def failing_session(*args: Any, **kwargs: Any) -> Any:
+        raise boom
+
+    probe = _CleanupProbe(monkeypatch, build_fake_bot())
+    monkeypatch.setattr(main, "OzonSession", failing_session)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with main.lifespan(main.app):
+            pytest.fail("lifespan must not yield when startup fails")
+
+    assert exc_info.value is boom
+    assert probe.events == [
+        "close_wb_access",
+        "close_http_client",
+        "close_storage",
+        "dispose_engine",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_goes_on_when_closing_the_ozon_provider_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC10 (в): the step has a bounded budget (shortened to 0.05 s here);
+    a provider that never finishes ``aclose`` costs one logged
+    ``TimeoutError`` for ``close_ozon_access`` and every other step runs."""
+    from loguru import logger
+
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(recorder, close_ozon_access_hangs=True)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    monkeypatch.setattr(main, "_OZON_ACCESS_CLOSE_TIMEOUT_SECONDS", 0.05)
+    records: list[Record] = []
+
+    def _sink(message: Message) -> None:
+        records.append(message.record)
+
+    sink_id = logger.add(_sink, level="ERROR")
+    try:
+        await asyncio.wait_for(doubles.shutdown(), timeout=5)
+    finally:
+        logger.remove(sink_id)
+
+    assert recorder.events == _EXPECTED_ORDER
+    assert [r["extra"]["shutdown_step"] for r in records] == ["close_ozon_access"]
+    assert records[0]["extra"]["error_type"] == "TimeoutError"
+
+
+# --- PAB-110 AC10 (б): one browser at a time ----------------------------------
+
+
+class _Concurrency:
+    """Counts how many fake fetches run at once."""
+
+    def __init__(self) -> None:
+        self.running = 0
+        self.peak = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def work(self) -> None:
+        self.running += 1
+        self.peak = max(self.peak, self.running)
+        self.entered.set()
+        try:
+            await self.release.wait()
+        finally:
+            self.running -= 1
+
+
+@pytest.mark.asyncio
+async def test_wb_and_ozon_fetchers_from_lifespan_never_overlap(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy, ozon_spy: _OzonSpy
+) -> None:
+    """The two fetchers handed to the providers share one lock: started
+    together, the second does not run until the first has finished."""
+    await _start_lifespan_only(monkeypatch)
+    gauge = _Concurrency()
+
+    async def slow_wb(*, sandbox: bool) -> str:
+        await gauge.work()
+        return "wb"
+
+    async def slow_ozon(*, sandbox: bool) -> OzonAccess:
+        await gauge.work()
+        return make_access(1)
+
+    monkeypatch.setattr(main, "fetch_wb_token", slow_wb)
+    monkeypatch.setattr(main, "fetch_ozon_access", slow_ozon)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        wb_fetch = wb_spy.instances[0].fetch_token
+        ozon_fetch = ozon_spy.providers[0].fetch_access
+        tasks = [
+            asyncio.ensure_future(wb_fetch()),
+            asyncio.ensure_future(ozon_fetch()),
+        ]
+        await asyncio.wait_for(gauge.entered.wait(), 5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert gauge.running == 1  # the second one waits for the lock
+        gauge.release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 5)
+
+    assert gauge.peak == 1
+
+
+@pytest.mark.asyncio
+async def test_serialized_fetcher_releases_the_lock_when_cancelled() -> None:
+    lock = asyncio.Lock()
+    gauge = _Concurrency()
+
+    async def fetch() -> str:
+        await gauge.work()
+        return "done"
+
+    first = asyncio.ensure_future(main._serialized(lock, fetch)())
+    await asyncio.wait_for(gauge.entered.wait(), 5)
+    assert lock.locked()
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert not lock.locked()
+    gauge.release.set()
+    assert await asyncio.wait_for(main._serialized(lock, fetch)(), 5) == "done"
+
+
+@pytest.mark.asyncio
+async def test_serialized_fetcher_releases_the_lock_when_the_fetch_fails() -> None:
+    lock = asyncio.Lock()
+
+    async def fetch() -> str:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        await main._serialized(lock, fetch)()
+
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_serialized_fetcher_returns_the_fetch_result() -> None:
+    async def fetch() -> str:
+        return "value"
+
+    assert await main._serialized(asyncio.Lock(), fetch)() == "value"
+
+
 @pytest.mark.asyncio
 async def test_lifespan_builds_one_wb_provider_from_wb_settings_without_fetching(
     monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy
@@ -3100,12 +3501,13 @@ async def test_lifespan_builds_one_wb_provider_from_wb_settings_without_fetching
 
 
 @pytest.mark.asyncio
-async def test_lifespan_shares_one_factory_bound_to_the_provider(
-    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy
+async def test_lifespan_shares_one_factory_bound_to_the_providers(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy, ozon_spy: _OzonSpy
 ) -> None:
-    """AC8: ``create_dispatcher`` and ``PriceService`` get the very same
-    factory object, and it builds WB clients over the process's provider:
-    a WB client from it asks that provider for access, an Ozon one does not."""
+    """AC8, PAB-110 AC10: ``create_dispatcher`` and ``PriceService`` get the
+    very same factory object; a WB client from it asks the WB provider, an
+    Ozon client asks the Ozon provider and sends through the process's
+    ``OzonSession`` - each provider is asked by its own marketplace only."""
     dispatcher_calls: list[tuple[Any, ...]] = []
     price_service_kwargs: list[dict[str, Any]] = []
 
@@ -3127,18 +3529,24 @@ async def test_lifespan_shares_one_factory_bound_to_the_provider(
         await asyncio.sleep(0)
         factory = dispatcher_calls[0][4]
         assert price_service_kwargs[0]["client_factory"] is factory
-        provider = wb_spy.instances[0]
+        wb_provider = wb_spy.instances[0]
+        ozon_provider = ozon_spy.providers[0]
+        session = ozon_spy.sessions[0]
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda request: httpx.Response(403))
         ) as http:
             wb_result = await factory(Marketplace.wb, http).get_product_data(1)
-            assert provider.get_calls == 1
-            await factory(Marketplace.ozon, http).get_product_data(1)
-            assert provider.get_calls == 1
+            assert (wb_provider.get_calls, ozon_provider.get_calls) == (1, 0)
+            ozon_result = await factory(Marketplace.ozon, http).get_product_data(1)
+            assert (wb_provider.get_calls, ozon_provider.get_calls) == (1, 1)
 
     assert wb_result == MarketplaceFetchFailure(
         reason=FetchFailureReason.blocked, detail="WB access unavailable: closed"
     )
+    assert ozon_result == MarketplaceFetchFailure(
+        reason=FetchFailureReason.not_found, detail="HTTP 404"
+    )
+    assert len(session.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -3241,6 +3649,7 @@ def test_shutdown_budgets_are_30_45_5_and_wb_close_10_seconds() -> None:
     assert main._SCHEDULER_STOP_TIMEOUT_SECONDS == 45.0
     assert main._SCHEDULER_CANCEL_TIMEOUT_SECONDS == 5.0
     assert main._WB_ACCESS_CLOSE_TIMEOUT_SECONDS == 10.0
+    assert main._OZON_ACCESS_CLOSE_TIMEOUT_SECONDS == 10.0
 
 
 # --- PAB-100: the manual refresher and the display zone reach the bot (AC10) ---

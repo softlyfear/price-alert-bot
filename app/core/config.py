@@ -141,6 +141,26 @@ class WbSettings(BaseModel):
     BROWSER_SANDBOX: bool = False
 
 
+class OzonSettings(BaseModel):
+    """Ozon cookies acquisition through a browser (PAB-110, PROJECT.md 2.14 O8).
+
+    No secrets; same shape and defaults as ``WbSettings``. BROWSER_SANDBOX is
+    off by default for the same reason (restricted user namespaces).
+    """
+
+    TOKEN_TIMEOUT_SECONDS: float = Field(
+        default=30.0, gt=0, le=120, allow_inf_nan=False
+    )
+    FAILURE_PAUSE_SECONDS: float = Field(
+        default=300.0, gt=0, le=3600, allow_inf_nan=False
+    )
+    LAUNCH_BUDGET: int = Field(default=8, ge=1, le=100)
+    LAUNCH_WINDOW_SECONDS: float = Field(
+        default=900.0, gt=0, le=86400, allow_inf_nan=False
+    )
+    BROWSER_SANDBOX: bool = False
+
+
 class Settings(BaseSettings):
     """All settings for import."""
 
@@ -149,6 +169,7 @@ class Settings(BaseSettings):
     redis: RedisSettings
     app: AppSettings = Field(default_factory=AppSettings)
     wb: WbSettings = Field(default_factory=WbSettings)
+    ozon: OzonSettings = Field(default_factory=OzonSettings)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

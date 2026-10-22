@@ -107,6 +107,8 @@ services:
       # inside its own sandbox. If the sandbox cannot start, the fetch fails with
       # detail `sandbox_unavailable` instead of running without it.
       WB__BROWSER_SANDBOX: "true"
+      # Same invariant for the Ozon cookie fetch (same Chromium, same reason).
+      OZON__BROWSER_SANDBOX: "true"
       # Chromium writes its profile and caches under HOME / XDG_*; the root
       # filesystem is read-only, so they point into the /tmp tmpfs.
       HOME: /tmp
@@ -151,28 +153,31 @@ services:
       # container (TASKS.md, section K, question 3). Revisit when Docker Engine on
       # the server is updated.
       - seccomp=./docker/seccomp-chromium.json
-    # Memory limit (PAB-080 AC7): (D5 peak + app working memory + WB batch reserve)
-    # x 1.25, rounded up to 64 MiB. memswap_limit = mem_limit: no swap, so the limit
-    # is real and an overrun is an OOM kill, not a slowdown.
-    #   D5 memory.peak, max of 5 live fetches (cgroup, fresh container): 441.2 MiB
+    # Memory limit (PAB-080 AC7, revised in PAB-110 AC14 (v)): (peak + app working
+    # memory + WB batch reserve) x 1.25, rounded up to 64 MiB. memswap_limit =
+    # mem_limit: no swap, so the limit is real and an overrun is an OOM kill, not a
+    # slowdown.
+    #   clean peak while obtaining Ozon access (PAB-110 AC14 (v)): memory.current
+    #   214 -> 524 MiB, sampled every 50 ms:                          524 MiB
     #   app working memory (aiogram, SQLAlchemy, FastAPI, pools; not measured):
     #                                                            240 MiB (estimate)
     #   WB batch of 4 MiB body (measured: peak delta of 3 consecutive batches
     #   through WbClient against a stub, 4126814 B body):         10.3 MiB
-    #   (441.2 + 240 + 10.3) x 1.25 = 864.3 MiB -> 896 MiB.
+    #   (524 + 240 + 10.3) x 1.25 = 967.9 MiB -> 1024 MiB.
     # Recompute if the browser, batch size or body cap changes.
-    mem_limit: 896m
-    memswap_limit: 896m
+    mem_limit: 1024m
+    memswap_limit: 1024m
     # CPU: the target server has 2 cores shared with postgres, redis and the OS.
     # 1.5 leaves 0.5 core for them; Chromium startup is CPU-bound and gets the rest.
     cpus: 1.5
     # Shutdown budgets in app/main.py are sequential: 30 (in-flight updates)
     # + 45 (scheduler stop) + 5 (scheduler cancel) + 10 (WB token step: closing
-    # the browser) = 90 s, plus 20 s for steps without a budget = 110 s.
+    # the browser) + 10 (Ozon access step, close_ozon_access) = 100 s, plus 20 s
+    # for steps without a budget = 120 s.
     # Recompute if a constant changes or the process tree changes.
     # `init` is on: with it the exit code of uvicorn on SIGTERM is 143, not 0;
     # `restart: unless-stopped` does not care.
-    stop_grace_period: 110s
+    stop_grace_period: 120s
     healthcheck:
       # 200 only; 503 (polling or scheduler dead) raises and fails the check.
       # python:slim has no curl/wget, so the standard library does the request.

@@ -51,6 +51,9 @@ from app.repositories.user import UserRepository
 from app.scheduler import price_check_loop
 from app.services.client_factory import get_client
 from app.services.notification import NotificationService
+from app.services.ozon_access import BrowserOzonAccessProvider
+from app.services.ozon_browser import fetch_ozon_access
+from app.services.ozon_client import OzonSession
 from app.services.price_service import REFRESH_DEADLINE_SECONDS
 from app.services.price_service import REFRESH_WINDOW_SECONDS
 from app.services.price_service import PriceRefresher
@@ -81,6 +84,8 @@ _SCHEDULER_CANCEL_TIMEOUT_SECONDS: Final[float] = 5.0
 # Budget for the WB access provider to cancel a running token fetch and close
 # the browser (PAB-079); the browser is closed inside the fetch's own cleanup.
 _WB_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
+# Same budget for the Ozon access provider (PAB-110, O9).
+_OZON_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
 def _log_task_failure(task: "asyncio.Task[None]", label: str) -> None:
@@ -288,6 +293,30 @@ async def _close_wb_access(wb_access: BrowserWbAccessProvider) -> None:
     await asyncio.wait_for(wb_access.aclose(), _WB_ACCESS_CLOSE_TIMEOUT_SECONDS)
 
 
+async def _close_ozon_access(ozon_access: BrowserOzonAccessProvider) -> None:
+    await asyncio.wait_for(ozon_access.aclose(), _OZON_ACCESS_CLOSE_TIMEOUT_SECONDS)
+
+
+async def _close_ozon_session(ozon_session: OzonSession) -> None:
+    await ozon_session.aclose()
+
+
+def _serialized[T](
+    lock: asyncio.Lock, fetch: Callable[[], Awaitable[T]]
+) -> Callable[[], Awaitable[T]]:
+    """Wrap an access fetcher so that fetchers sharing ``lock`` never overlap.
+
+    One browser at a time in the process (PAB-110): WB and Ozon fetchers get
+    the same lock. A cancelled fetcher releases the lock on its way out.
+    """
+
+    async def run() -> T:
+        async with lock:
+            return await fetch()
+
+    return run
+
+
 async def _close_storage(storage: RedisStorage) -> None:
     await storage.close()
 
@@ -316,11 +345,14 @@ async def _shutdown(
     http_client: httpx.AsyncClient,
     storage: RedisStorage,
     wb_access: BrowserWbAccessProvider,
+    ozon_access: BrowserOzonAccessProvider,
+    ozon_session: OzonSession,
 ) -> None:
     """Tear down everything ``lifespan`` started, in the fixed order (Р6, Р3).
 
     Order: signal the scheduler to stop -> close the WB access provider
-    (PAB-079; an in-flight check then gets an honest ``blocked``) -> stop
+    (PAB-079; an in-flight check then gets an honest ``blocked``) -> close
+    the Ozon access provider (PAB-110) -> stop
     polling if it is still running -> wait for the polling task -> wait for
     in-flight updates -> wait for the scheduler (bounded; it uses the bot and
     the HTTP client) -> close the bot session -> close the shared HTTP client
@@ -332,6 +364,7 @@ async def _shutdown(
         [
             ("signal_scheduler_stop", lambda: _signal_scheduler_stop(stop_event)),
             ("close_wb_access", lambda: _close_wb_access(wb_access)),
+            ("close_ozon_access", lambda: _close_ozon_access(ozon_access)),
             (
                 "stop_polling",
                 lambda: _stop_polling_if_running(dispatcher, polling_task),
@@ -341,6 +374,7 @@ async def _shutdown(
             ("wait_scheduler_task", lambda: _await_scheduler_task(scheduler_task)),
             ("close_bot_session", lambda: _close_bot_session(bot)),
             ("close_http_client", lambda: _close_http_client(http_client)),
+            ("close_ozon_session", lambda: _close_ozon_session(ozon_session)),
             ("close_storage", lambda: _close_storage(storage)),
             ("dispose_engine", dispose_engine),
         ]
@@ -352,19 +386,26 @@ async def _cleanup_failed_startup(
     http_client: httpx.AsyncClient | None,
     storage: RedisStorage,
     wb_access: BrowserWbAccessProvider | None = None,
+    ozon_access: BrowserOzonAccessProvider | None = None,
+    ozon_session: OzonSession | None = None,
 ) -> None:
     """Release whatever startup managed to create, each step isolated.
 
-    ``bot``, ``http_client`` and ``wb_access`` are ``None`` when their
+    ``bot``, ``http_client``, ``wb_access``, ``ozon_access`` and
+    ``ozon_session`` are ``None`` when their
     constructor did not finish; such a resource is skipped rather than touched.
     """
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = []
     if wb_access is not None:
         steps.append(("close_wb_access", lambda: _close_wb_access(wb_access)))
+    if ozon_access is not None:
+        steps.append(("close_ozon_access", lambda: _close_ozon_access(ozon_access)))
     if bot is not None:
         steps.append(("close_bot_session", lambda: _close_bot_session(bot)))
     if http_client is not None:
         steps.append(("close_http_client", lambda: _close_http_client(http_client)))
+    if ozon_session is not None:
+        steps.append(("close_ozon_session", lambda: _close_ozon_session(ozon_session)))
     steps.append(("close_storage", lambda: _close_storage(storage)))
     steps.append(("dispose_engine", dispose_engine))
     await _run_steps(steps)
@@ -431,19 +472,45 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     bot: Bot | None = None
     http_client: httpx.AsyncClient | None = None
     wb_access: BrowserWbAccessProvider | None = None
+    ozon_access: BrowserOzonAccessProvider | None = None
+    ozon_session: OzonSession | None = None
     try:
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(settings.app.HTTP_TIMEOUT_SECONDS)
         )
+        # One browser at a time in the process: both fetchers share one lock.
+        browser_lock = asyncio.Lock()
         # Lazy: no browser starts until the first WB price check needs a token.
         wb_access = BrowserWbAccessProvider(
-            lambda: fetch_wb_token(sandbox=settings.wb.BROWSER_SANDBOX),
+            _serialized(
+                browser_lock,
+                lambda: fetch_wb_token(sandbox=settings.wb.BROWSER_SANDBOX),
+            ),
             token_timeout_seconds=settings.wb.TOKEN_TIMEOUT_SECONDS,
             failure_pause_seconds=settings.wb.FAILURE_PAUSE_SECONDS,
             launch_budget=settings.wb.LAUNCH_BUDGET,
             launch_window_seconds=settings.wb.LAUNCH_WINDOW_SECONDS,
         )
-        client_factory = functools.partial(get_client, wb_access=wb_access)
+        ozon_session = OzonSession()
+        # Lazy as well: Chromium starts on the first Ozon check, not at startup.
+        ozon_access = BrowserOzonAccessProvider(
+            _serialized(
+                browser_lock,
+                functools.partial(
+                    fetch_ozon_access, sandbox=settings.ozon.BROWSER_SANDBOX
+                ),
+            ),
+            token_timeout_seconds=settings.ozon.TOKEN_TIMEOUT_SECONDS,
+            failure_pause_seconds=settings.ozon.FAILURE_PAUSE_SECONDS,
+            launch_budget=settings.ozon.LAUNCH_BUDGET,
+            launch_window_seconds=settings.ozon.LAUNCH_WINDOW_SECONDS,
+        )
+        client_factory = functools.partial(
+            get_client,
+            wb_access=wb_access,
+            ozon_access=ozon_access,
+            ozon_session=ozon_session,
+        )
         bot = create_bot(settings)
         setup_logging(redact=[bot.token.partition(":")[2]])
         await _ensure_telegram_available(bot)
@@ -500,7 +567,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.scheduler_task = scheduler_task
     except BaseException:
         watch.stopping = True
-        await _cleanup_failed_startup(bot, http_client, storage, wb_access)
+        await _cleanup_failed_startup(
+            bot, http_client, storage, wb_access, ozon_access, ozon_session
+        )
         raise
 
     try:
@@ -516,6 +585,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             http_client,
             storage,
             wb_access,
+            ozon_access,
+            ozon_session,
         )
 
 

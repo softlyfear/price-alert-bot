@@ -8,6 +8,7 @@ the network. The SQL itself and the real SAVEPOINT behaviour are covered by
 
 from __future__ import annotations
 
+import functools
 from datetime import UTC
 from datetime import datetime
 from types import TracebackType
@@ -42,8 +43,12 @@ from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import UnsupportedMarketplaceError
+from app.services.client_factory import get_client
+from app.services.ozon_client import OzonReply
 from app.services.tracking import TrackingService
-from tests.unit.wb_access_stub import stub_client_factory
+from tests.unit.ozon_stubs import FakeOzonSession
+from tests.unit.ozon_stubs import StubOzonAccess
+from tests.unit.wb_access_stub import StubWbAccess
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -363,18 +368,19 @@ async def test_preview_ozon_with_real_factory_antibot_403_is_blocked_warning(
     """PAB-071 AC8: the real factory builds `OzonClient`; a 403 from the
     (mock) network surfaces as `blocked` plus one WARNING, not as
     `MarketplaceNotSupportedError`."""
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(403, json={"incidentId": "synthetic"})
+    ozon_session = FakeOzonSession(OzonReply(403, None))
 
     harness = _build(monkeypatch)
-    real_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    real_http = httpx.AsyncClient()
     service = TrackingService(
         session=cast(AsyncSession, harness.session),
         http_client=real_http,
-        client_factory=stub_client_factory(),
+        client_factory=functools.partial(
+            get_client,
+            wb_access=StubWbAccess(),
+            ozon_access=StubOzonAccess(),
+            ozon_session=ozon_session,
+        ),
         max_products_per_user=_LIMIT,
     )
     records: list[Record] = []
@@ -391,7 +397,7 @@ async def test_preview_ozon_with_real_factory_antibot_403_is_blocked_warning(
 
     assert isinstance(result, MarketplaceFetchFailure)
     assert result.reason is FetchFailureReason.blocked
-    assert [r.url.host for r in requests] == ["www.ozon.ru"]
+    assert len(ozon_session.requests) == 2  # one renewal, then blocked
     service_records = [r for r in records if r["extra"].get("reason") == "blocked"]
     assert len(service_records) == 1
     assert service_records[0]["level"].name == "WARNING"

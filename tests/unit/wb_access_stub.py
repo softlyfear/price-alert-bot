@@ -14,9 +14,12 @@ import httpx
 from app.models.enums import Marketplace
 from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import get_client
+from app.services.ozon_client import OzonReply
 from app.services.wb_access import WbAccess
 from app.services.wb_access import WbAccessProvider
 from app.services.wb_access import WbAccessUnavailable
+from tests.unit.ozon_stubs import FakeOzonSession
+from tests.unit.ozon_stubs import StubOzonAccess
 
 
 def make_pair(n: int) -> WbAccess:
@@ -53,4 +56,9 @@ def stub_client_factory(
     access: WbAccessProvider | None = None,
 ) -> Callable[[Marketplace, httpx.AsyncClient], BaseMarketplaceClient]:
     """The factory shape `main.lifespan` builds: `get_client` bound to a provider."""
-    return functools.partial(get_client, wb_access=access or StubWbAccess())
+    return functools.partial(
+        get_client,
+        wb_access=access or StubWbAccess(),
+        ozon_access=StubOzonAccess(),
+        ozon_session=FakeOzonSession(OzonReply(200, b"")),
+    )
