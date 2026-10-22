@@ -56,6 +56,24 @@ _LIMIT = 3
 _WB = Marketplace.wb
 
 
+_NO_SESSION = cast(AsyncSession, None)
+
+
+def _assert_keys_accepted_by_real_repository(
+    repository: ProductRepository | AlertRepository, data: dict[str, Any]
+) -> None:
+    """Fail when the service passes a key the real ``_create_fields`` rejects.
+
+    The repositories are mocked here, so without this check a field the
+    service sends but the real white list refuses would only be caught by the
+    live-database suite.
+    """
+    unknown = set(data) - repository._create_fields
+    assert not unknown, (
+        f"{type(repository).__name__}.create would reject keys {sorted(unknown)}"
+    )
+
+
 def _integrity_error() -> IntegrityError:
     return IntegrityError("INSERT", {}, Exception("orig"))
 
@@ -145,6 +163,7 @@ def _build(
     products.get_by_article_and_user.return_value = existing_product
 
     async def create_product(data: dict[str, Any]) -> Product:
+        _assert_keys_accepted_by_real_repository(ProductRepository(_NO_SESSION), data)
         events.append("create_product")
         return _product()
 
@@ -154,6 +173,7 @@ def _build(
     alerts_repo.get_by_user_and_product.return_value = alerts or []
 
     async def create_alert(data: dict[str, Any]) -> Alert:
+        _assert_keys_accepted_by_real_repository(AlertRepository(_NO_SESSION), data)
         events.append("create_alert")
         return _alert(target_price=data["target_price"], direction=data["direction"])
 

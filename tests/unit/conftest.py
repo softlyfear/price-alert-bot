@@ -16,6 +16,8 @@ from collections.abc import Callable
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 from typing import Any
+from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -37,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.setup import create_dispatcher
+from app.services.price_service import PriceRefresher
 from tests.unit.wb_access_stub import stub_client_factory
 
 if TYPE_CHECKING:
@@ -164,15 +167,23 @@ def real_dispatcher() -> Dispatcher:
     factory is bound to no engine: a session that never executes a statement
     opens no connection, so handlers that do not touch the database work
     without one. The HTTP client is never closed here because nothing is
-    ever sent through it.
+    ever sent through it. ``display_timezone`` (Europe/Moscow) and a
+    ``PriceRefresher`` double that never throttles are put into the workflow
+    data, as ``app/main.py`` does.
     """
-    return create_dispatcher(
+    dispatcher = create_dispatcher(
         MemoryStorage(),
         async_sessionmaker(class_=AsyncSession),
         httpx.AsyncClient(),
         50,
         stub_client_factory(),
     )
+    # ``app/main.py`` adds these two after ``create_dispatcher`` (PAB-100).
+    dispatcher["display_timezone"] = ZoneInfo("Europe/Moscow")
+    refresher = MagicMock(spec=PriceRefresher)
+    refresher.reserve.return_value = None
+    dispatcher["price_refresher"] = refresher
+    return dispatcher
 
 
 _chat_id_counter = itertools.count(10_000)

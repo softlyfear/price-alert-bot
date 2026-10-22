@@ -19,6 +19,7 @@ from typing import Any
 from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -967,7 +968,7 @@ async def test_link_handler_ignores_a_message_without_text() -> None:
     tracking = MagicMock()
     tracking.preview = AsyncMock()
 
-    await _handler("on_link")(message, MagicMock(), tracking)
+    await _handler("on_link")(message, MagicMock(), tracking, ZoneInfo("Europe/Moscow"))
 
     message.answer.assert_not_called()
     tracking.preview.assert_not_called()

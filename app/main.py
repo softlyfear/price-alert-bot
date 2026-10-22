@@ -16,6 +16,7 @@ import asyncio
 import functools
 import os
 import signal
+import time
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -50,7 +51,11 @@ from app.repositories.user import UserRepository
 from app.scheduler import price_check_loop
 from app.services.client_factory import get_client
 from app.services.notification import NotificationService
+from app.services.price_service import REFRESH_DEADLINE_SECONDS
+from app.services.price_service import REFRESH_WINDOW_SECONDS
+from app.services.price_service import PriceRefresher
 from app.services.price_service import PriceService
+from app.services.price_service import RefreshLimiter
 from app.services.wb_access import BrowserWbAccessProvider
 from app.services.wb_browser import fetch_wb_token
 
@@ -461,6 +466,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             http_client=http_client,
             alert_cooldown_seconds=settings.app.ALERT_COOLDOWN_SECONDS,
         )
+        dispatcher["price_refresher"] = PriceRefresher(
+            price_service,
+            sessionmaker,
+            ProductRepository,
+            UserRepository,
+            concurrency=settings.app.MARKETPLACE_CONCURRENCY,
+            limiter=RefreshLimiter(REFRESH_WINDOW_SECONDS, time.monotonic),
+            deadline_seconds=REFRESH_DEADLINE_SECONDS,
+        )
+        dispatcher["display_timezone"] = settings.app.DISPLAY_TIMEZONE
         await configure_bot_profile(bot)
 
         polling_task: asyncio.Task[None] = asyncio.create_task(

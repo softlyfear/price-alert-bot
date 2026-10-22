@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -104,6 +105,19 @@ class AppSettings(BaseModel):
     MAX_PRODUCTS_PER_USER: int = Field(default=50, gt=0)
     MARKETPLACE_CONCURRENCY: int = Field(default=5, gt=0)
     HTTP_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=60, allow_inf_nan=False)
+    DISPLAY_TIMEZONE: ZoneInfo = ZoneInfo("Europe/Moscow")
+
+    @field_validator("DISPLAY_TIMEZONE", mode="before")
+    @classmethod
+    def _parse_timezone(cls, value: object) -> object:
+        """Turn an IANA name into ``ZoneInfo``; reject blank and unknown names."""
+        if not isinstance(value, str):
+            return value
+        try:
+            return ZoneInfo(value.strip())
+        except (ValueError, LookupError, OSError) as exc:
+            msg = "unknown IANA timezone name"
+            raise ValueError(msg) from exc
 
 
 class WbSettings(BaseModel):

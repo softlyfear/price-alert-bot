@@ -11,10 +11,12 @@ from app.bot.keyboards import AlertEditCb
 from app.bot.keyboards import AlertRemoveCb
 from app.bot.keyboards import EditCancelCb
 from app.bot.keyboards import ProductCardCb
+from app.bot.keyboards import ProductRefreshCb
 from app.bot.keyboards import ProductRemoveCb
 from app.bot.keyboards import duplicate_exit_keyboard
 from app.bot.keyboards import edit_cancel_keyboard
 from app.bot.keyboards import nav_keyboard
+from app.bot.keyboards import no_buttons_keyboard
 from app.bot.keyboards import product_card_keyboard
 from app.bot.keyboards import product_list_keyboard
 from app.domain.money import MAX_PRICE_KOPECKS
@@ -27,6 +29,8 @@ _NB = "\u00a0"
 _MAX_ID = 2_147_483_647
 _CARD_NAV_ROW = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
+_LIST_REFRESH_ROW = [("🔄 Обновить цены", "list:refresh")]
+_CARD_REFRESH_ROW = [("🔄 Обновить цену", "pref:4")]
 
 
 def _product(product_id: int, name: str = "Item", price: int = 199_000) -> Product:
@@ -58,6 +62,7 @@ def test_list_keyboard_has_one_button_per_product_with_name_and_price() -> None:
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
         [(f"Кроссовки — 1{_NB}990{_NB}₽", "pcard:7")],
         [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        _LIST_REFRESH_ROW,
         _NAV_ROW,
     ]
 
@@ -83,16 +88,18 @@ def test_list_keyboard_collapses_whitespace_and_newlines_in_the_name() -> None:
 def test_list_keyboard_with_exactly_fifty_products_shows_all_of_them() -> None:
     rows = product_list_keyboard([_product(i) for i in range(1, 51)]).inline_keyboard
 
-    assert len(rows) == 50 + 1
+    assert len(rows) == 50 + 2
     assert rows[49][0].callback_data == "pcard:50"
+    assert [(b.text, b.callback_data) for b in rows[-2]] == _LIST_REFRESH_ROW
     assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
 
 
 def test_list_keyboard_with_fifty_one_products_shows_the_first_fifty() -> None:
     rows = product_list_keyboard([_product(i) for i in range(1, 52)]).inline_keyboard
 
-    assert len(rows) == 50 + 1
+    assert len(rows) == 50 + 2
     assert rows[49][0].callback_data == "pcard:50"
+    assert [(b.text, b.callback_data) for b in rows[-2]] == _LIST_REFRESH_ROW
     assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
 
 
@@ -102,7 +109,9 @@ def test_list_keyboard_without_products_is_only_the_navigation_row() -> None:
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
 
 
-def test_card_keyboard_has_one_row_per_alert_then_stop_tracking_then_nav() -> None:
+def test_card_keyboard_has_one_row_per_alert_then_refresh_add_stop_tracking_nav() -> (
+    None
+):
     rows = product_card_keyboard(
         4,
         [
@@ -114,6 +123,7 @@ def test_card_keyboard_has_one_row_per_alert_then_stop_tracking_then_nav() -> No
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
         [(f"✏️ 1{_NB}000{_NB}₽", "aedit:11:4"), ("🗑 Убрать", "adel:11:4")],
         [(f"✏️ 3{_NB}000{_NB}₽", "aedit:12:4"), ("🗑 Убрать", "adel:12:4")],
+        _CARD_REFRESH_ROW,
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:4")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
         _CARD_NAV_ROW,
@@ -137,10 +147,11 @@ def test_card_keyboard_shows_arrows_only_on_buttons_with_a_same_amount_twin() ->
     ]
 
 
-def test_card_keyboard_without_alerts_has_stop_tracking_then_nav() -> None:
+def test_card_keyboard_without_alerts_has_refresh_add_stop_tracking_then_nav() -> None:
     rows = product_card_keyboard(4, []).inline_keyboard
 
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        _CARD_REFRESH_ROW,
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:4")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:4")],
         _CARD_NAV_ROW,
@@ -166,7 +177,7 @@ def test_card_keyboard_keeps_the_alert_order_edit_button_first_in_each_row() -> 
 
     data = [
         [b.callback_data for b in row]
-        for row in product_card_keyboard(4, alerts).inline_keyboard[:-3]
+        for row in product_card_keyboard(4, alerts).inline_keyboard[:-4]
     ]
 
     assert data == [
@@ -307,14 +318,14 @@ def test_add_and_edit_cancel_prefixes_are_list_prefixes_with_the_legacy_one() ->
 
 
 @pytest.mark.parametrize("count", [0, 1, 2, 5])
-def test_card_keyboard_has_k_plus_three_rows_and_two_buttons_per_alert_row(
+def test_card_keyboard_has_k_plus_four_rows_and_two_buttons_per_alert_row(
     count: int,
 ) -> None:
     alerts = [_alert(40 + i, AlertDirection.below, 100_000 + i) for i in range(count)]
 
     rows = product_card_keyboard(4, alerts).inline_keyboard
 
-    assert len(rows) == count + 3
+    assert len(rows) == count + 4
     for i, row in enumerate(rows[:count]):
         assert [b.callback_data for b in row] == [
             f"aedit:{40 + i}:4",
@@ -322,7 +333,7 @@ def test_card_keyboard_has_k_plus_three_rows_and_two_buttons_per_alert_row(
         ]
         assert row[0].text.startswith("✏️ ")
         assert row[1].text == "🗑 Убрать"
-    assert [len(row) for row in rows[count:]] == [1, 1, 2]  # add, stop, navigation
+    assert [len(row) for row in rows[count:]] == [1, 1, 1, 2]  # refresh, add, stop, nav
 
 
 def test_card_keyboard_arrow_stands_only_on_the_matching_amounts() -> None:
@@ -365,3 +376,66 @@ def test_duplicate_exit_keyboard_is_list_row_then_main_menu_row() -> None:
         [("← К списку товаров", "dlg:list")],
         [("Главное меню", "dlg:menu")],
     ]
+
+
+# --- PAB-100: refresh buttons -----------------------------------------------------
+
+
+def test_list_keyboard_without_products_has_no_refresh_button() -> None:
+    data = [
+        b.callback_data
+        for row in product_list_keyboard([]).inline_keyboard
+        for b in row
+    ]
+
+    assert "list:refresh" not in data
+
+
+def test_list_keyboard_puts_the_refresh_row_between_products_and_navigation() -> None:
+    rows = product_list_keyboard([_product(1)]).inline_keyboard
+
+    assert [[b.callback_data for b in row] for row in rows] == [
+        ["pcard:1"],
+        ["list:refresh"],
+        ["menu:add", "menu:start"],
+    ]
+
+
+def test_card_keyboard_puts_the_refresh_row_directly_above_the_add_threshold_row() -> (
+    None
+):
+    rows = product_card_keyboard(4, [_alert(11, AlertDirection.below, 100_000)])
+    flat = [[(b.text, b.callback_data) for b in row] for row in rows.inline_keyboard]
+
+    add = flat.index([("➕ Добавить порог", "aadd:4")])
+    assert flat[add - 1] == [("🔄 Обновить цену", "pref:4")]
+
+
+def test_refresh_payload_fits_the_telegram_limit_at_the_largest_id() -> None:
+    packed = ProductRefreshCb(product_id=_MAX_ID).pack()
+
+    assert packed == f"pref:{_MAX_ID}"
+    assert len(packed.encode()) <= 64
+
+
+@pytest.mark.parametrize("bad", [0, -1, _MAX_ID + 1])
+def test_refresh_factory_rejects_ids_outside_the_int4_range(bad: int) -> None:
+    with pytest.raises(ValidationError):
+        ProductRefreshCb(product_id=bad)
+
+
+@pytest.mark.parametrize("good", [1, _MAX_ID])
+def test_refresh_factory_accepts_the_range_boundaries(good: int) -> None:
+    assert ProductRefreshCb(product_id=good).product_id == good
+
+
+def test_refresh_prefix_is_a_list_prefix_so_a_broken_payload_gets_the_stale_reply() -> (
+    None
+):
+    assert "pref" in CB_LIST_PREFIXES
+
+
+def test_no_buttons_keyboard_is_an_empty_markup_not_none() -> None:
+    markup = no_buttons_keyboard()
+
+    assert markup.inline_keyboard == []

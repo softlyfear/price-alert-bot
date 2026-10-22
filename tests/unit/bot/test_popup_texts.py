@@ -62,3 +62,14 @@ def test_predicate_counts_utf16_units_not_code_points() -> None:
 
     assert len(text) == 200
     assert not _fits(text)
+
+
+# --- PAB-100: the refresh refusal popup is built by a function ----------------
+
+
+@pytest.mark.parametrize("seconds", [1, 59, 60, 10**9])
+def test_refresh_throttled_popup_fits_the_bot_api_limit(seconds: int) -> None:
+    text = texts.refresh_throttled_text(seconds)
+
+    assert text == (f"Обновлять цены можно раз в минуту. Попробуйте через {seconds} с.")
+    assert _fits(text), f"{_utf16_len(text)} UTF-16 units"

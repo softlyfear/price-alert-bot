@@ -12,6 +12,9 @@ from __future__ import annotations
 import inspect
 import re
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.types import BotCommand
@@ -19,6 +22,8 @@ from aiogram.types import BotCommand
 from app.bot import texts
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.services.price_service import RefreshFailure
+from app.services.price_service import RefreshReport
 
 # A slash that is not part of a URL or path (no word char, "/" or ":" before it)
 # followed by a bot command name up to a word boundary.
@@ -54,6 +59,20 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
     ),
     "edit_changed_text": lambda: texts.edit_changed_text(
         AlertDirection.below, 1_000_00
+    ),
+    "refresh_throttled_text": lambda: texts.refresh_throttled_text(42),
+    "price_time_label": lambda: texts.price_time_label(
+        datetime(2026, 10, 21, 11, 5, tzinfo=UTC),
+        datetime(2026, 10, 22, 11, 5, tzinfo=UTC),
+        ZoneInfo("Europe/Moscow"),
+    ),
+    "refresh_list_summary": lambda: "\n".join(
+        texts.refresh_list_summary(RefreshReport(8, 1, {reason: 1}))
+        for reason in RefreshFailure
+    ),
+    "refresh_card_summary": lambda: "\n".join(
+        texts.refresh_card_summary(RefreshReport(1, 0, {reason: 1}), Marketplace.ozon)
+        for reason in RefreshFailure
     ),
 }
 

@@ -17,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 from typing import assert_never
+from zoneinfo import ZoneInfo
 
 import httpx
 from aiogram import BaseMiddleware
@@ -195,9 +196,11 @@ async def _lookup_tracked(
     return card
 
 
-def _already_tracked_screen(card: ProductCard) -> tuple[str, InlineKeyboardMarkup]:
+def _already_tracked_screen(
+    card: ProductCard, display_timezone: ZoneInfo
+) -> tuple[str, InlineKeyboardMarkup]:
     """Product card prefixed with the "already tracked" line."""
-    text, keyboard = card_screen(card)
+    text, keyboard = card_screen(card, display_timezone)
     return f"{texts.ADD_ALREADY_TRACKED_TEXT}\n\n{text}", keyboard
 
 
@@ -209,7 +212,7 @@ def _parse_fetched_at(raw: object) -> datetime | None:
         value = datetime.fromisoformat(raw)
     except ValueError:
         return None
-    if value.tzinfo is None or value.utcoffset() is None:
+    if value.tzinfo is None:
         return None
     return value
 
@@ -367,6 +370,7 @@ def create_router() -> Router:
         callback_data: AddRefCb,
         state: FSMContext,
         tracking: TrackingService,
+        display_timezone: ZoneInfo,
     ) -> None:
         """ "Add this product" button: restart the dialog at the link step."""
         message = callback.message
@@ -383,7 +387,7 @@ def create_router() -> Router:
             message.message_id, ref, callback.from_user.id, state, tracking
         )
         if isinstance(found, ProductCard):
-            text, keyboard = _already_tracked_screen(found)
+            text, keyboard = _already_tracked_screen(found, display_timezone)
             await edit_callback_message(
                 callback,
                 text,
@@ -412,7 +416,10 @@ def create_router() -> Router:
 
     @router.message(StateFilter(AddProduct.waiting_link), F.text)
     async def on_link(
-        message: Message, state: FSMContext, tracking: TrackingService
+        message: Message,
+        state: FSMContext,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
     ) -> None:
         """Parse the link, show the product card or an honest refusal."""
         if message.from_user is None or message.text is None:
@@ -431,7 +438,7 @@ def create_router() -> Router:
             message.message_id, ref, message.from_user.id, state, tracking
         )
         if isinstance(found, ProductCard):
-            text, keyboard = _already_tracked_screen(found)
+            text, keyboard = _already_tracked_screen(found, display_timezone)
             await message.answer(text, reply_markup=keyboard, parse_mode=None)
             return
         if found is _Skip.stale:
