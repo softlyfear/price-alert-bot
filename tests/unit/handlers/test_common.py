@@ -16,32 +16,39 @@ clarity, though a collision is no longer possible even without it.
 
 from typing import Any
 from typing import cast
+from unittest.mock import MagicMock
 
-import httpx
 import pytest
 from aiogram import Bot
 from aiogram import Dispatcher
 from aiogram.fsm.storage.base import StorageKey
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import AnswerCallbackQuery
 from aiogram.methods import EditMessageText
 from aiogram.methods import SendMessage
 from aiogram.types import InlineKeyboardMarkup
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
+import app.handlers.add_product as add_product_module
 from app.bot import texts
-from app.bot.setup import create_dispatcher
 from app.domain.money import PRICE_DISCLAIMER_FULL
+from app.services.tracking import TrackingService
 from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
-from tests.unit.wb_access_stub import stub_client_factory
+from tests.unit.conftest import make_message_update
 
 
 @pytest.fixture
 def bot() -> Bot:
     return build_fake_bot()
+
+
+@pytest.fixture
+def tracking(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """``TrackingService`` double (the boundary); the effective limit is 50."""
+    mock = MagicMock(spec=TrackingService)
+    mock.product_limit.return_value = 50
+    monkeypatch.setattr(add_product_module, "TrackingService", lambda **_kw: mock)
+    return mock
 
 
 def _storage_key(bot_id: int, chat_and_user_id: int) -> StorageKey:
@@ -72,7 +79,7 @@ async def test_start_replies_with_text_containing_full_disclaimer(
 
 @pytest.mark.asyncio
 async def test_help_replies_with_text_containing_full_disclaimer(
-    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int
+    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int, tracking: MagicMock
 ) -> None:
     """Mutation target: replacing the reply with a copy of the help text
     that has one character changed instead of the imported builder --
@@ -108,7 +115,7 @@ async def test_start_does_not_change_fsm_state(
 
 @pytest.mark.asyncio
 async def test_help_does_not_change_fsm_state(
-    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int
+    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int, tracking: MagicMock
 ) -> None:
     key = _storage_key(bot.id, unique_chat_id)
     await real_dispatcher.storage.set_state(key, "some-dialog-state")
@@ -169,20 +176,14 @@ def _callbacks(request: SendMessage | EditMessageText) -> list[str | None]:
     return [b.callback_data for row in markup.inline_keyboard for b in row]
 
 
-def _dispatcher(max_products: int) -> Dispatcher:
-    return create_dispatcher(
-        MemoryStorage(),
-        async_sessionmaker(class_=AsyncSession),
-        httpx.AsyncClient(),
-        max_products,
-        stub_client_factory(),
-    )
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["start", "help", "cancel"])
 async def test_command_replies_carry_the_main_menu(
-    real_dispatcher: Dispatcher, bot: Bot, unique_chat_id: int, command: str
+    real_dispatcher: Dispatcher,
+    bot: Bot,
+    unique_chat_id: int,
+    command: str,
+    tracking: MagicMock,
 ) -> None:
     await real_dispatcher.feed_update(
         bot,
@@ -214,16 +215,46 @@ async def test_cancel_with_active_state_replies_with_the_main_menu(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [3, 77])
-async def test_help_command_names_the_limit_from_workflow_data(
-    bot: Bot, unique_chat_id: int, limit: int
+async def test_help_command_names_the_effective_limit_of_the_sender(
+    real_dispatcher: Dispatcher,
+    bot: Bot,
+    tracking: MagicMock,
+    unique_chat_id: int,
+    limit: int,
 ) -> None:
-    await _dispatcher(limit).feed_update(
+    tracking.product_limit.return_value = limit
+
+    await real_dispatcher.feed_update(
         bot, make_command_update("help", chat_id=unique_chat_id, user_id=unique_chat_id)
     )
 
     sent = _sent_texts(_requests(bot))
     assert sent == [texts.help_text(limit)]
     assert f"Лимит товаров: {limit}." in sent[0]
+    tracking.product_limit.assert_awaited_once_with(unique_chat_id)
+
+
+@pytest.mark.asyncio
+async def test_help_command_asks_for_the_sender_not_the_chat(
+    real_dispatcher: Dispatcher, bot: Bot, tracking: MagicMock
+) -> None:
+    await real_dispatcher.feed_update(
+        bot, make_command_update("help", chat_id=111, user_id=222)
+    )
+
+    tracking.product_limit.assert_awaited_once_with(222)
+
+
+@pytest.mark.asyncio
+async def test_help_command_without_a_sender_is_ignored_and_service_untouched(
+    real_dispatcher: Dispatcher, bot: Bot, tracking: MagicMock
+) -> None:
+    await real_dispatcher.feed_update(
+        bot, make_message_update(text="/help", user_id=None)
+    )
+
+    assert _requests(bot) == []
+    assert tracking.mock_calls == []
 
 
 @pytest.mark.asyncio
@@ -251,10 +282,15 @@ async def test_menu_start_button_edits_to_the_start_screen_and_keeps_fsm(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [3, 77])
-async def test_menu_help_button_edits_to_help_with_the_limit_and_keeps_fsm(
-    bot: Bot, unique_chat_id: int, limit: int
+async def test_menu_help_button_edits_to_help_with_the_effective_limit_and_keeps_fsm(
+    real_dispatcher: Dispatcher,
+    bot: Bot,
+    tracking: MagicMock,
+    unique_chat_id: int,
+    limit: int,
 ) -> None:
-    dispatcher = _dispatcher(limit)
+    tracking.product_limit.return_value = limit
+    dispatcher = real_dispatcher
     key = _storage_key(bot.id, unique_chat_id)
     await dispatcher.storage.set_state(key, "some-dialog-state")
     await dispatcher.storage.set_data(key, {"draft": 1})
@@ -273,6 +309,18 @@ async def test_menu_help_button_edits_to_help_with_the_limit_and_keeps_fsm(
     assert len([r for r in _requests(bot) if isinstance(r, AnswerCallbackQuery)]) == 1
     assert await dispatcher.storage.get_state(key) == "some-dialog-state"
     assert await dispatcher.storage.get_data(key) == {"draft": 1}
+    tracking.product_limit.assert_awaited_once_with(unique_chat_id)
+
+
+@pytest.mark.asyncio
+async def test_menu_help_button_asks_for_the_presser_not_the_chat(
+    real_dispatcher: Dispatcher, bot: Bot, tracking: MagicMock
+) -> None:
+    await real_dispatcher.feed_update(
+        bot, make_callback_update("menu:help", chat_id=111, user_id=222)
+    )
+
+    tracking.product_limit.assert_awaited_once_with(222)
 
 
 @pytest.mark.asyncio

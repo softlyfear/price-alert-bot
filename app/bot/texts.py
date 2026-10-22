@@ -55,7 +55,7 @@ MENU_STALE_ALERT_TEXT: Final[str] = (
 
 
 def help_text(max_products: int) -> str:
-    """Detailed help; the product limit comes from the settings."""
+    """Detailed help; the caller's effective product limit."""
     return (
         "Я слежу за ценами на Wildberries и Ozon и пишу вам, когда цена "
         "товара доходит до нужного вам порога.\n\n"

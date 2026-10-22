@@ -50,6 +50,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
     mock.list_products.return_value = []
     mock.find_tracked_product.return_value = None
+    mock.product_limit.return_value = 50
     mock.preview.return_value = MarketplaceProductData(name="Товар", price=100_00)
     monkeypatch.setattr(add_product_module, "TrackingService", lambda **_kw: mock)
     return mock

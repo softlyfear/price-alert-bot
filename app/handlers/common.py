@@ -21,8 +21,10 @@ from app.bot.keyboards import CB_MENU_PREFIX
 from app.bot.keyboards import CB_MENU_START
 from app.bot.keyboards import CB_NOTICE_MENU
 from app.bot.keyboards import main_menu_keyboard
+from app.handlers.add_product import TrackingServiceMiddleware
 from app.handlers.callback_reply import edit_callback_message
 from app.handlers.callback_reply import reply_to_callback
+from app.services.tracking import TrackingService
 
 
 def create_router() -> Router:
@@ -33,6 +35,9 @@ def create_router() -> Router:
     if the same ``Router`` instance is included into a dispatcher twice.
     """
     router = Router(name="common")
+    middleware = TrackingServiceMiddleware()
+    router.message.middleware(middleware)
+    router.callback_query.middleware(middleware)
 
     @router.message(Command("start"))
     async def cmd_start(message: Message) -> None:
@@ -40,11 +45,12 @@ def create_router() -> Router:
         await message.answer(texts.START_TEXT, reply_markup=main_menu_keyboard())
 
     @router.message(Command("help"))
-    async def cmd_help(message: Message, max_products_per_user: int) -> None:
+    async def cmd_help(message: Message, tracking: TrackingService) -> None:
         """Explain how the bot works. Does not touch FSM state (Р8)."""
-        await message.answer(
-            texts.help_text(max_products_per_user), reply_markup=main_menu_keyboard()
-        )
+        if message.from_user is None:
+            return
+        limit = await tracking.product_limit(message.from_user.id)
+        await message.answer(texts.help_text(limit), reply_markup=main_menu_keyboard())
 
     @router.message(Command("cancel"))
     async def cmd_cancel(message: Message, state: FSMContext) -> None:
@@ -90,11 +96,12 @@ def create_router() -> Router:
         )
 
     @router.callback_query(F.data == CB_MENU_HELP)
-    async def on_menu_help(callback: CallbackQuery, max_products_per_user: int) -> None:
+    async def on_menu_help(callback: CallbackQuery, tracking: TrackingService) -> None:
         """ "Help" button: the /help screen in place; FSM untouched."""
+        limit = await tracking.product_limit(callback.from_user.id)
         await edit_callback_message(
             callback,
-            texts.help_text(max_products_per_user),
+            texts.help_text(limit),
             reply_markup=main_menu_keyboard(),
             alert_text=texts.MENU_STALE_ALERT_TEXT,
         )

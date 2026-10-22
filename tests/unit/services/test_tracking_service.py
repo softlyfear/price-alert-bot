@@ -147,6 +147,7 @@ def _build(
     existing_product: Product | None = None,
     alerts: list[Alert] | None = None,
     fetch_result: Any = None,
+    personal_limit: int | None = None,
 ) -> _Harness:
     events: list[str] = []
     session = MagicMock(spec=AsyncSession)
@@ -154,7 +155,7 @@ def _build(
 
     users = MagicMock(spec=UserRepository)
     users.get_or_create_by_tg_id.return_value = (
-        User(id=_USER_ID, tg_user_id=_TG_USER_ID),
+        User(id=_USER_ID, tg_user_id=_TG_USER_ID, product_limit=personal_limit),
         True,
     )
 
@@ -973,3 +974,123 @@ def test_tracking_module_leaves_the_transaction_to_the_caller() -> None:
         ".list_paginated(",
     ):
         assert forbidden not in source, forbidden
+
+
+# --- personal product limit (PAB-105) -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_personal_limit_below_global_rejects_at_the_personal_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, active_count=2, personal_limit=2)
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await _add(harness)
+
+    assert excinfo.value.limit == 2  # not the global _LIMIT == 3
+    harness.products.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_personal_limit_below_global_allows_one_below_the_personal_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, active_count=1, personal_limit=2)
+
+    alert = await _add(harness)
+
+    assert alert.target_price == 9_000
+    harness.products.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_personal_limit_above_global_allows_past_the_global_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, active_count=_LIMIT, personal_limit=_LIMIT + 2)
+
+    await _add(harness)
+
+    harness.products.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_personal_limit_above_global_rejects_at_the_personal_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, active_count=_LIMIT + 2, personal_limit=_LIMIT + 2)
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await _add(harness)
+
+    assert excinfo.value.limit == _LIMIT + 2
+
+
+@pytest.mark.asyncio
+async def test_null_personal_limit_uses_the_global_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, active_count=_LIMIT, personal_limit=None)
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await _add(harness)
+
+    assert excinfo.value.limit == _LIMIT
+
+
+@pytest.mark.asyncio
+async def test_at_personal_limit_another_alert_on_a_counted_product_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(
+        monkeypatch,
+        active_count=2,
+        personal_limit=2,
+        existing_product=_product(),
+        alerts=[_alert(target_price=8_000)],
+    )
+
+    alert = await _add(harness, target=9_000)
+
+    assert alert.target_price == 9_000
+    harness.products.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preview_at_personal_limit_raises_with_it_and_never_builds_a_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _build(monkeypatch, active_count=2, personal_limit=2)
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await harness.service.preview(_TG_USER_ID, _WB, _ARTICLE)
+
+    assert excinfo.value.limit == 2
+    harness.factory.assert_not_called()
+    harness.client.get_product_data.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("personal", "expected"), [(7, 7), (1, 1), (None, _LIMIT)])
+async def test_product_limit_returns_the_effective_limit(
+    monkeypatch: pytest.MonkeyPatch, personal: int | None, expected: int
+) -> None:
+    harness = _build(monkeypatch, personal_limit=personal)
+
+    assert await harness.service.product_limit(_TG_USER_ID) == expected
+    harness.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
+
+
+@pytest.mark.asyncio
+async def test_zero_personal_limit_is_not_treated_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CHECK forbids 0 in the database; the service still reads ``is None``."""
+    harness = _build(monkeypatch, active_count=0, personal_limit=0)
+
+    assert await harness.service.product_limit(_TG_USER_ID) == 0
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await _add(harness)
+
+    assert excinfo.value.limit == 0

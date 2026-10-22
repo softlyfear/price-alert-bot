@@ -84,8 +84,11 @@ def test_revision_follows_the_previous_one() -> None:
     assert revision.down_revision == PARENT_REVISION_ID
 
 
-def test_revision_is_the_single_head() -> None:
-    assert _SCRIPTS.get_heads() == [REVISION_ID]
+def test_revision_is_on_the_chain_of_the_single_head() -> None:
+    heads = _SCRIPTS.get_heads()
+    assert len(heads) == 1
+    chain = [r.revision for r in _SCRIPTS.walk_revisions(base="base", head=heads[0])]
+    assert REVISION_ID in chain
 
 
 @pytest.mark.asyncio
