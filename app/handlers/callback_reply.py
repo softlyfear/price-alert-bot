@@ -106,3 +106,23 @@ async def edit_callback_message(
     sent = await message.answer(text, reply_markup=reply_markup, parse_mode=None)
     await _answer_after_delivery(callback, answer_text)
     return sent
+
+
+async def edit_message_or_answer(
+    message: Message,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    """Replace the text of an already answered callback's message.
+
+    Used for the second screen of a long action: the callback is answered
+    already. A refused edit falls back to a new message in the chat.
+    """
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
+    except TelegramBadRequest as exc:
+        logger.bind(error_type=type(exc).__name__).warning(
+            "Edit refused, sending a new message"
+        )
+        await message.answer(text, reply_markup=reply_markup, parse_mode=None)

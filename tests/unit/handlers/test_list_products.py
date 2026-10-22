@@ -53,6 +53,7 @@ _MAX_ID = 2_147_483_647
 _NAME = "Кроссовки <b>x*"
 _NB = "\u00a0"
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
+_REFRESH_ROW = [("🔄 Обновить цены", "list:refresh")]
 _CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _LEGEND = (
     "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
@@ -209,6 +210,7 @@ async def test_list_shows_one_button_per_product_and_one_disclaimer(
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
         [(f"{_NAME} — 1{_NB}990{_NB}₽", "pcard:5")],
         [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        _REFRESH_ROW,
         _NAV_ROW,
     ]
 
@@ -222,7 +224,7 @@ async def test_list_with_exactly_fifty_products_shows_fifty_and_no_cut_note(
     await bot.command("list")
 
     rows = _keyboard(bot.sent[0]).inline_keyboard
-    assert len(rows) == 50 + 1
+    assert len(rows) == 50 + 2
     assert rows[49][0].callback_data == "pcard:50"
     assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
     assert "Показаны первые" not in bot.sent[0].text
@@ -238,7 +240,7 @@ async def test_list_with_fifty_one_products_shows_fifty_and_names_the_cut(
     await bot.command("list")
 
     rows = _keyboard(bot.sent[0]).inline_keyboard
-    assert len(rows) == 50 + 1
+    assert len(rows) == 50 + 2
     assert rows[49][0].callback_data == "pcard:50"
     assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
     assert "Показаны первые 50 из 51" in bot.sent[0].text
@@ -295,6 +297,7 @@ async def test_menu_list_button_edits_in_place_with_the_same_screen_as_the_comma
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
         [(f"{_NAME} — 1{_NB}990{_NB}₽", "pcard:5")],
         [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        _REFRESH_ROW,
         _NAV_ROW,
     ]
     assert len(bot.answers) == 1
@@ -320,7 +323,7 @@ async def test_menu_list_button_still_cuts_the_list_at_fifty(
     await bot.press("menu:list")
 
     rows = _keyboard(bot.edits[0]).inline_keyboard
-    assert len(rows) == 50 + 1
+    assert len(rows) == 50 + 2
     assert rows[49][0].callback_data == "pcard:50"
     assert "Показаны первые 50 из 51" in bot.edits[0].text
 
@@ -453,6 +456,7 @@ async def test_open_card_edits_the_list_in_place_with_all_card_parts(
     assert _rows(request) == [
         [(f"✏️ 1{_NB}000{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
         [(f"✏️ 2{_NB}000{_NB}₽", "aedit:12:5"), ("🗑 Убрать", "adel:12:5")],
+        [("🔄 Обновить цену", "pref:5")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -534,6 +538,7 @@ _REMOVE_CASES = [
         _CARD_ONE_ALERT,
         [
             [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
+            [("🔄 Обновить цену", "pref:5")],
             [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,
@@ -555,6 +560,7 @@ _REMOVE_CASES = [
         _CARD_ONE_ALERT,
         [
             [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
+            [("🔄 Обновить цену", "pref:5")],
             [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
             [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
             _CARD_NAV,

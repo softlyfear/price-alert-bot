@@ -7,8 +7,10 @@ disclaimer wordings themselves are not duplicated: they are imported from
 ``app.domain.money``, the single approved source (PROJECT.md §2.9).
 """
 
+from datetime import datetime
 from typing import Final
 from typing import assert_never
+from zoneinfo import ZoneInfo
 
 from aiogram.types import BotCommand
 
@@ -19,6 +21,8 @@ from app.domain.money import format_price
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
+from app.services.price_service import RefreshFailure
+from app.services.price_service import RefreshReport
 
 SOUND_REMINDER_TEXT: Final[str] = (
     "Чтобы не пропустить сигнал о цене, включите уведомления от этого чата."
@@ -331,14 +335,18 @@ def marketplace_title(marketplace: Marketplace) -> str:
             assert_never(marketplace)
 
 
-def list_text(shown: int, total: int) -> str:
-    """Header of the product list; names the truncation when buttons are cut."""
+def list_text(shown: int, total: int, price_label: str | None = None) -> str:
+    """Header of the product list; names the truncation when buttons are cut.
+
+    ``price_label`` is the time of the oldest shown price (``price_time_label``).
+    """
     head = f"Вы следите за товарами: {total}."
     if shown < total:
         head = f"{head} Показаны первые {shown} из {total}."
+    prices_line = f"Цены на {price_label}\n" if price_label is not None else ""
     return (
         f"{head}\nВыберите товар, чтобы посмотреть пороги или перестать следить.\n"
-        f"{PRICE_DISCLAIMER_SHORT}."
+        f"{prices_line}{PRICE_DISCLAIMER_SHORT}."
     )
 
 
@@ -348,13 +356,15 @@ def product_card_text(
     url: str,
     current_price: int,
     alerts: list[tuple[AlertDirection, int]],
+    price_label: str | None = None,
 ) -> str:
     """Product card with its thresholds (plain text, no markup)."""
+    when = f" (цена на {price_label})" if price_label is not None else ""
     lines = [
         name,
         f"Маркетплейс: {marketplace_title(marketplace)}",
         url,
-        f"Текущая цена: {format_price(current_price)}",
+        f"Текущая цена: {format_price(current_price)}{when}",
         f"{PRICE_DISCLAIMER_SHORT}.",
         "",
     ]
@@ -427,3 +437,75 @@ def edit_changed_text(direction: AlertDirection | None, target_price: int) -> st
     if direction is None:
         return "Порог изменён."
     return f"Порог изменён. Сообщу, когда {direction_phrase(direction, target_price)}."
+
+
+# --- manual price refresh ---------------------------------------------------
+
+REFRESH_LIST_BUTTON_TEXT: Final[str] = "🔄 Обновить цены"
+REFRESH_CARD_BUTTON_TEXT: Final[str] = "🔄 Обновить цену"
+REFRESH_IN_PROGRESS_TEXT: Final[str] = "Обновляю цены…"
+REFRESH_GONE_TEXT: Final[str] = "Этот товар больше не отслеживается."
+REFRESH_ALL_DONE_TEXT: Final[str] = "Цены обновлены."
+REFRESH_CARD_DONE_TEXT: Final[str] = "Цена обновлена."
+REFRESH_OLD_PRICE_TEXT: Final[str] = "Показана прежняя цена."
+
+_REFRESH_LIST_LINES: Final[dict[RefreshFailure, str]] = {
+    RefreshFailure.blocked: "Маркетплейс заблокировал запрос: {n}",
+    RefreshFailure.transport_error: "Маркетплейс не ответил: {n}",
+    RefreshFailure.out_of_stock: "Нет в наличии: {n}",
+    RefreshFailure.not_found: "Не найдено на маркетплейсе: {n}",
+    RefreshFailure.bad_payload: "Маркетплейс ответил в неожиданном виде: {n}",
+    RefreshFailure.timed_out: "Не успели: {n}",
+    RefreshFailure.error: "Не удалось сохранить цену: {n}",
+}
+
+_REFRESH_CARD_REASONS: Final[dict[RefreshFailure, str]] = {
+    RefreshFailure.blocked: (
+        "заблокировал запрос: он защищается от автоматических обращений."
+    ),
+    RefreshFailure.transport_error: "Маркетплейс не ответил.",
+    RefreshFailure.out_of_stock: "Товара сейчас нет в наличии.",
+    RefreshFailure.not_found: "Товар на маркетплейсе не нашёлся.",
+    RefreshFailure.bad_payload: "Маркетплейс ответил в неожиданном виде.",
+    RefreshFailure.timed_out: "Не успели получить ответ вовремя.",
+    RefreshFailure.error: "Не удалось сохранить новую цену.",
+}
+
+
+def refresh_throttled_text(retry_after_seconds: int) -> str:
+    """Popup shown when the once-a-minute refresh budget is spent."""
+    return (
+        f"Обновлять цены можно раз в минуту. Попробуйте через {retry_after_seconds} с."
+    )
+
+
+def price_time_label(fetched_at: datetime, now: datetime, tz: ZoneInfo) -> str:
+    """Time of a price in the display zone; the date is added if not today there."""
+    local = fetched_at.astimezone(tz)
+    if local.date() == now.astimezone(tz).date():
+        return f"{local:%H:%M}"
+    return f"{local:%d.%m %H:%M}"
+
+
+def refresh_list_summary(report: RefreshReport) -> str:
+    """Summary line(s) above the list after a manual refresh."""
+    if report.updated == report.total:
+        return REFRESH_ALL_DONE_TEXT
+    lines = [f"Обновлено {report.updated} из {report.total}."]
+    lines.extend(
+        template.format(n=report.failures[reason])
+        for reason, template in _REFRESH_LIST_LINES.items()
+        if report.failures.get(reason)
+    )
+    return "\n".join(lines)
+
+
+def refresh_card_summary(report: RefreshReport, marketplace: Marketplace) -> str:
+    """Summary above the card after a manual refresh of its single product."""
+    if report.updated == report.total:
+        return REFRESH_CARD_DONE_TEXT
+    reason = next(iter(report.failures), RefreshFailure.error)
+    phrase = _REFRESH_CARD_REASONS[reason]
+    if reason is RefreshFailure.blocked:
+        phrase = f"{marketplace_title(marketplace)} {phrase}"
+    return f"{phrase} {REFRESH_OLD_PRICE_TEXT}"

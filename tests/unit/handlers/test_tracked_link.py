@@ -41,6 +41,7 @@ _REF_PAYLOAD = f"addref:wb:{DB_ARTICLE}"
 _ALREADY = "Товар уже отслеживается"
 _EXPECTED_ROWS = [
     [(f"✏️ 1{NB}500{NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
+    [("🔄 Обновить цену", "pref:5")],
     [("➕ Добавить порог", "aadd:5")],
     [("Перестать следить", "pdel:5")],
     CARD_NAV,

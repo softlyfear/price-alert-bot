@@ -26,6 +26,7 @@ DB_NAME = "Из базы <b>1"
 DB_PRICE = 175_500  # 1 755 rubles
 DB_ARTICLE = 12345678
 DB_FETCHED_AT = datetime(2026, 10, 21, 11, 5, tzinfo=UTC)
+SCREEN_NOW = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)  # same day as DB_FETCHED_AT
 PRODUCT_ID = 5
 WB_LINK = f"https://www.wildberries.ru/catalog/{DB_ARTICLE}/detail.aspx"
 MENU = ["menu:add", "menu:list", "menu:help"]
@@ -52,7 +53,7 @@ CARD_TEXT = (
     f"{DB_NAME}\n"
     "Маркетплейс: Wildberries\n"
     f"https://www.wildberries.ru/catalog/{DB_ARTICLE}/detail.aspx\n"
-    f"Текущая цена: 1{NB}755{NB}₽\n"
+    f"Текущая цена: 1{NB}755{NB}₽ (цена на 14:05)\n"
     "Цена без учёта персональных скидок.\n"
     "\n"
     "Пороги:\n"

@@ -63,6 +63,7 @@ the duration of the test.
 from pathlib import Path
 from urllib.parse import unquote
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import BaseModel
@@ -257,20 +258,20 @@ def test_app_settings_gt_zero_fields_reject_zero_and_negative_but_accept_one(
     field_name: str,
 ) -> None:
     with pytest.raises(ValidationError) as excinfo:
-        AppSettings(**{field_name: 0})
+        AppSettings.model_validate({field_name: 0})
     errors = excinfo.value.errors()
     assert any(
         e["type"] == "greater_than" and e["loc"] == (field_name,) for e in errors
     )
 
     with pytest.raises(ValidationError) as excinfo:
-        AppSettings(**{field_name: -1})
+        AppSettings.model_validate({field_name: -1})
     errors = excinfo.value.errors()
     assert any(
         e["type"] == "greater_than" and e["loc"] == (field_name,) for e in errors
     )
 
-    assert getattr(AppSettings(**{field_name: 1}), field_name) == 1
+    assert getattr(AppSettings.model_validate({field_name: 1}), field_name) == 1
 
 
 # --- HTTP_TIMEOUT_SECONDS: inf/nan and the two-sided upper boundary ------
@@ -933,3 +934,114 @@ def test_env_example_lists_every_wb_variable_with_its_default() -> None:
         {k.removeprefix("WB__"): v for k, v in values.items()}
     )
     assert parsed == WbSettings()
+
+
+# --- AppSettings.DISPLAY_TIMEZONE (PAB-100 AC10) ---------------------------
+
+
+def test_display_timezone_defaults_to_europe_moscow() -> None:
+    assert ZoneInfo("Europe/Moscow") == AppSettings().DISPLAY_TIMEZONE
+
+
+def test_display_timezone_name_is_turned_into_a_zoneinfo() -> None:
+    zone = AppSettings.model_validate({"DISPLAY_TIMEZONE": "Asia/Novosibirsk"})
+
+    assert isinstance(zone.DISPLAY_TIMEZONE, ZoneInfo)
+    assert zone.DISPLAY_TIMEZONE.key == "Asia/Novosibirsk"
+
+
+def test_display_timezone_name_with_surrounding_spaces_is_accepted() -> None:
+    zone = AppSettings.model_validate({"DISPLAY_TIMEZONE": "  Asia/Novosibirsk "})
+
+    assert zone.DISPLAY_TIMEZONE.key == "Asia/Novosibirsk"
+
+
+def test_display_timezone_accepts_a_ready_zoneinfo() -> None:
+    zone = AppSettings.model_validate({"DISPLAY_TIMEZONE": ZoneInfo("Asia/Tokyo")})
+
+    assert zone.DISPLAY_TIMEZONE.key == "Asia/Tokyo"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("Mars/Olympus", id="unknown-name"),
+        pytest.param("", id="empty"),
+        pytest.param("  ", id="blank"),
+        pytest.param("../etc/passwd", id="path-traversal"),
+        pytest.param(5, id="not-a-string"),
+    ],
+)
+def test_display_timezone_rejects_unknown_empty_blank_and_non_string(
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        AppSettings.model_validate({"DISPLAY_TIMEZONE": value})
+
+    assert [e["loc"] for e in excinfo.value.errors()] == [("DISPLAY_TIMEZONE",)]
+
+
+def test_display_timezone_env_variable_overrides_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _delenv_settings_prefix_space(monkeypatch)
+    monkeypatch.setenv("APP__DISPLAY_TIMEZONE", "Asia/Novosibirsk")
+
+    settings = Settings(
+        _env_file=None,
+        db=_make_db_settings(),
+        tg=_make_bot_secret(),
+        redis=_make_redis_settings(host="h"),
+    )
+
+    assert ZoneInfo("Asia/Novosibirsk") == settings.app.DISPLAY_TIMEZONE
+
+
+def test_display_timezone_env_variable_with_unknown_name_fails_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _delenv_settings_prefix_space(monkeypatch)
+    monkeypatch.setenv("APP__DISPLAY_TIMEZONE", "Mars/Olympus")
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(
+            _env_file=None,
+            db=_make_db_settings(),
+            tg=_make_bot_secret(),
+            redis=_make_redis_settings(host="h"),
+        )
+
+    assert [e["loc"] for e in excinfo.value.errors()] == [("app", "DISPLAY_TIMEZONE")]
+
+
+def test_environment_clearing_covers_the_display_timezone_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stray shell ``APP__DISPLAY_TIMEZONE`` must not leak into the helper's
+    tests: the prefix-space clearing removes it."""
+    monkeypatch.setenv("APP__DISPLAY_TIMEZONE", "Mars/Olympus")
+    _delenv_settings_prefix_space(monkeypatch)
+
+    settings = Settings(
+        _env_file=None,
+        db=_make_db_settings(),
+        tg=_make_bot_secret(),
+        redis=_make_redis_settings(host="h"),
+    )
+
+    assert ZoneInfo("Europe/Moscow") == settings.app.DISPLAY_TIMEZONE
+
+
+def test_env_example_documents_the_display_timezone_default() -> None:
+    example = (Path(__file__).resolve().parents[3] / ".env.example").read_text()
+    values = [
+        line.split("=", 1)[1].strip()
+        for line in example.splitlines()
+        if line.startswith("APP__DISPLAY_TIMEZONE=")
+    ]
+
+    assert values == ["Europe/Moscow"]
+    assert (
+        AppSettings.model_validate({"DISPLAY_TIMEZONE": values[0]}).DISPLAY_TIMEZONE
+        == AppSettings().DISPLAY_TIMEZONE
+    )

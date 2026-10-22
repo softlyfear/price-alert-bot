@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram import Bot
@@ -191,6 +192,7 @@ async def test_press_edit_for_a_removed_alert_redraws_the_card_and_sets_no_state
     ]
     assert _rows(dialog.edits[0]) == [
         [(f"✏️ 2{_NB}500{_NB}₽", "aedit:12:5"), ("🗑 Убрать", "adel:12:5")],
+        [("🔄 Обновить цену", "pref:5")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -282,6 +284,7 @@ async def test_changed_sends_one_new_message_with_the_outcome_and_the_redrawn_ca
     assert sent.parse_mode is None
     assert _rows(sent) == [
         [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],
+        [("🔄 Обновить цену", "pref:5")],
         [(texts.ADD_ALERT_BUTTON_TEXT, "aadd:5")],
         [(texts.STOP_TRACKING_BUTTON_TEXT, "pdel:5")],
         _CARD_NAV,
@@ -515,7 +518,7 @@ async def test_price_handler_ignores_a_message_without_sender_or_text(
     tracking = MagicMock()
     tracking.change_alert_target = AsyncMock()
 
-    await _handler("on_edit_price")(message, state, tracking)
+    await _handler("on_edit_price")(message, state, tracking, ZoneInfo("Europe/Moscow"))
 
     message.answer.assert_not_called()
     tracking.change_alert_target.assert_not_called()

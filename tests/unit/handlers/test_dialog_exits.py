@@ -83,6 +83,7 @@ async def test_dialog_list_clears_the_dialog_and_shows_the_list_of_the_presser(
     assert edit.text == (
         "Вы следите за товарами: 1.\n"
         "Выберите товар, чтобы посмотреть пороги или перестать следить.\n"
+        "Цены на 14:05\n"
         "Цена без учёта персональных скидок."
     )
     assert [b for row in rows(edit) for b in row][0] == (

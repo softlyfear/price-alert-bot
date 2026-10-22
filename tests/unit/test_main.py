@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import NamedTuple
 from typing import cast
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import httpx
@@ -89,6 +90,10 @@ from app.repositories.user import UserRepository
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.services.notification import NotificationService
+from app.services.price_service import REFRESH_DEADLINE_SECONDS
+from app.services.price_service import PriceRefresher
+from app.services.price_service import RefreshLimiter
+from app.services.price_service import RefreshThrottled
 from app.services.wb_access import BrowserWbAccessProvider
 from app.services.wb_access import WbAccessStage
 from app.services.wb_access import WbAccessUnavailable
@@ -3236,3 +3241,191 @@ def test_shutdown_budgets_are_30_45_5_and_wb_close_10_seconds() -> None:
     assert main._SCHEDULER_STOP_TIMEOUT_SECONDS == 45.0
     assert main._SCHEDULER_CANCEL_TIMEOUT_SECONDS == 5.0
     assert main._WB_ACCESS_CLOSE_TIMEOUT_SECONDS == 10.0
+
+
+# --- PAB-100: the manual refresher and the display zone reach the bot (AC10) ---
+
+
+class _RecordingRefresher:
+    """Stands in for ``PriceRefresher`` in ``main``: keeps the constructor call."""
+
+    instances: list[_RecordingRefresher]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+        self.kwargs = kwargs
+        type(self).instances.append(self)
+
+
+@pytest.fixture
+def recording_refresher(monkeypatch: pytest.MonkeyPatch) -> type[_RecordingRefresher]:
+    class _Local(_RecordingRefresher):
+        instances: list[_RecordingRefresher] = []
+
+    monkeypatch.setattr(main, "PriceRefresher", _Local)
+    return _Local
+
+
+def _spy_on_created_dispatchers(
+    monkeypatch: pytest.MonkeyPatch, created: list[Dispatcher] | None = None
+) -> list[Dispatcher]:
+    created = created if created is not None else []
+    original: Callable[..., Dispatcher] = vars(main)["create_dispatcher"]
+
+    def spy(*args: Any, **kwargs: Any) -> Dispatcher:
+        dispatcher = original(*args, **kwargs)
+        created.append(dispatcher)
+        return dispatcher
+
+    monkeypatch.setattr(main, "create_dispatcher", spy)
+    return created
+
+
+@pytest.mark.asyncio
+async def test_lifespan_gives_the_dispatcher_one_refresher_and_the_display_zone(
+    monkeypatch: pytest.MonkeyPatch, recording_refresher: type[_RecordingRefresher]
+) -> None:
+    settings = _make_orchestration_settings()
+    settings.app.DISPLAY_TIMEZONE = ZoneInfo("Asia/Novosibirsk")
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        settings=settings,
+    )
+    created = _spy_on_created_dispatchers(monkeypatch)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        dispatcher = created[0]
+        assert len(recording_refresher.instances) == 1
+        assert dispatcher["price_refresher"] is recording_refresher.instances[0]
+        assert dispatcher["display_timezone"] == ZoneInfo("Asia/Novosibirsk")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_sets_both_dispatcher_keys_before_polling_starts(
+    monkeypatch: pytest.MonkeyPatch, recording_refresher: type[_RecordingRefresher]
+) -> None:
+    created: list[Dispatcher] = []
+    keys_at_start: list[tuple[bool, bool]] = []
+    stop = asyncio.Event()
+
+    async def start_polling(*args: Any, **kwargs: Any) -> None:
+        dispatcher = created[0]
+        keys_at_start.append(
+            (
+                "price_refresher" in dispatcher.workflow_data,
+                "display_timezone" in dispatcher.workflow_data,
+            )
+        )
+        await stop.wait()
+
+    async def stop_polling(*args: Any, **kwargs: Any) -> None:
+        stop.set()
+
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+    _spy_on_created_dispatchers(monkeypatch, created)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert keys_at_start == [(True, True)]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_uses_the_default_display_zone_when_it_is_not_configured(
+    monkeypatch: pytest.MonkeyPatch, recording_refresher: type[_RecordingRefresher]
+) -> None:
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+    created = _spy_on_created_dispatchers(monkeypatch)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert created[0]["display_timezone"] == ZoneInfo("Europe/Moscow")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_builds_the_refresher_from_the_settings_and_the_services(
+    monkeypatch: pytest.MonkeyPatch, recording_refresher: type[_RecordingRefresher]
+) -> None:
+    price_services: list[object] = []
+
+    class _RecordingPriceService:
+        def __init__(self, **kwargs: Any) -> None:
+            price_services.append(self)
+
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+    monkeypatch.setattr(main, "PriceService", _RecordingPriceService)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+
+    (refresher,) = recording_refresher.instances
+    price_service, sessionmaker, product_repos, user_repos = refresher.args
+    assert price_service is price_services[0]
+    assert sessionmaker is _SESSION_FACTORY
+    assert product_repos is ProductRepository
+    assert user_repos is UserRepository
+    assert refresher.kwargs["concurrency"] == 3  # MARKETPLACE_CONCURRENCY of the rig
+    assert refresher.kwargs["deadline_seconds"] == REFRESH_DEADLINE_SECONDS == 20.0
+
+
+@pytest.mark.asyncio
+async def test_lifespan_gives_the_refresher_a_one_minute_per_user_limiter(
+    monkeypatch: pytest.MonkeyPatch, recording_refresher: type[_RecordingRefresher]
+) -> None:
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+
+    limiter = recording_refresher.instances[0].kwargs["limiter"]
+    assert isinstance(limiter, RefreshLimiter)
+    assert limiter.reserve(1) is None
+    assert limiter.reserve(1) == RefreshThrottled(retry_after_seconds=60)
+    assert limiter.reserve(2) is None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_builds_a_real_refresher_when_nothing_is_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+    )
+    created = _spy_on_created_dispatchers(monkeypatch)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert isinstance(created[0]["price_refresher"], PriceRefresher)
