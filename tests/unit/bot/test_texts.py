@@ -238,8 +238,8 @@ def test_no_text_calls_a_bare_article_wildberries_only() -> None:
         assert "только для Wildberries" not in text
 
 
-def test_link_failure_texts_are_unchanged_and_still_refuse_short_links() -> None:
-    assert "Короткие ссылки не подойдут" in texts.ADD_LINK_FORMAT_HINT_TEXT
+def test_link_failure_texts_no_longer_refuse_short_links() -> None:
+    assert "Короткие ссылки не подойдут" not in texts.ADD_LINK_FORMAT_HINT_TEXT
     assert set(texts.ADD_FETCH_FAILURE_TEXTS) == set(FetchFailureReason)
 
 

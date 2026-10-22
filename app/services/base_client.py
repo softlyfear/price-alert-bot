@@ -57,6 +57,16 @@ class BaseMarketplaceClient(ABC):
         """
         raise NotImplementedError
 
+    async def resolve_short_link(self, code: str) -> str | MarketplaceFetchFailure:
+        """Expand a marketplace short-link `code` into the `Location` it redirects to.
+
+        Optional capability (PROJECT.md section 2.15, R22): only a client that
+        supports short links overrides it, so it is deliberately not abstract.
+        Returns the raw `Location` string (validation is the domain's job) or
+        a marked failure; an override never raises.
+        """
+        raise NotImplementedError
+
     async def get_products_data(
         self, articles: Sequence[int]
     ) -> dict[int, MarketplaceFetchResult]:

@@ -43,6 +43,7 @@ from app.bot.keyboards import CB_ADD_CONFIRM
 from app.bot.keyboards import CB_MENU_ADD
 from app.bot.keyboards import AddArticleCb
 from app.bot.keyboards import AddRefCb
+from app.bot.keyboards import AddShortLinkCb
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
 from app.bot.keyboards import duplicate_exit_keyboard
@@ -57,9 +58,11 @@ from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.links import BareArticle
+from app.domain.links import OzonShortLink
 from app.domain.links import ProductQuery
 from app.domain.links import ProductRef
 from app.domain.links import extract_product_ref
+from app.domain.links import ozon_short_link
 from app.domain.money import rubles_to_kopecks
 from app.domain.thresholds import choose_direction
 from app.handlers.callback_reply import edit_callback_message
@@ -70,6 +73,7 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.tracking import ProductCard
+from app.services.tracking import ShortLinkRefusal
 from app.services.tracking import TrackingService
 
 _KEY_MARKETPLACE = "marketplace"
@@ -186,21 +190,26 @@ async def _lookup_tracked(
     user_id: int,
     state: FSMContext,
     tracking: TrackingService,
+    notice: Message | None = None,
 ) -> ProductCard | _Skip:
     """Find the caller's already tracked product for this link step.
 
     A card is returned only for a current step, with the dialog already
     cleared; a superseded step yields ``stale`` and changes nothing.
     """
-    if isinstance(ref, BareArticle):
-        card = await tracking.find_tracked_article(user_id, ref.article)
-    else:
-        card = await tracking.find_tracked_product(
-            user_id, ref.marketplace, ref.article
-        )
+    match ref:
+        case BareArticle(article=article):
+            card = await tracking.find_tracked_article(user_id, article)
+        case ProductRef(marketplace=marketplace, article=article):
+            card = await tracking.find_tracked_product(user_id, marketplace, article)
+        case OzonShortLink():
+            # Nothing to look up before the code is expanded into a product.
+            card = None
+        case _:
+            assert_never(ref)
     if card is None:
         return _Skip.no_match
-    if await _discard_if_stale(marker, None, state, user_id):
+    if await _discard_if_stale(marker, notice, state, user_id):
         return _Skip.stale
     await state.clear()
     return card
@@ -281,15 +290,69 @@ async def _deliver_outcome(
 
 
 async def _preview(
-    tracking: TrackingService, user_id: int, ref: ProductQuery
+    tracking: TrackingService, user_id: int, ref: ProductRef | BareArticle
 ) -> tuple[Marketplace, MarketplaceFetchResult]:
     """Preview a link or a bare article; return where the outcome came from."""
-    if isinstance(ref, BareArticle):
-        outcome = await tracking.preview_article(user_id, ref.article)
-        return outcome.marketplace, outcome.result
-    return ref.marketplace, await tracking.preview(
-        user_id, ref.marketplace, ref.article
-    )
+    match ref:
+        case BareArticle(article=article):
+            outcome = await tracking.preview_article(user_id, article)
+            return outcome.marketplace, outcome.result
+        case ProductRef(marketplace=marketplace, article=article):
+            return marketplace, await tracking.preview(user_id, marketplace, article)
+        case _:
+            assert_never(ref)
+
+
+async def _expand_short_link(
+    anchor: Message | InaccessibleMessage,
+    marker: int,
+    notice: Message | None,
+    code: str,
+    user_id: int,
+    state: FSMContext,
+    tracking: TrackingService,
+    display_timezone: ZoneInfo,
+) -> ProductRef | None:
+    """Expand an Ozon short link; None means the outcome is already delivered.
+
+    A product the caller already tracks is shown as its card (Р5); a refusal
+    or a superseded step ends the check without a result.
+    """
+    try:
+        outcome = await tracking.resolve_short_link(code)
+    except MarketplaceNotSupportedError:
+        if not await _discard_if_stale(marker, notice, state, user_id):
+            await _deliver_outcome(
+                anchor,
+                notice,
+                texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT,
+                reply_markup=cancel_keyboard(),
+            )
+        return None
+    if await _discard_if_stale(marker, notice, state, user_id):
+        return None
+    match outcome:
+        case ProductRef():
+            found = await _lookup_tracked(
+                marker, outcome, user_id, state, tracking, notice
+            )
+            if isinstance(found, ProductCard):
+                text, keyboard = _already_tracked_screen(found, display_timezone)
+                await _deliver_outcome(
+                    anchor, notice, text, reply_markup=keyboard, parse_mode=None
+                )
+                return None
+            if found is _Skip.stale:
+                return None
+            return outcome
+        case MarketplaceFetchFailure():
+            refusal = texts.short_link_failure_text(outcome.reason)
+        case ShortLinkRefusal.not_a_product:
+            refusal = texts.SHORT_LINK_UNRESOLVED_TEXT
+        case _:
+            assert_never(outcome)
+    await _deliver_outcome(anchor, notice, refusal, reply_markup=cancel_keyboard())
+    return None
 
 
 async def _check_and_deliver(
@@ -300,15 +363,29 @@ async def _check_and_deliver(
     user_id: int,
     state: FSMContext,
     tracking: TrackingService,
+    display_timezone: ZoneInfo,
 ) -> None:
     """Check the product and deliver the outcome of the link step.
 
     Shared by the link message and the "add this product" button. ``marker``
     is the id already stored in FSM; ``anchor`` takes a new message when the
-    notice cannot be edited.
+    notice cannot be edited. An Ozon short link is expanded first.
     """
+    target: ProductRef | BareArticle
+    match ref:
+        case OzonShortLink(code=code):
+            expanded = await _expand_short_link(
+                anchor, marker, notice, code, user_id, state, tracking, display_timezone
+            )
+            if expanded is None:
+                return
+            target = expanded
+        case ProductRef() | BareArticle():
+            target = ref
+        case _:
+            assert_never(ref)
     try:
-        marketplace, result = await _preview(tracking, user_id, ref)
+        marketplace, result = await _preview(tracking, user_id, target)
     except ProductLimitExceededError as exc:
         if await _discard_if_stale(marker, notice, state, user_id):
             return
@@ -334,11 +411,13 @@ async def _check_and_deliver(
     if await _discard_if_stale(marker, notice, state, user_id):
         return
     if isinstance(result, MarketplaceFetchFailure):
-        failure = (
-            texts.article_failure_text(marketplace, result.reason)
-            if isinstance(ref, BareArticle)
-            else _failure_text(result.reason)
-        )
+        match target:
+            case BareArticle():
+                failure = texts.article_failure_text(marketplace, result.reason)
+            case ProductRef():
+                failure = _failure_text(result.reason)
+            case _:
+                assert_never(target)
         await _deliver_outcome(
             anchor,
             notice,
@@ -351,7 +430,7 @@ async def _check_and_deliver(
     await enter_price_step(
         state,
         marketplace,
-        ref.article,
+        target.article,
         result.name,
         result.price,
         price_fetched_at=fetched_at,
@@ -404,6 +483,7 @@ async def _start_from_button(
         callback.from_user.id,
         state,
         tracking,
+        display_timezone,
     )
 
 
@@ -459,6 +539,27 @@ def create_router() -> Router:
         ref = BareArticle(callback_data.article)
         await _start_from_button(callback, ref, state, tracking, display_timezone)
 
+    @router.callback_query(AddShortLinkCb.filter())
+    async def on_add_short_link(
+        callback: CallbackQuery,
+        callback_data: AddShortLinkCb,
+        state: FSMContext,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
+    ) -> None:
+        """ "Add this product" button under a short-link offer."""
+        try:
+            ref = ozon_short_link(callback_data.code)
+        except ProductRefParseError:
+            await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+            return
+        await _start_from_button(callback, ref, state, tracking, display_timezone)
+
+    @router.callback_query(F.data.startswith(AddShortLinkCb.__prefix__))
+    async def on_stale_add_short_link(callback: CallbackQuery) -> None:
+        """Forged or malformed payload: never touch the service."""
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+
     @router.callback_query(F.data.startswith(AddArticleCb.__prefix__))
     async def on_stale_add_article(callback: CallbackQuery) -> None:
         """Forged or malformed payload: never touch the service."""
@@ -512,6 +613,7 @@ def create_router() -> Router:
             message.from_user.id,
             state,
             tracking,
+            display_timezone,
         )
 
     @router.message(StateFilter(AddProduct.waiting_target_price), F.text)

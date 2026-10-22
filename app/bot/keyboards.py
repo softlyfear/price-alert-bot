@@ -137,6 +137,12 @@ class AddArticleCb(CallbackData, prefix="addart"):
     article: int = Field(ge=1, le=MAX_ARTICLE)
 
 
+class AddShortLinkCb(CallbackData, prefix="addsl"):
+    """Start the /add link step with an Ozon short link code (max 32 chars)."""
+
+    code: str
+
+
 def _button(text: str, callback_data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
@@ -162,6 +168,21 @@ def add_ref_keyboard(marketplace: Marketplace, article: int) -> InlineKeyboardMa
                 _button(
                     texts.ADD_REF_BUTTON_TEXT,
                     AddRefCb(marketplace=marketplace, article=article).pack(),
+                )
+            ],
+            [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],
+        ]
+    )
+
+
+def add_short_link_keyboard(code: str) -> InlineKeyboardMarkup:
+    """Offer to add the product behind an Ozon short link, or go to the menu."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    texts.ADD_REF_BUTTON_TEXT,
+                    AddShortLinkCb(code=code).pack(),
                 )
             ],
             [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],

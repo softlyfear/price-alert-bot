@@ -37,6 +37,10 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
     "direction_arrow": lambda: texts.direction_arrow(AlertDirection.above),
     "add_ref_offer_text": lambda: texts.add_ref_offer_text(Marketplace.wb, 12345678),
     "add_article_offer_text": lambda: texts.add_article_offer_text(5764570826),
+    "add_short_link_offer_text": texts.add_short_link_offer_text,
+    "short_link_failure_text": lambda: "\n".join(
+        texts.short_link_failure_text(reason) for reason in FetchFailureReason
+    ),
     "article_failure_text": lambda: "\n".join(
         texts.article_failure_text(marketplace, reason)
         for marketplace in Marketplace
