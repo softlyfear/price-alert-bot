@@ -1,7 +1,8 @@
 """Parsing and building of marketplace product links (PROJECT.md section 2.2).
 
-Pure string logic: no network access, so short links that need a redirect
-resolution (e.g. Ozon `/t/...`) are rejected here by design.
+Pure string logic: no network access. An Ozon short link `/t/<code>` is only
+recognised here as `OzonShortLink`; expanding it needs a redirect request and
+belongs to the service layer (PROJECT.md 2.15 R22).
 """
 
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ MAX_ARTICLE = 9_223_372_036_854_775_807  # BIGINT of products.article
 _WB_HOSTS = frozenset({"wildberries.ru", "www.wildberries.ru", "wb.ru", "www.wb.ru"})
 _OZON_HOSTS = frozenset({"ozon.ru", "www.ozon.ru"})
 _TOKEN_EDGE_CHARS = "«»\"'()[]<>,.;:!?…"
+MAX_SHORT_CODE_LENGTH = 32
 
 BARE_ARTICLE_MARKETPLACES: Final[tuple[Marketplace, ...]] = (
     Marketplace.wb,
@@ -42,7 +44,26 @@ class BareArticle:
     article: int
 
 
-type ProductQuery = ProductRef | BareArticle
+@dataclass(frozen=True)
+class OzonShortLink:
+    """An Ozon "Share" short link `ozon.ru/t/<code>`; the code is validated."""
+
+    code: str
+
+
+type ProductQuery = ProductRef | BareArticle | OzonShortLink
+
+
+def ozon_short_link(code: str) -> OzonShortLink:
+    """Validate a short-link code (ASCII letters and digits, 1..32); the one rule.
+
+    The code goes into a request URL, hence the strict alphabet (R22).
+    """
+    if not (
+        code.isascii() and code.isalnum() and 0 < len(code) <= MAX_SHORT_CODE_LENGTH
+    ):
+        raise ProductRefParseError("unsupported short link code")
+    return OzonShortLink(code)
 
 
 def _article(token: str) -> int:
@@ -73,6 +94,13 @@ def _ozon_article(path: str) -> int:
     return _article(rest.rpartition("-")[2])
 
 
+def _ozon_short_code(path: str) -> OzonShortLink:
+    parts = path.removesuffix("/").split("/")
+    if len(parts) != 3 or parts[0] != "" or parts[1] != "t":
+        raise ProductRefParseError("unsupported Ozon path")
+    return ozon_short_link(parts[2])
+
+
 def parse_product_ref(text: str) -> ProductQuery:
     """Parse a product link into a `ProductRef`, bare digits into `BareArticle`.
 
@@ -90,7 +118,7 @@ def parse_product_ref(text: str) -> ProductQuery:
     return _parse_link(value)
 
 
-def _parse_link(value: str) -> ProductRef:
+def _parse_link(value: str) -> ProductRef | OzonShortLink:
     if any(ch.isspace() or not ch.isprintable() for ch in value):
         raise ProductRefParseError("input contains whitespace")
 
@@ -109,8 +137,33 @@ def _parse_link(value: str) -> ProductRef:
     if host in _WB_HOSTS:
         return ProductRef(Marketplace.wb, _wb_article(parts.path))
     if host in _OZON_HOSTS:
+        if parts.path.startswith("/t/"):
+            return _ozon_short_code(parts.path)
         return ProductRef(Marketplace.ozon, _ozon_article(parts.path))
     raise ProductRefParseError("unsupported host")
+
+
+def parse_ozon_product_location(location: str) -> ProductRef:
+    """Validate the `Location` of an expanded short link into an Ozon `ProductRef`.
+
+    Absolute `https` URL, exact Ozon host, no userinfo and no port, and a
+    product path; anything else is `ProductRefParseError` (R22 item 3).
+    """
+    if len(location) > MAX_INPUT_LENGTH:
+        raise ProductRefParseError("location is too long")
+    if any(ch.isspace() or not ch.isprintable() for ch in location):
+        raise ProductRefParseError("location contains whitespace")
+    try:
+        parts = urlsplit(location)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        raise ProductRefParseError("malformed location") from None
+    if parts.scheme != "https" or not location.startswith("https://"):
+        raise ProductRefParseError("unsupported location scheme")
+    if "@" in parts.netloc or port is not None or host not in _OZON_HOSTS:
+        raise ProductRefParseError("unsupported location host")
+    return ProductRef(Marketplace.ozon, _ozon_article(parts.path))
 
 
 def extract_product_ref(text: str) -> ProductQuery:
@@ -128,7 +181,7 @@ def extract_product_ref(text: str) -> ProductQuery:
     except ProductRefParseError as whole_text_error:
         if len(text) > MAX_INPUT_LENGTH:
             raise
-        refs: set[ProductRef] = set()
+        refs: set[ProductRef | OzonShortLink] = set()
         for raw in text.split():
             token = raw.strip(_TOKEN_EDGE_CHARS)
             if token.isascii() and token.isdigit():

@@ -123,8 +123,9 @@ ADD_CHECK_DROPPED_TEXT: Final[str] = "Проверка прервана."
 ADD_LINK_FORMAT_HINT_TEXT: Final[str] = (
     "Не получилось разобрать ссылку или артикул. Пришлите ссылку на страницу "
     "товара, например https://www.wildberries.ru/catalog/12345678/detail.aspx, "
-    "или только артикул из цифр. Короткие ссылки не подойдут — откройте "
-    "товар и скопируйте адрес из браузера."
+    "или только артикул из цифр. Короткая ссылка Ozon «Поделиться» "
+    "тоже подойдёт; сокращённые ссылки Wildberries я пока не раскрываю — "
+    "откройте товар и скопируйте адрес из браузера."
 )
 
 MULTIPLE_PRODUCT_REFS_TEXT: Final[str] = (
@@ -346,6 +347,50 @@ def add_article_offer_text(article: int) -> str:
         f"Добавить этот товар? Артикул {article}: поищу его сначала на "
         "Wildberries, затем на Ozon."
     )
+
+
+def add_short_link_offer_text() -> str:
+    """Offer for an Ozon short link in free text (the code is not echoed)."""
+    return "Добавить этот товар? Ozon, короткая ссылка."
+
+
+SHORT_LINK_UNRESOLVED_TEXT: Final[str] = (
+    "Не получилось раскрыть короткую ссылку Ozon. Пришлите полную ссылку со "
+    "страницы товара: откройте товар в браузере и скопируйте адрес. Либо "
+    "нажмите «Отмена»."
+)
+
+_SHORT_LINK_NOT_FOUND_TEXT: Final[str] = (
+    "Короткая ссылка Ozon не найдена или устарела. Проверьте её и пришлите "
+    "ещё раз либо пришлите полную ссылку на товар."
+)
+
+_SHORT_LINK_BLOCKED_TEXT: Final[str] = (
+    "Ozon заблокировал мой запрос: он защищается от автоматических "
+    "обращений. Дело не в вашей ссылке. Попробуйте прислать её чуть позже "
+    "или пришлите полную ссылку на товар."
+)
+
+_SHORT_LINK_TRANSPORT_TEXT: Final[str] = (
+    "Не удалось раскрыть короткую ссылку: Ozon не ответил или отклонил "
+    "запрос. Попробуйте прислать её чуть позже или пришлите полную ссылку "
+    "на товар."
+)
+
+
+def short_link_failure_text(reason: FetchFailureReason) -> str:
+    """Refusal for a short link whose expansion failed, naming Ozon."""
+    match reason:
+        case FetchFailureReason.bad_payload | FetchFailureReason.out_of_stock:
+            return SHORT_LINK_UNRESOLVED_TEXT
+        case FetchFailureReason.not_found:
+            return _SHORT_LINK_NOT_FOUND_TEXT
+        case FetchFailureReason.blocked:
+            return _SHORT_LINK_BLOCKED_TEXT
+        case FetchFailureReason.transport_error:
+            return _SHORT_LINK_TRANSPORT_TEXT
+        case _:
+            assert_never(reason)
 
 
 def article_failure_text(marketplace: Marketplace, reason: FetchFailureReason) -> str:

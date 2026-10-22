@@ -121,7 +121,7 @@ def test_count_is_the_number_of_distinct_products() -> None:
         "Купить 13511022 шт",
         "Цена 1990 ₽",
         "Товар 5 13511022",
-        "Название https://ozon.ru/t/AbCd12",
+        "Название https://ozon.ru/t/AbCd12/extra",
         "Название https://wildberries.ru.evil.com/catalog/1/detail.aspx",
         "Название https://evil.com/?u=https://www.wildberries.ru/catalog/1/detail.aspx",
         "просто слова без ссылок",
@@ -234,7 +234,7 @@ def test_one_character_over_the_limit_is_refused() -> None:
         extract_product_ref(text)
 
 
-@pytest.mark.parametrize("junk", ["###", "https://evil.com/x", "ozon.ru/t/Ab", "😀"])
+@pytest.mark.parametrize("junk", ["###", "https://evil.com/x", "ozon.ru/t/a-b", "😀"])
 def test_junk_token_next_to_a_valid_link_is_ignored(junk: str) -> None:
     assert extract_product_ref(f"{junk} {_WB_LINK} {junk}") == _WB_REF
 

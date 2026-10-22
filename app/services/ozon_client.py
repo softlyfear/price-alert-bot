@@ -112,6 +112,14 @@ class OzonReply:
     body: bytes | None
 
 
+@dataclass(frozen=True, slots=True)
+class OzonRedirect:
+    """Status of a response and its `Location` header (3xx only); no body."""
+
+    status: int
+    location: str | None
+
+
 class OzonSession:
     """One `curl_cffi` `AsyncSession` per process (O7), owned by `lifespan`.
 
@@ -174,12 +182,36 @@ class OzonSession:
                 abort.set()
             await response.aclose()  # type: ignore[no-untyped-call]
 
+    async def get_redirect(self, url: str, *, timeout_seconds: float) -> OzonRedirect:
+        """GET `url` without access cookies; report status and `Location`.
+
+        No redirect is followed (the session forbids it) and the body is never
+        read: the stream is aborted on every exit. Raises `RequestException`;
+        `CancelledError` passes through.
+        """
+        response = await self._session.request(
+            "GET", url, timeout=timeout_seconds, stream=True
+        )
+        try:
+            status = int(response.status_code)
+            location: str | None = None
+            if 300 <= status < 400:
+                header = response.headers.get("Location")
+                location = header if isinstance(header, str) and header else None
+            return OzonRedirect(status, location)
+        finally:
+            abort = cast("asyncio.Event | None", response.quit_now)
+            if abort is not None:
+                abort.set()
+            await response.aclose()  # type: ignore[no-untyped-call]
+
     async def aclose(self) -> None:
         await self._session.close()
 
 
 class OzonClient(BaseMarketplaceClient):
     URL = "https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2"
+    SHORT_LINK_URL = "https://ozon.ru/t/"
     TIMEOUT_SECONDS = 10.0
     MAX_BODY_BYTES = 4_194_304
 
@@ -282,6 +314,60 @@ class OzonClient(BaseMarketplaceClient):
                 reason=FetchFailureReason.transport_error,
                 detail=type(e).__name__,
             )
+
+    async def resolve_short_link(self, code: str) -> str | MarketplaceFetchFailure:
+        """Expand `ozon.ru/t/<code>` with one request; return its `Location`.
+
+        The URL is built from the constant host and the validated `code` only
+        (no SSRF); no access cookies, no browser, no redirect followed, the
+        access provider is never called (PROJECT.md section 2.15, R22). The
+        `Location` is returned as is: checking it is the domain's job. Neither
+        the code nor the `Location` is logged (derived from user input).
+        Status map: `3xx` with `Location` -> the string; `3xx` without it and
+        `2xx` -> `bad_payload`; `403`/`429` -> `blocked`; `404` -> `not_found`;
+        other statuses, `curl_cffi` errors and a missed deadline ->
+        `transport_error`. Never raises (apart from `CancelledError`).
+        """
+        if not (code.isascii() and code.isalnum() and 1 <= len(code) <= 32):
+            logger.error("Ozon short link code rejected before the request")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.bad_payload, detail="invalid code"
+            )
+        try:
+            async with asyncio.timeout(self.TIMEOUT_SECONDS):
+                redirect = await self._session.get_redirect(
+                    f"{self.SHORT_LINK_URL}{code}",
+                    timeout_seconds=self.TIMEOUT_SECONDS,
+                )
+        except (RequestException, TimeoutError) as e:
+            logger.warning(f"Couldn't expand Ozon short link: {type(e).__name__}")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.transport_error,
+                detail=type(e).__name__,
+            )
+        status = redirect.status
+        if 300 <= status < 400 and redirect.location is not None:
+            return redirect.location
+        detail = f"HTTP {status}"
+        if status in (403, 429):
+            logger.warning(f"Ozon refused short link expansion ({detail})")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.blocked, detail=detail
+            )
+        if status == 404:
+            logger.info(f"Ozon short link not found ({detail})")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.not_found, detail=detail
+            )
+        if 200 <= status < 400:
+            logger.error(f"Ozon short link gave no redirect ({detail})")
+            return MarketplaceFetchFailure(
+                reason=FetchFailureReason.bad_payload, detail=detail
+            )
+        logger.warning(f"Error {detail} expanding Ozon short link")
+        return MarketplaceFetchFailure(
+            reason=FetchFailureReason.transport_error, detail=detail
+        )
 
     async def get_product_data(self, article: int) -> MarketplaceFetchResult:
         """Fetch name and price for a single Ozon article.

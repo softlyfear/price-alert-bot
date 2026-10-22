@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 import httpx
 from loguru import logger
@@ -13,7 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.exceptions import DuplicateAlertError
 from app.domain.exceptions import MarketplaceNotSupportedError
 from app.domain.exceptions import ProductLimitExceededError
+from app.domain.exceptions import ProductRefParseError
 from app.domain.links import BARE_ARTICLE_MARKETPLACES
+from app.domain.links import ProductRef
+from app.domain.links import parse_ozon_product_location
 from app.domain.thresholds import choose_direction
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
@@ -61,6 +65,12 @@ class ArticlePreview:
     result: MarketplaceFetchResult
 
 
+class ShortLinkRefusal(StrEnum):
+    """Why an expanded short link was refused (not a marketplace failure)."""
+
+    not_a_product = "not_a_product"
+
+
 class AlertRemoval(StrEnum):
     """Outcome of removing a single alert."""
 
@@ -75,6 +85,14 @@ class AlertChange(StrEnum):
     changed = "changed"
     unchanged = "unchanged"
     not_found = "not_found"
+
+
+def _location_host(location: str) -> str:
+    """Host of a `Location` for the log (no path, no query); empty if unparsable."""
+    try:
+        return (urlsplit(location).hostname or "")[:255]
+    except ValueError:
+        return ""
 
 
 class TrackingService:
@@ -107,18 +125,36 @@ class TrackingService:
         """Fetch current product data for the dialog; failures are values."""
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
         await self._ensure_within_limit(user, marketplace, article)
+        return await self._fetch(marketplace, article, routes_on_not_found=False)
+
+    async def resolve_short_link(
+        self, code: str
+    ) -> ProductRef | MarketplaceFetchFailure | ShortLinkRefusal:
+        """Expand an Ozon short link into a `ProductRef`; failures are values.
+
+        `code` must already pass `ozon_short_link`. No database access. Neither
+        the code nor the `Location` query is logged, only the `Location` host.
+        """
+        client = self._client_for(Marketplace.ozon)
+        outcome = await client.resolve_short_link(code)
+        if isinstance(outcome, MarketplaceFetchFailure):
+            logger.bind(
+                reason=str(outcome.reason), marketplace=str(Marketplace.ozon)
+            ).log(failure_log_level(outcome.reason), "Short link expansion failed")
+            return outcome
         try:
-            client = self._client_factory(marketplace, self._http_client)
+            return parse_ozon_product_location(outcome)
+        except ProductRefParseError:
+            logger.bind(location_host=_location_host(outcome)).warning(
+                "Short link does not lead to an Ozon product"
+            )
+            return ShortLinkRefusal.not_a_product
+
+    def _client_for(self, marketplace: Marketplace) -> BaseMarketplaceClient:
+        try:
+            return self._client_factory(marketplace, self._http_client)
         except UnsupportedMarketplaceError as exc:
             raise MarketplaceNotSupportedError(str(marketplace)) from exc
-        result = await client.get_product_data(article)
-        if isinstance(result, MarketplaceFetchFailure):
-            logger.bind(
-                reason=str(result.reason),
-                marketplace=str(marketplace),
-                article=article,
-            ).log(failure_log_level(result.reason), "Marketplace fetch failed")
-        return result
 
     async def preview_article(self, tg_user_id: int, article: int) -> ArticlePreview:
         """Preview a bare article: Wildberries first, Ozon only on `not_found`.
@@ -151,10 +187,7 @@ class TrackingService:
         self, marketplace: Marketplace, article: int, *, routes_on_not_found: bool
     ) -> MarketplaceFetchResult:
         """Fetch and log a failure; a routed `not_found` is logged by the caller."""
-        try:
-            client = self._client_factory(marketplace, self._http_client)
-        except UnsupportedMarketplaceError as exc:
-            raise MarketplaceNotSupportedError(str(marketplace)) from exc
+        client = self._client_for(marketplace)
         result = await client.get_product_data(article)
         if isinstance(result, MarketplaceFetchFailure) and not (
             routes_on_not_found and result.reason is FetchFailureReason.not_found

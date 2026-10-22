@@ -9,6 +9,8 @@ main menu. No service, database or marketplace is touched here, and user text
 never reaches the log.
 """
 
+from typing import assert_never
+
 from aiogram import F
 from aiogram import Router
 from aiogram.enums import ChatType
@@ -19,10 +21,13 @@ from aiogram.types import Message
 from app.bot import texts
 from app.bot.keyboards import add_article_keyboard
 from app.bot.keyboards import add_ref_keyboard
+from app.bot.keyboards import add_short_link_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.links import BareArticle
+from app.domain.links import OzonShortLink
+from app.domain.links import ProductRef
 from app.domain.links import extract_product_ref
 from app.handlers.add_product import MAX_TEXT_LENGTH
 
@@ -75,18 +80,27 @@ def create_router() -> Router:
         except ProductRefParseError:
             await message.answer(texts.FALLBACK_TEXT, reply_markup=main_menu_keyboard())
             return
-        if isinstance(ref, BareArticle):
-            await message.answer(
-                texts.add_article_offer_text(ref.article),
-                reply_markup=add_article_keyboard(ref.article),
-                parse_mode=None,
-            )
-            return
-        await message.answer(
-            texts.add_ref_offer_text(ref.marketplace, ref.article),
-            reply_markup=add_ref_keyboard(ref.marketplace, ref.article),
-            parse_mode=None,
-        )
+        match ref:
+            case BareArticle(article=article):
+                await message.answer(
+                    texts.add_article_offer_text(article),
+                    reply_markup=add_article_keyboard(article),
+                    parse_mode=None,
+                )
+            case OzonShortLink(code=code):
+                await message.answer(
+                    texts.add_short_link_offer_text(),
+                    reply_markup=add_short_link_keyboard(code),
+                    parse_mode=None,
+                )
+            case ProductRef():
+                await message.answer(
+                    texts.add_ref_offer_text(ref.marketplace, ref.article),
+                    reply_markup=add_ref_keyboard(ref.marketplace, ref.article),
+                    parse_mode=None,
+                )
+            case _:
+                assert_never(ref)
 
     @router.message(StateFilter(None), F.from_user)
     async def on_other_message(message: Message) -> None:
