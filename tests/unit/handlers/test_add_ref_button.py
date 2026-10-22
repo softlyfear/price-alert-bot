@@ -164,7 +164,9 @@ async def test_button_on_a_message_already_showing_the_checking_text_does_not_re
     )
 
     assert stub.preview_calls == [(_USER, Marketplace.wb, 12345678)]
-    assert [e.text for e in dialog.edits] == [texts.product_found_text(_NAME, _PRICE)]
+    assert [e.text for e in dialog.edits] == [
+        texts.product_found_text(Marketplace.wb, _NAME, _PRICE)
+    ]
     assert dialog.sent == []
     assert len(dialog.callback_answers) == 1
 
@@ -202,7 +204,7 @@ async def test_button_on_an_inaccessible_message_sends_the_notice_as_a_new_messa
     assert stub.preview_calls == [(_USER, Marketplace.wb, 12345678)]
     assert [m.text for m in dialog.sent] == [texts.ADD_CHECKING_TEXT]
     assert [(e.message_id, e.text) for e in dialog.edits] == [
-        (1000, texts.product_found_text(_NAME, _PRICE))
+        (1000, texts.product_found_text(Marketplace.wb, _NAME, _PRICE))
     ]
     assert len(dialog.callback_answers) == 1
     assert await dialog.state() == AddProduct.waiting_target_price.state
@@ -239,7 +241,7 @@ async def test_refused_edit_sends_new_notice_and_edits_that_notice_with_the_outc
         (e.chat_id, e.message_id, e.text)
         for e in dialog.edits
         if e.message_id != _BUTTON_ID
-    ] == [(_CHAT, notice_id, texts.product_found_text(_NAME, _PRICE))]
+    ] == [(_CHAT, notice_id, texts.product_found_text(Marketplace.wb, _NAME, _PRICE))]
     assert len(dialog.callback_answers) == 1
     assert await dialog.state() == AddProduct.waiting_target_price.state
 
@@ -337,7 +339,9 @@ async def test_button_pressed_during_a_link_check_wins_when_the_link_finishes_la
     assert (await dialog.data())["product_name"] == _NAME_B
     assert (await dialog.data())["link_message_id"] == _BUTTON_ID
     assert _NAME_A not in _shown_texts(dialog)
-    assert texts.product_found_text(_NAME_B, 222) in _shown_texts(dialog)
+    assert texts.product_found_text(Marketplace.wb, _NAME_B, 222) in _shown_texts(
+        dialog
+    )
 
 
 @pytest.mark.asyncio
@@ -366,7 +370,7 @@ async def test_button_pressed_during_a_link_check_wins_when_the_link_finishes_fi
     assert isinstance(last, EditMessageText)
     assert (last.message_id, last.text) == (
         _BUTTON_ID,
-        texts.product_found_text(_NAME_B, 222),
+        texts.product_found_text(Marketplace.wb, _NAME_B, 222),
     )
 
 

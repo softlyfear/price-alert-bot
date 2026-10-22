@@ -131,6 +131,12 @@ class AddRefCb(CallbackData, prefix="addref"):
     article: int = Field(ge=1, le=MAX_ARTICLE)
 
 
+class AddArticleCb(CallbackData, prefix="addart"):
+    """Start the /add link step with a bare article: the marketplace is searched."""
+
+    article: int = Field(ge=1, le=MAX_ARTICLE)
+
+
 def _button(text: str, callback_data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
@@ -156,6 +162,21 @@ def add_ref_keyboard(marketplace: Marketplace, article: int) -> InlineKeyboardMa
                 _button(
                     texts.ADD_REF_BUTTON_TEXT,
                     AddRefCb(marketplace=marketplace, article=article).pack(),
+                )
+            ],
+            [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],
+        ]
+    )
+
+
+def add_article_keyboard(article: int) -> InlineKeyboardMarkup:
+    """Offer to add a bare-article product, or go to the main menu."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    texts.ADD_REF_BUTTON_TEXT,
+                    AddArticleCb(article=article).pack(),
                 )
             ],
             [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],

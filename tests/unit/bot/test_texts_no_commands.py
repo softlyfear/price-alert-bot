@@ -22,6 +22,7 @@ from aiogram.types import BotCommand
 from app.bot import texts
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.schemas.marketplace import FetchFailureReason
 from app.services.price_service import RefreshFailure
 from app.services.price_service import RefreshReport
 
@@ -35,7 +36,15 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
     "direction_phrase": lambda: texts.direction_phrase(AlertDirection.below, 1_000_00),
     "direction_arrow": lambda: texts.direction_arrow(AlertDirection.above),
     "add_ref_offer_text": lambda: texts.add_ref_offer_text(Marketplace.wb, 12345678),
-    "product_found_text": lambda: texts.product_found_text("Item", 1_990_00),
+    "add_article_offer_text": lambda: texts.add_article_offer_text(5764570826),
+    "article_failure_text": lambda: "\n".join(
+        texts.article_failure_text(marketplace, reason)
+        for marketplace in Marketplace
+        for reason in FetchFailureReason
+    ),
+    "product_found_text": lambda: texts.product_found_text(
+        Marketplace.wb, "Item", 1_990_00
+    ),
     "confirm_text": lambda: texts.confirm_text(
         "Item", 1_990_00, 1_000_00, AlertDirection.below
     ),
@@ -138,6 +147,7 @@ def test_constants_table_is_not_empty_and_includes_the_changed_ones() -> None:
     assert {"MENU_STALE_ALERT_TEXT", "ADD_STALE_TEXT", "EDIT_STALE_TEXT"} <= names
     assert "BOT_COMMANDS" in names
     assert "ADD_FETCH_FAILURE_TEXTS" in names
+    assert {"ARTICLE_WB_FAILURE_TEXTS", "ARTICLE_OZON_FAILURE_TEXTS"} <= names
 
 
 @pytest.mark.parametrize("name", sorted(_constant_strings()))
@@ -196,8 +206,9 @@ def test_help_text_prose_points_at_the_buttons() -> None:
         ),
         (
             texts.ADD_PROMPT_LINK_TEXT,
-            "Пришлите ссылку на товар Wildberries или Ozon либо артикул "
-            "Wildberries (только цифры). Чтобы выйти, нажмите «Отмена».",
+            "Пришлите ссылку на товар Wildberries или Ozon либо артикул из цифр: "
+            "я поищу его сначала на Wildberries, затем на Ozon. Чтобы выйти, "
+            "нажмите «Отмена».",
         ),
         (
             texts.ADD_TARGET_EQUALS_RESTART_TEXT,
