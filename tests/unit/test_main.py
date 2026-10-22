@@ -99,6 +99,7 @@ from app.services.price_service import REFRESH_DEADLINE_SECONDS
 from app.services.price_service import PriceRefresher
 from app.services.price_service import RefreshLimiter
 from app.services.price_service import RefreshThrottled
+from app.services.socks_relay import SocksProxy
 from app.services.wb_access import BrowserWbAccessProvider
 from app.services.wb_access import WbAccessStage
 from app.services.wb_access import WbAccessUnavailable
@@ -290,6 +291,7 @@ def _make_orchestration_settings(
     pool_size: int = 1,
     max_overflow: int = 1,
     concurrency: int = 3,
+    ozon_proxy_url: str | None = None,
 ) -> Settings:
     """Settings with non-default HTTP timeout, product limit (PAB-068),
     scheduler interval, cooldown and concurrency (PAB-069)."""
@@ -334,6 +336,7 @@ def _make_orchestration_settings(
             LAUNCH_BUDGET=5,
             LAUNCH_WINDOW_SECONDS=345.0,
             BROWSER_SANDBOX=True,
+            PROXY_URL=SecretStr(ozon_proxy_url) if ozon_proxy_url else None,
         ),
     )
 
@@ -3169,8 +3172,11 @@ class _SpyOzonProvider(StubOzonAccess):
 class _SpyOzonSession(FakeOzonSession):
     """A planned session (always 404) that counts its ``aclose`` calls."""
 
-    def __init__(self, *, sink: list[_SpyOzonSession]) -> None:
+    def __init__(
+        self, *, sink: list[_SpyOzonSession], proxy: SocksProxy | None = None
+    ) -> None:
         super().__init__(OzonReply(404, None))
+        self.proxy = proxy
         self.aclose_calls = 0
         sink.append(self)
 
@@ -3188,9 +3194,13 @@ class _OzonSpy:
         self.providers: list[_SpyOzonProvider] = []
         self.sessions: list[_SpyOzonSession] = []
         self.fetch_calls: list[bool] = []
+        self.fetch_proxies: list[SocksProxy | None] = []
 
-        async def fake_fetch_ozon_access(*, sandbox: bool) -> OzonAccess:
+        async def fake_fetch_ozon_access(
+            *, sandbox: bool, proxy: SocksProxy | None = None
+        ) -> OzonAccess:
             self.fetch_calls.append(sandbox)
+            self.fetch_proxies.append(proxy)
             return make_access(1)
 
         monkeypatch.setattr(
@@ -3399,7 +3409,9 @@ async def test_wb_and_ozon_fetchers_from_lifespan_never_overlap(
         await gauge.work()
         return "wb"
 
-    async def slow_ozon(*, sandbox: bool) -> OzonAccess:
+    async def slow_ozon(
+        *, sandbox: bool, proxy: SocksProxy | None = None
+    ) -> OzonAccess:
         await gauge.work()
         return make_access(1)
 
@@ -3838,3 +3850,100 @@ async def test_lifespan_builds_a_real_refresher_when_nothing_is_replaced(
     async with main.lifespan(main.app):
         await asyncio.sleep(0)
         assert isinstance(created[0]["price_refresher"], PriceRefresher)
+
+
+# --- PAB-111 AC5: the Ozon proxy wiring ---------------------------------------
+
+_PROXY_URL = "socks5://wiring-user:wiring-pass@wiring-host.invalid:1080"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_with_proxy_url_gives_one_proxy_object_to_session_and_fetcher(
+    monkeypatch: pytest.MonkeyPatch, ozon_spy: _OzonSpy
+) -> None:
+    """O11, one exit: the session and the browser fetcher get the very same
+    object, built once from the configured URL."""
+    from_url_calls: list[str] = []
+    real_from_url = SocksProxy.from_url
+
+    def counting_from_url(url: str) -> SocksProxy:
+        from_url_calls.append(url)
+        return real_from_url(url)
+
+    monkeypatch.setattr(SocksProxy, "from_url", staticmethod(counting_from_url))
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        settings=_make_orchestration_settings(ozon_proxy_url=_PROXY_URL),
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        await ozon_spy.providers[0].fetch_access()
+
+    session_proxy = ozon_spy.sessions[0].proxy
+    assert isinstance(session_proxy, SocksProxy)
+    assert ozon_spy.fetch_proxies == [session_proxy]
+    assert ozon_spy.fetch_proxies[0] is session_proxy
+    assert from_url_calls == [_PROXY_URL]
+    assert str(session_proxy.host) == "wiring-host.invalid"
+    assert session_proxy.port == 1080
+
+
+@pytest.mark.asyncio
+async def test_lifespan_without_proxy_url_leaves_session_and_fetcher_without_proxy(
+    monkeypatch: pytest.MonkeyPatch, ozon_spy: _OzonSpy
+) -> None:
+    from_url_calls: list[str] = []
+
+    def counting_from_url(url: str) -> SocksProxy:
+        from_url_calls.append(url)
+        raise AssertionError("no proxy is configured")
+
+    monkeypatch.setattr(SocksProxy, "from_url", staticmethod(counting_from_url))
+    await _start_lifespan_only(monkeypatch)
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        await ozon_spy.providers[0].fetch_access()
+
+    assert ozon_spy.sessions[0].proxy is None
+    assert ozon_spy.fetch_proxies == [None]
+    assert from_url_calls == []
+
+
+@pytest.mark.asyncio
+async def test_lifespan_with_proxy_url_gives_no_proxy_to_wb_or_the_http_client(
+    monkeypatch: pytest.MonkeyPatch, wb_spy: _WbAccessSpy, ozon_spy: _OzonSpy
+) -> None:
+    """The WB fetcher is called as before (its fake takes ``sandbox`` only, so
+    a ``proxy`` keyword would raise) and the shared ``httpx`` client is built
+    with no proxy-related argument."""
+    client_kwargs: list[dict[str, Any]] = []
+    real_client = httpx.AsyncClient
+
+    class _RecordingClient(real_client):  # type: ignore[valid-type, misc]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            client_kwargs.append(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _RecordingClient)
+    start_polling, stop_polling = _controlled_polling()
+    _patch_orchestration_factories(
+        monkeypatch,
+        bot=build_fake_bot(),
+        start_polling=start_polling,
+        stop_polling=stop_polling,
+        settings=_make_orchestration_settings(ozon_proxy_url=_PROXY_URL),
+    )
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+        assert await wb_spy.instances[0].fetch_token() == "spy-token"
+
+    assert wb_spy.fetch_calls == [True]
+    assert len(client_kwargs) == 1
+    assert set(client_kwargs[0]) == {"timeout"}

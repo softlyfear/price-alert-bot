@@ -153,20 +153,22 @@ services:
       # container (TASKS.md, section K, question 3). Revisit when Docker Engine on
       # the server is updated.
       - seccomp=./docker/seccomp-chromium.json
-    # Memory limit (PAB-080 AC7, revised in PAB-110 AC14 (v)): (peak + app working
+    # Memory limit (PAB-080 AC7, revised in PAB-111 AC10 (g)): (peak + app working
     # memory + WB batch reserve) x 1.25, rounded up to 64 MiB. memswap_limit =
     # mem_limit: no swap, so the limit is real and an overrun is an OOM kill, not a
     # slowdown.
-    #   clean peak while obtaining Ozon access (PAB-110 AC14 (v)): memory.current
-    #   214 -> 524 MiB, sampled every 50 ms:                          524 MiB
+    #   peak memory.current while obtaining Ozon access through the relay
+    #   (PAB-111 AC10 (g); the measuring script ran in the same cgroup, so the
+    #   peak is overstated, i.e. on the safe side; browser +311 MiB as in
+    #   PAB-110):                                                701 MiB
     #   app working memory (aiogram, SQLAlchemy, FastAPI, pools; not measured):
     #                                                            240 MiB (estimate)
     #   WB batch of 4 MiB body (measured: peak delta of 3 consecutive batches
     #   through WbClient against a stub, 4126814 B body):         10.3 MiB
-    #   (524 + 240 + 10.3) x 1.25 = 967.9 MiB -> 1024 MiB.
+    #   (701 + 240 + 10.3) x 1.25 = 1189.1 MiB -> 1216 MiB (19 x 64).
     # Recompute if the browser, batch size or body cap changes.
-    mem_limit: 1024m
-    memswap_limit: 1024m
+    mem_limit: 1216m
+    memswap_limit: 1216m
     # CPU: the target server has 2 cores shared with postgres, redis and the OS.
     # 1.5 leaves 0.5 core for them; Chromium startup is CPU-bound and gets the rest.
     cpus: 1.5

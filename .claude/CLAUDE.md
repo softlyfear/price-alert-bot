@@ -88,7 +88,7 @@ python-architect  → финальная приёмка, вердикт ✅ ПР
 | Модели и миграции | `db-models-agent` | `app/models/**`, `alembic/**` |
 | Схемы Pydantic | `schemas-agent` | `app/schemas/**` |
 | Репозитории | `repository-agent` | `app/repositories/**` |
-| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser,browser_launch,ozon_access,ozon_browser}.py` |
+| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser,browser_launch,ozon_access,ozon_browser,socks_relay}.py` |
 | Доменная логика | `service-agent` | `app/services/**`, кроме клиентов маркетплейсов; `app/domain/**` |
 | Telegram-интерфейс | `bot-agent` | `app/bot/**`, `app/handlers/**` |
 | Инфраструктура и запуск | `core-agent` | `app/core/**`, `app/main.py`, `app/scheduler.py`, `.env.example` |

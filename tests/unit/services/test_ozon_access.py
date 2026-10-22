@@ -186,13 +186,14 @@ def test_unavailable_is_a_frozen_value_carrying_stage_and_detail() -> None:
         refusal.detail = "x"  # type: ignore[misc]
 
 
-def test_stage_values_are_the_five_names_of_the_contract() -> None:
+def test_stage_values_are_the_six_names_of_the_contract() -> None:
     assert {s.value for s in OzonAccessStage} == {
         "launch_failed",
         "challenge_timeout",
         "paused",
         "budget_exhausted",
         "closed",
+        "proxy_failed",
     }
     assert f"{OzonAccessStage.challenge_timeout}" == "challenge_timeout"
 
@@ -380,6 +381,33 @@ async def test_pause_is_logged_once_per_failure_and_not_per_get() -> None:
 
     assert _levels(records) == ["WARNING"]
     assert "paused" in records[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_proxy_failed_is_one_error_per_failure_then_a_pause() -> None:
+    """PAB-111 AC3: like `launch_failed` - `ERROR` once, then the pause."""
+    clock = _Clock()
+    fetch = _Fetcher(
+        OzonAccessFetchError(OzonAccessStage.proxy_failed, "proxy_auth_failed")
+    )
+    provider = _provider(fetch, clock, failure_pause_seconds=300.0)
+    records, sink_id = _capture()
+    try:
+        first = await _get(provider)
+        clock.now = 10.0
+        during = await _get(provider)
+    finally:
+        logger.remove(sink_id)
+
+    assert first == OzonAccessUnavailable(
+        OzonAccessStage.proxy_failed, "proxy_auth_failed"
+    )
+    assert during == OzonAccessUnavailable(
+        OzonAccessStage.paused, "pause after failure"
+    )
+    assert fetch.calls == 1
+    assert _levels(records) == ["ERROR", "WARNING"]
+    assert "proxy_failed, proxy_auth_failed" in records[0]["message"]
 
 
 @pytest.mark.asyncio

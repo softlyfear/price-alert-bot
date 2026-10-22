@@ -65,6 +65,7 @@ class OzonAccessStage(StrEnum):
     paused = "paused"
     budget_exhausted = "budget_exhausted"
     closed = "closed"
+    proxy_failed = "proxy_failed"
 
 
 @dataclass(frozen=True, slots=True)
