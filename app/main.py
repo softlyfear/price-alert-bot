@@ -59,6 +59,7 @@ from app.services.price_service import REFRESH_WINDOW_SECONDS
 from app.services.price_service import PriceRefresher
 from app.services.price_service import PriceService
 from app.services.price_service import RefreshLimiter
+from app.services.socks_relay import SocksProxy
 from app.services.wb_access import BrowserWbAccessProvider
 from app.services.wb_browser import fetch_wb_token
 
@@ -491,13 +492,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             launch_budget=settings.wb.LAUNCH_BUDGET,
             launch_window_seconds=settings.wb.LAUNCH_WINDOW_SECONDS,
         )
-        ozon_session = OzonSession()
+        # The only place the proxy secret is exposed: one object serves both
+        # the price session and the browser access (O11: one exit).
+        proxy_url = settings.ozon.PROXY_URL
+        ozon_proxy = (
+            SocksProxy.from_url(proxy_url.get_secret_value())
+            if proxy_url is not None
+            else None
+        )
+        ozon_session = OzonSession(proxy=ozon_proxy)
         # Lazy as well: Chromium starts on the first Ozon check, not at startup.
         ozon_access = BrowserOzonAccessProvider(
             _serialized(
                 browser_lock,
                 functools.partial(
-                    fetch_ozon_access, sandbox=settings.ozon.BROWSER_SANDBOX
+                    fetch_ozon_access,
+                    sandbox=settings.ozon.BROWSER_SANDBOX,
+                    proxy=ozon_proxy,
                 ),
             ),
             token_timeout_seconds=settings.ozon.TOKEN_TIMEOUT_SECONDS,

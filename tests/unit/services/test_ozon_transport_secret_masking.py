@@ -6,7 +6,9 @@ refused and the `curl_cffi` exception propagates through the transport frames.
 Those frames' locals are printed by `--showlocals --tb=long`. The marker of
 the access cookie must be absent from the output; a positive control in the
 same run puts a different marker in an open local variable and it must be
-visible, so a silent output (no locals printed) cannot pass the check. Both
+visible, so a silent output (no locals printed) cannot pass the check. The
+frames of `ozon_client.py` and `curl_cffi` must be in that same output, so the
+traceback is proved to pass the real transport (PAB-111 AC8). Both
 markers are assembled at run time: the source lines echoed by a traceback do
 not hold them, only values do.
 """
@@ -112,13 +114,11 @@ def test_transport_exception_never_shows_the_cookie_value(
 ) -> None:
     output = _run_probe(tmp_path, *flags)
 
+    # Positive controls, all in the output that is checked for the absence:
     assert "ConnectionError" in output  # the real transport raised and it escaped
+    assert "ozon_client.py" in output  # the traceback passed our transport frame
+    assert "curl_cffi" in output  # ... and the real library frames
+    if "--showlocals" in flags:
+        # locals are printed at all: the open marker of the control test shows
+        assert _CONTROL_MARKER in output
     assert _COOKIE_MARKER not in output
-
-
-def test_positive_control_shows_the_open_marker_under_showlocals(
-    tmp_path: Path,
-) -> None:
-    output = _run_probe(tmp_path, "-q", "--showlocals", "--tb=long")
-
-    assert _CONTROL_MARKER in output

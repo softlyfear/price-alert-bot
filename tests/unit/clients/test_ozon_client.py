@@ -316,7 +316,11 @@ async def test_third_request_is_never_made_after_two_refusals() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", list(OzonAccessStage), ids=lambda s: s.value)
+@pytest.mark.parametrize(
+    "stage",
+    [s for s in OzonAccessStage if s is not OzonAccessStage.proxy_failed],
+    ids=lambda s: s.value,
+)
 async def test_access_refusal_is_blocked_without_any_request(
     stage: OzonAccessStage,
 ) -> None:
@@ -332,6 +336,27 @@ async def test_access_refusal_is_blocked_without_any_request(
     assert run.access.invalidated == []
     assert [r["level"].name for r in run.records] == ["WARNING"]
     assert "SECRET-DETAIL-MARKER" not in run.records[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_proxy_failed_refusal_is_transport_error_without_any_request() -> None:
+    """The proxy refused, not Ozon: not `blocked` (PAB-111 AC4)."""
+    access = StubOzonAccess(
+        OzonAccessUnavailable(OzonAccessStage.proxy_failed, "proxy_auth_failed")
+    )
+
+    run = await _run(_ok(b"{}"), access=access)
+
+    assert run.result == MarketplaceFetchFailure(
+        reason=FetchFailureReason.transport_error,
+        detail="Ozon access unavailable: proxy_failed",
+    )
+    assert run.session.requests == []
+    assert run.access.invalidated == []
+    assert [r["level"].name for r in run.records] == ["WARNING"]
+    # The detail of this stage is a closed constant (no host, no credentials):
+    # the operator sees which check failed.
+    assert "proxy_auth_failed" in run.records[0]["message"]
 
 
 @pytest.mark.asyncio

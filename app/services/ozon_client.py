@@ -27,8 +27,11 @@ price request itself is made by `curl_cffi` with the Chrome TLS fingerprint
 (`httpx` is answered `307`/`403` - measured). Status map (O4):
 
 - provider refusal: `blocked`, no request; `429`: `blocked`, access kept;
+  the stage `proxy_failed` (the proxy refused, not Ozon) is `transport_error`;
 - `3xx` or `403`: the access is invalidated and the request repeated once
-  with a fresh one; a second `3xx`/`403` is `blocked`;
+  with a fresh one; a second `3xx`/`403` is `blocked` and does not
+  invalidate the renewed access (a repeated refusal says nothing against it,
+  and dropping it would start a browser on every article);
 - `404`: `not_found`; other statuses and `curl_cffi` errors:
   `transport_error` (`detail` is `HTTP <status>` or the class name).
 
@@ -37,7 +40,8 @@ Redirects are not followed (a `3xx` is the refusal signal, so no request goes
 to a foreign address), the body of a non-2xx response is never read, the body
 of a 2xx one is read with a size cap, cookies set by a response are
 discarded (the request is a function of access and article, no hidden state),
-and proxy environment variables are not read. Each attempt is bounded by one
+and proxy environment variables are not read (the only proxy is the
+configured SOCKS5 one, `socks5h`: DNS on the proxy side). Each attempt is bounded by one
 deadline. Access cookies are a secret: they are masked in `repr`, never
 logged and never put into `detail`.
 """
@@ -63,7 +67,9 @@ from app.schemas.ozon import OzonProductHeadingState
 from app.services.base_client import BaseMarketplaceClient
 from app.services.ozon_access import OzonAccess
 from app.services.ozon_access import OzonAccessProvider
+from app.services.ozon_access import OzonAccessStage
 from app.services.ozon_access import OzonAccessUnavailable
+from app.services.socks_relay import SocksProxy
 
 _HEADING = "webProductHeading"
 _PRICE = "webPrice"
@@ -112,14 +118,15 @@ class OzonSession:
     No cookie jar (`discard_cookies`), no redirects, no proxy from the
     environment (`proxies={"all": ""}` makes libcurl ignore `ALL_PROXY`,
     `HTTPS_PROXY`, ...; `trust_env` alone does not), Chrome fingerprint,
-    TLS verification on.
+    TLS verification on. With a `proxy` the whole traffic goes through it by
+    `socks5h` (O10); the credentials are held in the libcurl session.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, proxy: SocksProxy | None = None) -> None:
         self._session = AsyncSession(
             impersonate="chrome",
             trust_env=False,
-            proxies={"all": ""},
+            proxies={"all": "" if proxy is None else proxy.curl_url},
             discard_cookies=True,
             allow_redirects=False,
         )
@@ -191,6 +198,14 @@ class OzonClient(BaseMarketplaceClient):
             attempt += 1
             access = await self._access.get()
             if isinstance(access, OzonAccessUnavailable):
+                if access.stage is OzonAccessStage.proxy_failed:
+                    logger.warning(
+                        f"Ozon proxy failed for article {article}: {access.detail}"
+                    )
+                    return MarketplaceFetchFailure(
+                        reason=FetchFailureReason.transport_error,
+                        detail=f"Ozon access unavailable: {access.stage}",
+                    )
                 logger.warning(
                     f"Ozon access unavailable for article {article}: {access.stage}"
                 )

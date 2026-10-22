@@ -33,6 +33,7 @@ effort: medium
 - `app/services/browser_launch.py` — общий запуск Chromium (`playwright`)
 - `app/services/ozon_access.py` — доступ к Ozon по cookies антибота
 - `app/services/ozon_browser.py` — cookies Ozon через браузер
+- `app/services/socks_relay.py` — локальный релей HTTP CONNECT → SOCKS5 для браузера
 
 Тебе **запрещено** менять: доменные сервисы (`price_service.py`, `notification.py`), репозитории, модели, схемы (`app/schemas/`), хендлеры, конфиг, тесты, `pyproject.toml`. Нужна новая схема ответа — запроси у `schemas-agent`. Нужна новая настройка в `.env` — запроси у `core-agent`. Верни это разделом `Требуется правка в чужом слое`.
 

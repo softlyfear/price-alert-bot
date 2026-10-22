@@ -3,6 +3,8 @@
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
+from urllib.parse import unquote
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
@@ -141,12 +143,59 @@ class WbSettings(BaseModel):
     BROWSER_SANDBOX: bool = False
 
 
+_PROXY_SCHEMES = frozenset({"socks5", "socks5h"})
+_PROXY_CREDENTIAL_MAX_BYTES = 255
+
+
+def _check_proxy_url(url: str) -> None:
+    """Raise a generic ``ValueError`` unless ``url`` is a valid SOCKS5 proxy URL.
+
+    Messages never contain a part of the URL: it holds the proxy host and
+    credentials, and a library message such as the one for a non-numeric port
+    would echo them.
+    """
+    msg = "must be socks5://[login:password@]host:port or socks5h://..., no path"
+    if "?" in url or "#" in url:
+        raise ValueError(msg)
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port
+        login = parts.username
+        password = parts.password
+    except ValueError:
+        raise ValueError(msg) from None
+    if parts.scheme not in _PROXY_SCHEMES or not host or not host.strip():
+        raise ValueError(msg)
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError(msg)
+    if parts.path not in ("", "/"):
+        raise ValueError(msg)
+    if (login is None) != (password is None):
+        raise ValueError(msg)
+    for credential in (login, password):
+        if credential is None:
+            continue
+        try:
+            size = len(unquote(credential, errors="strict").encode("utf-8"))
+        except UnicodeError:
+            raise ValueError(msg) from None
+        if not 1 <= size <= _PROXY_CREDENTIAL_MAX_BYTES:
+            raise ValueError(msg)
+
+
 class OzonSettings(BaseModel):
     """Ozon cookies acquisition through a browser (PAB-110, PROJECT.md 2.14 O8).
 
-    No secrets; same shape and defaults as ``WbSettings``. BROWSER_SANDBOX is
-    off by default for the same reason (restricted user namespaces).
+    PROXY_URL (PAB-111, O10) is the only secret: the URL holds the proxy host
+    and credentials. Empty means no proxy. The URL rules live here and only
+    here (R1); ``SocksProxy.from_url`` just splits an already checked URL.
+    Otherwise the shape and defaults are those of ``WbSettings``.
+    BROWSER_SANDBOX is off by default for the same reason (restricted user
+    namespaces).
     """
+
+    PROXY_URL: SecretStr | None = None
 
     TOKEN_TIMEOUT_SECONDS: float = Field(
         default=30.0, gt=0, le=120, allow_inf_nan=False
@@ -159,6 +208,26 @@ class OzonSettings(BaseModel):
         default=900.0, gt=0, le=86400, allow_inf_nan=False
     )
     BROWSER_SANDBOX: bool = False
+
+    @field_validator("PROXY_URL", mode="before")
+    @classmethod
+    def _blank_proxy_is_none(cls, value: object) -> object:
+        """Treat an empty or whitespace-only value as "no proxy"."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, SecretStr) and not value.get_secret_value().strip():
+            return None
+        return value
+
+    @field_validator("PROXY_URL")
+    @classmethod
+    def _validate_proxy_url(cls, value: SecretStr | None) -> SecretStr | None:
+        """Check the SOCKS5 URL rules (O10); the message carries no URL part."""
+        if value is None:
+            return None
+        url = value.get_secret_value().strip()
+        _check_proxy_url(url)
+        return SecretStr(url)
 
 
 class Settings(BaseSettings):

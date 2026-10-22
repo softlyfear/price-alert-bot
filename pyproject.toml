@@ -142,6 +142,7 @@ source_modules = [
     "app.services.browser_launch",
     "app.services.ozon_access",
     "app.services.ozon_browser",
+    "app.services.socks_relay",
 ]
 forbidden_modules = [
     "app.repositories",
