@@ -55,9 +55,6 @@ _NB = "\u00a0"
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
 _REFRESH_ROW = [("🔄 Обновить цены", "list:refresh")]
 _CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
-_LEGEND = (
-    "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
-)
 _CARD_HEAD = (
     f"{_NAME}\n"
     "Маркетплейс: Wildberries\n"
@@ -67,7 +64,7 @@ _CARD_HEAD = (
     "\n"
     "Пороги:\n"
 )
-_CARD_ONE_ALERT = f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n\n{_LEGEND}"
+_CARD_ONE_ALERT = f"{_CARD_HEAD}📉 1{_NB}500{_NB}₽"
 
 
 def _product(product_id: int, name: str = _NAME, price: int = 199_000) -> Product:
@@ -208,8 +205,8 @@ async def test_list_shows_one_button_per_product_and_one_disclaimer(
     assert request.parse_mode is None
     rows = _keyboard(request).inline_keyboard
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
-        [(f"{_NAME} — 1{_NB}990{_NB}₽", "pcard:5")],
-        [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        [(f"1{_NB}990{_NB}₽ · {_NAME}", "pcard:5")],
+        [(f"0,50{_NB}₽ · Шапка", "pcard:9")],
         _REFRESH_ROW,
         _NAV_ROW,
     ]
@@ -295,8 +292,8 @@ async def test_menu_list_button_edits_in_place_with_the_same_screen_as_the_comma
     assert bot.edits[0].reply_markup == bot.sent[0].reply_markup
     rows = _keyboard(bot.edits[0]).inline_keyboard
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
-        [(f"{_NAME} — 1{_NB}990{_NB}₽", "pcard:5")],
-        [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        [(f"1{_NB}990{_NB}₽ · {_NAME}", "pcard:5")],
+        [(f"0,50{_NB}₽ · Шапка", "pcard:9")],
         _REFRESH_ROW,
         _NAV_ROW,
     ]
@@ -449,9 +446,7 @@ async def test_open_card_edits_the_list_in_place_with_all_card_parts(
     assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
     request = bot.edits[0]
     assert request.parse_mode is None
-    assert request.text == (
-        f"{_CARD_HEAD}• ↓ 1{_NB}000{_NB}₽\n• ↑ 2{_NB}000{_NB}₽\n\n{_LEGEND}"
-    )
+    assert request.text == (f"{_CARD_HEAD}📉 1{_NB}000{_NB}₽\n📈 2{_NB}000{_NB}₽")
     assert request.text.count(PRICE_DISCLAIMER_SHORT) == 1
     assert _rows(request) == [
         [(f"✏️ 1{_NB}000{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")],

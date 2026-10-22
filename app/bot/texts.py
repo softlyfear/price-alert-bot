@@ -250,10 +250,6 @@ ADD_ALERT_BUTTON_TEXT: Final[str] = "➕ Добавить порог"
 STOP_TRACKING_BUTTON_TEXT: Final[str] = "Перестать следить"
 LIST_BACK_BUTTON_TEXT: Final[str] = "← К списку"
 
-CARD_ARROWS_LEGEND_TEXT: Final[str] = (
-    "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
-)
-
 CONFIRM_BUTTON_TEXT: Final[str] = "Подтвердить"
 CANCEL_BUTTON_TEXT: Final[str] = "Отмена"
 
@@ -270,12 +266,12 @@ def direction_phrase(direction: AlertDirection, price: int) -> str:
 
 
 def direction_arrow(direction: AlertDirection) -> str:
-    """Short arrow of a direction used on the product card (single mapping)."""
+    """Short marker of a direction used on cards and buttons (single mapping)."""
     match direction:
         case AlertDirection.below:
-            return "↓"
+            return "📉"
         case AlertDirection.above:
-            return "↑"
+            return "📈"
         case _:
             assert_never(direction)
 
@@ -344,10 +340,7 @@ def list_text(shown: int, total: int, price_label: str | None = None) -> str:
     if shown < total:
         head = f"{head} Показаны первые {shown} из {total}."
     prices_line = f"Цены на {price_label}\n" if price_label is not None else ""
-    return (
-        f"{head}\nВыберите товар, чтобы посмотреть пороги или перестать следить.\n"
-        f"{prices_line}{PRICE_DISCLAIMER_SHORT}."
-    )
+    return f"{head}\n{prices_line}{PRICE_DISCLAIMER_SHORT}."
 
 
 def product_card_text(
@@ -371,11 +364,9 @@ def product_card_text(
     if alerts:
         lines.append("Пороги:")
         lines.extend(
-            f"• {direction_arrow(direction)} {format_price(price)}"
+            f"{direction_arrow(direction)} {format_price(price)}"
             for direction, price in alerts
         )
-        lines.append("")
-        lines.append(CARD_ARROWS_LEGEND_TEXT)
     else:
         lines.append("Порогов нет.")
     return "\n".join(lines)

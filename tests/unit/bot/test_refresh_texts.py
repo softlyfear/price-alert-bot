@@ -81,10 +81,7 @@ def test_label_of_a_price_from_the_future_is_still_formatted() -> None:
 
 def test_list_text_with_a_price_label_adds_one_line_above_the_disclaimer() -> None:
     assert texts.list_text(3, 3, "14:05") == (
-        "Вы следите за товарами: 3.\n"
-        "Выберите товар, чтобы посмотреть пороги или перестать следить.\n"
-        "Цены на 14:05\n"
-        "Цена без учёта персональных скидок."
+        "Вы следите за товарами: 3.\nЦены на 14:05\nЦена без учёта персональных скидок."
     )
 
 

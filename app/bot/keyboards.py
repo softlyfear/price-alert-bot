@@ -230,8 +230,8 @@ def product_list_keyboard(products: Sequence[Product]) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 text=(
-                    f"{_short_name(product.product_name)} — "
-                    f"{format_price(product.current_price)}"
+                    f"{format_price(product.current_price)} · "
+                    f"{_short_name(product.product_name)}"
                 ),
                 callback_data=ProductCardCb(product_id=product.id).pack(),
             )

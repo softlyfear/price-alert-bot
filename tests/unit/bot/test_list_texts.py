@@ -18,11 +18,7 @@ _DISCLAIMER = "Цена без учёта персональных скидок"
 
 
 def test_list_text_without_truncation_names_the_total_and_has_no_cut_note() -> None:
-    assert texts.list_text(3, 3) == (
-        "Вы следите за товарами: 3.\n"
-        "Выберите товар, чтобы посмотреть пороги или перестать следить.\n"
-        f"{_DISCLAIMER}."
-    )
+    assert texts.list_text(3, 3) == (f"Вы следите за товарами: 3.\n{_DISCLAIMER}.")
 
 
 def test_list_text_with_truncation_says_first_50_of_51() -> None:
@@ -42,7 +38,27 @@ def test_marketplace_title_is_the_human_name() -> None:
     assert texts.marketplace_title(Marketplace.ozon) == "Ozon"
 
 
-def test_product_card_text_shows_short_arrow_thresholds_and_one_legend() -> None:
+def test_list_text_with_truncation_and_a_label_has_all_three_parts() -> None:
+    text = texts.list_text(50, 51, "14:05")
+
+    assert text == (
+        "Вы следите за товарами: 51. Показаны первые 50 из 51.\n"
+        "Цены на 14:05\n"
+        "Цена без учёта персональных скидок."
+    )
+    assert text.count(PRICE_DISCLAIMER_SHORT) == 1
+
+
+def test_list_text_with_a_label_has_one_disclaimer_and_no_select_hint() -> None:
+    text = texts.list_text(3, 3, "14:05")
+
+    assert text == (
+        "Вы следите за товарами: 3.\nЦены на 14:05\nЦена без учёта персональных скидок."
+    )
+    assert text.count(PRICE_DISCLAIMER_SHORT) == 1
+
+
+def test_product_card_text_lists_thresholds_with_chart_markers_and_no_legend() -> None:
     text = texts.product_card_text(
         "Кроссовки",
         Marketplace.wb,
@@ -59,14 +75,12 @@ def test_product_card_text_shows_short_arrow_thresholds_and_one_legend() -> None
         f"{_DISCLAIMER}.\n"
         "\n"
         "Пороги:\n"
-        f"• ↓ 1{_NB}000{_NB}₽\n"
-        f"• ↑ 2{_NB}000{_NB}₽\n"
-        "\n"
-        "↓ — сообщу, когда цена снизится до порога\n"
-        "↑ — сообщу, когда вырастет до него"
+        f"📉 1{_NB}000{_NB}₽\n"
+        f"📈 2{_NB}000{_NB}₽"
     )
     assert "цена станет" not in text
-    assert text.count("↓ — сообщу") == 1
+    assert "•" not in text
+    assert "сообщу, когда" not in text
 
 
 def test_product_card_text_without_thresholds_says_there_are_none() -> None:
@@ -76,8 +90,8 @@ def test_product_card_text_without_thresholds_says_there_are_none() -> None:
 
     assert text.endswith("Порогов нет.")
     assert "Пороги:" not in text
-    assert "↓" not in text
-    assert "↑" not in text
+    assert "📉" not in text
+    assert "📈" not in text
     assert "Маркетплейс: Ozon" in text
 
 
@@ -95,7 +109,7 @@ def test_edit_alert_button_text_puts_the_amount_first_without_arrow_by_default()
 
 @pytest.mark.parametrize(
     ("direction", "expected"),
-    [(AlertDirection.below, "↓"), (AlertDirection.above, "↑")],
+    [(AlertDirection.below, "📉"), (AlertDirection.above, "📈")],
 )
 def test_edit_alert_button_text_with_arrow_puts_it_before_the_amount(
     direction: AlertDirection, expected: str
@@ -105,9 +119,7 @@ def test_edit_alert_button_text_with_arrow_puts_it_before_the_amount(
     )
 
 
-def test_card_text_with_thresholds_has_a_blank_line_before_the_two_line_legend() -> (
-    None
-):
+def test_card_text_with_thresholds_ends_with_the_last_threshold_line() -> None:
     lines = texts.product_card_text(
         "Item",
         Marketplace.wb,
@@ -116,12 +128,12 @@ def test_card_text_with_thresholds_has_a_blank_line_before_the_two_line_legend()
         [(AlertDirection.below, 1_000_00)],
     ).split("\n")
 
-    assert lines[-4:] == [
-        f"• ↓ 1{_NB}000{_NB}₽",
-        "",
-        "↓ — сообщу, когда цена снизится до порога",
-        "↑ — сообщу, когда вырастет до него",
-    ]
+    assert lines[-2:] == ["Пороги:", f"📉 1{_NB}000{_NB}₽"]
+
+
+def test_direction_arrow_uses_chart_emoji_without_variation_selector() -> None:
+    assert texts.direction_arrow(AlertDirection.below) == "\U0001f4c9"
+    assert texts.direction_arrow(AlertDirection.above) == "\U0001f4c8"
 
 
 def test_card_text_without_thresholds_has_no_legend_and_no_blank_tail() -> None:

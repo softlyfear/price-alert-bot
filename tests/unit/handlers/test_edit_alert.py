@@ -54,9 +54,6 @@ _NB = "\u00a0"
 _MENU = ["menu:add", "menu:list", "menu:help"]
 _CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _CANCEL_ROWS = [[("Отмена", "ecancel:5")]]
-_LEGEND = (
-    "↓ — сообщу, когда цена снизится до порога\n↑ — сообщу, когда вырастет до него"
-)
 _CARD_HEAD = (
     f"{_NAME}\n"
     "Маркетплейс: Wildberries\n"
@@ -124,7 +121,7 @@ async def _at_edit(dialog: _Dialog, data: dict[str, Any] | None = None) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("direction", "arrow"), [(AlertDirection.below, "↓"), (AlertDirection.above, "↑")]
+    ("direction", "arrow"), [(AlertDirection.below, "📉"), (AlertDirection.above, "📈")]
 )
 async def test_press_edit_replaces_the_card_with_a_prompt_and_waits_for_the_amount(
     dialog: _Dialog, service: MagicMock, direction: AlertDirection, arrow: str
@@ -188,7 +185,7 @@ async def test_press_edit_for_a_removed_alert_redraws_the_card_and_sets_no_state
         (texts.ALERT_ALREADY_REMOVED_TEXT, None)
     ]
     assert [(e.text, e.parse_mode) for e in dialog.edits] == [
-        (f"{_CARD_HEAD}• ↑ 2{_NB}500{_NB}₽\n\n{_LEGEND}", None)
+        (f"{_CARD_HEAD}📈 2{_NB}500{_NB}₽", None)
     ]
     assert _rows(dialog.edits[0]) == [
         [(f"✏️ 2{_NB}500{_NB}₽", "aedit:12:5"), ("🗑 Убрать", "adel:12:5")],
@@ -276,10 +273,9 @@ async def test_changed_sends_one_new_message_with_the_outcome_and_the_redrawn_ca
     assert dialog.edits == []
     assert len(dialog.sent) == 1
     sent = dialog.sent[0]
-    arrow = "↓" if direction is AlertDirection.below else "↑"
+    arrow = "📉" if direction is AlertDirection.below else "📈"
     assert sent.text == (
-        f"Порог изменён. Сообщу, когда {phrase}.\n\n"
-        f"{_CARD_HEAD}• {arrow} 1{_NB}500{_NB}₽\n\n{_LEGEND}"
+        f"Порог изменён. Сообщу, когда {phrase}.\n\n{_CARD_HEAD}{arrow} 1{_NB}500{_NB}₽"
     )
     assert sent.parse_mode is None
     assert _rows(sent) == [
@@ -331,7 +327,7 @@ async def test_unchanged_and_not_found_end_with_their_line_and_the_card(
     await dialog.say("1500")
 
     assert [m.text for m in dialog.sent] == [
-        f"{summary}\n\n{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n\n{_LEGEND}"
+        f"{summary}\n\n{_CARD_HEAD}📉 1{_NB}500{_NB}₽"
     ]
     assert _rows(dialog.sent[0])[-1] == _CARD_NAV
     assert dialog.edits == []
@@ -543,7 +539,7 @@ async def test_cancel_puts_the_card_back_in_place_and_clears_the_state(
     service.change_alert_target.assert_not_called()
     assert dialog.sent == []
     assert [(e.message_id, e.text, e.parse_mode) for e in dialog.edits] == [
-        (_CARD_ID, f"{_CARD_HEAD}• ↓ 1{_NB}500{_NB}₽\n\n{_LEGEND}", None)
+        (_CARD_ID, f"{_CARD_HEAD}📉 1{_NB}500{_NB}₽", None)
     ]
     assert _rows(dialog.edits[0])[0] == (
         [(f"✏️ 1{_NB}500{_NB}₽", "aedit:11:5"), ("🗑 Убрать", "adel:11:5")]
