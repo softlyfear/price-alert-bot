@@ -20,7 +20,7 @@ from app.domain.links import MAX_ARTICLE
 from app.domain.money import format_price
 from app.models.alert import Alert
 from app.models.enums import Marketplace
-from app.models.product import Product
+from app.services.tracking import ProductPage
 
 CB_ADD_CONFIRM: Final[str] = "add:confirm"
 CB_ADD_CANCEL: Final[str] = "add:cancel"
@@ -44,7 +44,8 @@ CB_MENU_ALL: Final[frozenset[str]] = frozenset(
 
 # Primary keys are int4 (PostgreSQL ``Integer``).
 _MAX_ID: Final[int] = 2_147_483_647
-MAX_LIST_BUTTONS: Final[int] = 50
+# Upper bound of a list page number in a callback payload (user input).
+_MAX_PAGE: Final[int] = 10_000
 _MAX_NAME_IN_BUTTON: Final[int] = 40
 CB_LIST_PREFIXES: Final[tuple[str, ...]] = (
     "pcard",
@@ -55,6 +56,8 @@ CB_LIST_PREFIXES: Final[tuple[str, ...]] = (
     "pdel",
     "pref",
     "ecancel",
+    "lpage",
+    "lref",
     CB_EDIT_CANCEL,
 )
 
@@ -107,6 +110,18 @@ class ProductRefreshCb(CallbackData, prefix="pref"):
     """Refresh the price of one product from its card."""
 
     product_id: int = Field(ge=1, le=_MAX_ID)
+
+
+class ListPageCb(CallbackData, prefix="lpage"):
+    """Open one page of the product list (1-based)."""
+
+    page: int = Field(ge=1, le=_MAX_PAGE)
+
+
+class ListRefreshCb(CallbackData, prefix="lref"):
+    """Refresh all prices and stay on list page ``page``."""
+
+    page: int = Field(ge=1, le=_MAX_PAGE)
 
 
 class AddRefCb(CallbackData, prefix="addref"):
@@ -224,8 +239,8 @@ def _short_name(name: str) -> str:
     return flat
 
 
-def product_list_keyboard(products: Sequence[Product]) -> InlineKeyboardMarkup:
-    """One button per product (at most ``MAX_LIST_BUTTONS``) plus a nav row."""
+def product_list_keyboard(page: ProductPage) -> InlineKeyboardMarkup:
+    """One button per product of the page, nav row (if paged), refresh, menu."""
     rows = [
         [
             InlineKeyboardButton(
@@ -236,10 +251,28 @@ def product_list_keyboard(products: Sequence[Product]) -> InlineKeyboardMarkup:
                 callback_data=ProductCardCb(product_id=product.id).pack(),
             )
         ]
-        for product in products[:MAX_LIST_BUTTONS]
+        for product in page.products
     ]
-    if products:
-        rows.append([_button(texts.REFRESH_LIST_BUTTON_TEXT, CB_LIST_REFRESH)])
+    paging: list[InlineKeyboardButton] = []
+    if page.page > 1:
+        paging.append(
+            _button(texts.LIST_PREV_BUTTON_TEXT, ListPageCb(page=page.page - 1).pack())
+        )
+    if page.page < page.pages:
+        paging.append(
+            _button(texts.LIST_NEXT_BUTTON_TEXT, ListPageCb(page=page.page + 1).pack())
+        )
+    if paging:
+        rows.append(paging)
+    if page.products:
+        rows.append(
+            [
+                _button(
+                    texts.REFRESH_LIST_BUTTON_TEXT,
+                    ListRefreshCb(page=page.page).pack(),
+                )
+            ]
+        )
     rows.append(
         [
             _button(texts.MENU_ADD_BUTTON_TEXT, CB_MENU_ADD),
@@ -254,10 +287,15 @@ def no_buttons_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[])
 
 
-def nav_row() -> list[InlineKeyboardButton]:
-    """Navigation row of a card-like screen: back to the list, main menu."""
+def nav_row(list_page: int | None = None) -> list[InlineKeyboardButton]:
+    """Navigation row of a card-like screen: back to the list, main menu.
+
+    ``list_page`` is the list page to return to; without it the button is the
+    page-less ``menu:list`` (page 1).
+    """
+    back = CB_MENU_LIST if list_page is None else ListPageCb(page=list_page).pack()
     return [
-        _button(texts.LIST_BACK_BUTTON_TEXT, CB_MENU_LIST),
+        _button(texts.LIST_BACK_BUTTON_TEXT, back),
         _button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START),
     ]
 
@@ -268,7 +306,7 @@ def nav_keyboard() -> InlineKeyboardMarkup:
 
 
 def product_card_keyboard(
-    product_id: int, alerts: Sequence[Alert]
+    product_id: int, alerts: Sequence[Alert], list_page: int
 ) -> InlineKeyboardMarkup:
     """Per-alert buttons, refresh, add, stop-tracking buttons, nav row."""
     amount_counts = Counter(alert.target_price for alert in alerts)
@@ -317,5 +355,5 @@ def product_card_keyboard(
             )
         ]
     )
-    rows.append(nav_row())
+    rows.append(nav_row(list_page))
     return InlineKeyboardMarkup(inline_keyboard=rows)

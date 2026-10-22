@@ -29,11 +29,12 @@ from app.bot.keyboards import CB_DLG_LIST
 from app.bot.keyboards import CB_LIST_PREFIXES
 from app.bot.keyboards import CB_LIST_REFRESH
 from app.bot.keyboards import CB_MENU_LIST
-from app.bot.keyboards import MAX_LIST_BUTTONS
 from app.bot.keyboards import AlertAddCb
 from app.bot.keyboards import AlertEditCb
 from app.bot.keyboards import AlertRemoveCb
 from app.bot.keyboards import EditCancelCb
+from app.bot.keyboards import ListPageCb
+from app.bot.keyboards import ListRefreshCb
 from app.bot.keyboards import NoticeCardCb
 from app.bot.keyboards import ProductCardCb
 from app.bot.keyboards import ProductRefreshCb
@@ -70,15 +71,20 @@ _KEY_PRODUCT_ID = "product_id"
 
 
 async def _list_screen(
-    tracking: TrackingService, user_id: int, display_timezone: ZoneInfo
+    tracking: TrackingService,
+    user_id: int,
+    display_timezone: ZoneInfo,
+    page: int = 1,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Text and keyboard of the list screen, shared by /list and the menu."""
-    products = await tracking.list_products(user_id)
-    keyboard = product_list_keyboard(products)
-    if not products:
+    """Text and keyboard of one list page, shared by /list, the menu and paging.
+
+    ``page`` is user input; the service clamps it to the existing pages.
+    """
+    product_page = await tracking.list_page(user_id, page)
+    keyboard = product_list_keyboard(product_page)
+    if not product_page.products:
         return texts.LIST_EMPTY_TEXT, keyboard
-    shown_products = products[:MAX_LIST_BUTTONS]
-    stamps = [product.price_fetched_at for product in shown_products]
+    stamps = [product.price_fetched_at for product in product_page.products]
     price_label = (
         texts.price_time_label(
             min(stamp for stamp in stamps if stamp is not None),
@@ -88,7 +94,12 @@ async def _list_screen(
         if all(stamp is not None for stamp in stamps)
         else None
     )
-    return texts.list_text(len(shown_products), len(products), price_label), keyboard
+    return (
+        texts.list_text(
+            product_page.total, product_page.page, product_page.pages, price_label
+        ),
+        keyboard,
+    )
 
 
 async def _begin_refresh(
@@ -508,6 +519,30 @@ def create_router() -> Router:
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
         )
 
+    async def refresh_list_page(
+        callback: CallbackQuery,
+        page: int,
+        tracking: TrackingService,
+        price_refresher: PriceRefresher,
+        display_timezone: ZoneInfo,
+    ) -> None:
+        """Refresh all prices of the pressing user and redraw list page ``page``."""
+        user_id = callback.from_user.id
+        progress = await _begin_refresh(callback, price_refresher)
+        if progress is None:
+            return
+        try:
+            report = await price_refresher.refresh_list(user_id)
+            text, keyboard = await _list_screen(
+                tracking, user_id, display_timezone, page
+            )
+        except Exception as error:
+            await _fail_refresh(progress, user_id, error)
+            return
+        if report.total:
+            text = f"{texts.refresh_list_summary(report)}\n\n{text}"
+        await edit_message_or_answer(progress, text, reply_markup=keyboard)
+
     @router.callback_query(F.data == CB_LIST_REFRESH)
     async def on_refresh_list(
         callback: CallbackQuery,
@@ -515,20 +550,41 @@ def create_router() -> Router:
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
     ) -> None:
-        """Refresh all prices of the pressing user and redraw the list."""
-        user_id = callback.from_user.id
-        progress = await _begin_refresh(callback, price_refresher)
-        if progress is None:
-            return
-        try:
-            report = await price_refresher.refresh_list(user_id)
-            text, keyboard = await _list_screen(tracking, user_id, display_timezone)
-        except Exception as error:
-            await _fail_refresh(progress, user_id, error)
-            return
-        if report.total:
-            text = f"{texts.refresh_list_summary(report)}\n\n{text}"
-        await edit_message_or_answer(progress, text, reply_markup=keyboard)
+        """Old page-less "Refresh prices" button: stays on page 1."""
+        await refresh_list_page(
+            callback, 1, tracking, price_refresher, display_timezone
+        )
+
+    @router.callback_query(ListRefreshCb.filter())
+    async def on_refresh_list_page(
+        callback: CallbackQuery,
+        callback_data: ListRefreshCb,
+        tracking: TrackingService,
+        price_refresher: PriceRefresher,
+        display_timezone: ZoneInfo,
+    ) -> None:
+        """Refresh prices and stay on the page the button was pressed on."""
+        await refresh_list_page(
+            callback, callback_data.page, tracking, price_refresher, display_timezone
+        )
+
+    @router.callback_query(ListPageCb.filter())
+    async def on_list_page(
+        callback: CallbackQuery,
+        callback_data: ListPageCb,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
+    ) -> None:
+        """Turn the list page in place; the FSM is not touched."""
+        text, keyboard = await _list_screen(
+            tracking, callback.from_user.id, display_timezone, callback_data.page
+        )
+        await edit_callback_message(
+            callback,
+            text,
+            reply_markup=keyboard,
+            alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
+        )
 
     @router.callback_query(ProductRefreshCb.filter())
     async def on_refresh_card(
@@ -557,7 +613,12 @@ def create_router() -> Router:
                 else await tracking.get_product_card(user_id, callback_data.product_id)
             )
             if isinstance(result, RefreshGone) or card is None:
-                text, keyboard = await _list_screen(tracking, user_id, display_timezone)
+                text, keyboard = await _list_screen(
+                    tracking,
+                    user_id,
+                    display_timezone,
+                    await tracking.list_page_of(user_id, callback_data.product_id),
+                )
                 await edit_message_or_answer(
                     progress,
                     f"{texts.REFRESH_GONE_TEXT}\n\n{text}",
@@ -578,18 +639,30 @@ def create_router() -> Router:
         callback: CallbackQuery,
         callback_data: ProductRemoveCb,
         tracking: TrackingService,
+        display_timezone: ZoneInfo,
     ) -> None:
-        """Stop tracking one product of the pressing user."""
-        removed = await tracking.remove_product(
-            callback.from_user.id, callback_data.product_id
-        )
+        """Stop tracking one product of the pressing user.
+
+        Shows the list page the product was on (clamped if it is now gone).
+        """
+        user_id = callback.from_user.id
+        removed = await tracking.remove_product(user_id, callback_data.product_id)
         text = (
             texts.LIST_PRODUCT_REMOVED_TEXT
             if removed
             else texts.PRODUCT_ALREADY_GONE_TEXT
         )
+        list_text, keyboard = await _list_screen(
+            tracking,
+            user_id,
+            display_timezone,
+            await tracking.list_page_of(user_id, callback_data.product_id),
+        )
         await edit_callback_message(
-            callback, text, reply_markup=nav_keyboard(), alert_text=text
+            callback,
+            f"{text}\n\n{list_text}",
+            reply_markup=keyboard,
+            alert_text=text,
         )
 
     @router.callback_query(F.data.startswith(CB_LIST_PREFIXES))

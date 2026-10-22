@@ -24,7 +24,7 @@ from tests.unit.handlers.add_dialog_support import _USER
 from tests.unit.handlers.add_dialog_support import _Dialog
 from tests.unit.handlers.card_dialog_support import ADD_DATA
 from tests.unit.handlers.card_dialog_support import ADD_STATES
-from tests.unit.handlers.card_dialog_support import CARD_NAV
+from tests.unit.handlers.card_dialog_support import CARD_PAGE1_NAV
 from tests.unit.handlers.card_dialog_support import CARD_TEXT
 from tests.unit.handlers.card_dialog_support import EDIT_DATA
 from tests.unit.handlers.card_dialog_support import EDIT_STATE
@@ -58,7 +58,7 @@ async def test_open_product_sends_one_new_card_message_and_edits_nothing(
     assert shown.chat_id == _CHAT
     assert shown.text == CARD_TEXT
     assert shown.parse_mode is None
-    assert rows(shown)[-1] == CARD_NAV
+    assert rows(shown)[-1] == CARD_PAGE1_NAV
     assert card_dialog.edits == []
     assert len(card_dialog.callback_answers) == 1
     assert card_dialog.callback_answers[0].text is None

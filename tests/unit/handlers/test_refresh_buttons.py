@@ -31,14 +31,16 @@ from app.services.price_service import RefreshGone
 from app.services.price_service import RefreshLimiter
 from app.services.price_service import RefreshReport
 from app.services.price_service import RefreshThrottled
+from app.services.tracking import ProductPage
 from tests.unit.handlers.add_dialog_support import _CARD_ID
 from tests.unit.handlers.add_dialog_support import _USER
 from tests.unit.handlers.add_dialog_support import _Dialog
-from tests.unit.handlers.card_dialog_support import CARD_NAV
+from tests.unit.handlers.card_dialog_support import CARD_PAGE1_NAV
 from tests.unit.handlers.card_dialog_support import CARD_TEXT
 from tests.unit.handlers.card_dialog_support import NB
 from tests.unit.handlers.card_dialog_support import PRODUCT_ID
 from tests.unit.handlers.card_dialog_support import card
+from tests.unit.handlers.card_dialog_support import page_of
 from tests.unit.handlers.card_dialog_support import product
 from tests.unit.handlers.card_dialog_support import rows
 
@@ -48,7 +50,7 @@ _LIST_HEAD = (
 )
 _LIST_ROWS = [
     [(f"1{NB}755{NB}₽ · Из базы <b>1", "pcard:5")],
-    [("🔄 Обновить цены", "list:refresh")],
+    [("🔄 Обновить цены", "lref:1")],
     [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")],
 ]
 _CARD_ROWS = [
@@ -56,7 +58,7 @@ _CARD_ROWS = [
     [("🔄 Обновить цену", "pref:5")],
     [("➕ Добавить порог", "aadd:5")],
     [("Перестать следить", "pdel:5")],
-    CARD_NAV,
+    CARD_PAGE1_NAV,
 ]
 _GONE_LINE = "Этот товар больше не отслеживается."
 _THROTTLED_POPUP = "Обновлять цены можно раз в минуту. Попробуйте через 42 с."
@@ -76,7 +78,7 @@ def refresher(card_dialog: _Dialog) -> MagicMock:
 @pytest.fixture(autouse=True)
 def tracked_list(card_service: MagicMock) -> MagicMock:
     """The user tracks one product; ``card_service`` is reused by every test."""
-    card_service.list_products.return_value = [product()]
+    card_service.list_page.return_value = page_of([product()])
     return card_service
 
 
@@ -168,7 +170,7 @@ async def test_list_refresh_spends_the_budget_and_works_for_the_presser(
 
     refresher.reserve.assert_called_once_with(_USER)
     refresher.refresh_list.assert_awaited_once_with(_USER)
-    card_service.list_products.assert_awaited_once_with(_USER)
+    card_service.list_page.assert_awaited_once_with(_USER, 1)
 
 
 @pytest.mark.asyncio
@@ -183,11 +185,11 @@ async def test_list_refresh_redraws_the_list_from_the_database_after_the_refresh
 
     refresher.refresh_list.side_effect = refresh
 
-    async def list_products(_u: int) -> list[Any]:
+    async def list_page(_u: int, _page: int) -> ProductPage:
         order.append("list")
-        return [product()]
+        return page_of([product()])
 
-    card_service.list_products.side_effect = list_products
+    card_service.list_page.side_effect = list_page
 
     await card_dialog.press("list:refresh")
 
@@ -220,7 +222,7 @@ async def test_list_refresh_of_an_empty_list_shows_the_plain_empty_screen(
     card_dialog: _Dialog, refresher: MagicMock, card_service: MagicMock
 ) -> None:
     refresher.refresh_list.return_value = RefreshReport(0, 0, {})
-    card_service.list_products.return_value = []
+    card_service.list_page.return_value = page_of([])
 
     await card_dialog.press("list:refresh")
 
@@ -244,7 +246,7 @@ async def test_list_refresh_over_budget_is_a_popup_with_the_seconds_and_nothing_
     assert _request_types(card_dialog) == [AnswerCallbackQuery]
     assert _popups(card_dialog) == [(_THROTTLED_POPUP, True)]
     refresher.refresh_list.assert_not_called()
-    card_service.list_products.assert_not_called()
+    card_service.list_page.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -472,7 +474,7 @@ async def test_card_refresh_of_a_forged_id_leaks_nothing_about_the_foreign_produ
     card_dialog: _Dialog, refresher: MagicMock, card_service: MagicMock
 ) -> None:
     refresher.refresh_product.return_value = RefreshGone()
-    card_service.list_products.return_value = []
+    card_service.list_page.return_value = page_of([])
 
     await card_dialog.press(f"pref:{_MAX_ID}")
 

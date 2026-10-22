@@ -26,6 +26,7 @@ from tests.unit.handlers.card_dialog_support import EDIT_STATE
 from tests.unit.handlers.card_dialog_support import MENU
 from tests.unit.handlers.card_dialog_support import NB
 from tests.unit.handlers.card_dialog_support import callbacks
+from tests.unit.handlers.card_dialog_support import page_of
 from tests.unit.handlers.card_dialog_support import product
 from tests.unit.handlers.card_dialog_support import rows
 
@@ -68,12 +69,12 @@ async def test_dialog_list_clears_the_dialog_and_shows_the_list_of_the_presser(
     state: str | None,
     data: dict[str, Any],
 ) -> None:
-    card_service.list_products.return_value = [product()]
+    card_service.list_page.return_value = page_of([product()])
     await card_dialog.set_state(state, dict(data))
 
     await card_dialog.press("dlg:list")
 
-    card_service.list_products.assert_awaited_once_with(_USER)
+    card_service.list_page.assert_awaited_once_with(_USER, 1)
     assert await card_dialog.state() is None
     assert await card_dialog.data() == {}
     assert card_dialog.sent == []
@@ -94,7 +95,7 @@ async def test_dialog_list_clears_the_dialog_and_shows_the_list_of_the_presser(
 async def test_dialog_list_of_a_user_without_products_shows_the_empty_text(
     card_dialog: _Dialog, card_service: MagicMock
 ) -> None:
-    card_service.list_products.return_value = []
+    card_service.list_page.return_value = page_of([])
 
     await card_dialog.press("dlg:list")
 
@@ -120,7 +121,7 @@ async def test_unknown_dialog_exit_gives_a_popup_and_leaves_the_dialog_alone(
     assert (answer.text, answer.show_alert) == (texts.MENU_STALE_ALERT_TEXT, True)
     assert await card_dialog.state() == state
     assert await card_dialog.data() == payload
-    card_service.list_products.assert_not_called()
+    card_service.list_page.assert_not_called()
 
 
 @pytest.mark.asyncio

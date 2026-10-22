@@ -52,7 +52,8 @@ from tests.unit.handlers.add_dialog_support import _responder
 
 _NB = "\u00a0"
 _MENU = ["menu:add", "menu:list", "menu:help"]
-_CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
+_CARD_NAV = [("← К списку", "lpage:1"), ("Главное меню", "menu:start")]
+_GONE_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _CANCEL_ROWS = [[("Отмена", "ecancel:5")]]
 _CARD_HEAD = (
     f"{_NAME}\n"
@@ -85,7 +86,7 @@ def _alert(alert_id: int, direction: AlertDirection, target: int) -> Alert:
 
 
 def _card(*alerts: Alert) -> ProductCard:
-    return ProductCard(product=_product(), alerts=tuple(alerts))
+    return ProductCard(product=_product(), alerts=tuple(alerts), list_page=1)
 
 
 def _rows(request: SendMessage | EditMessageText) -> list[list[tuple[str, str | None]]]:
@@ -210,7 +211,7 @@ async def test_press_edit_for_a_missing_or_foreign_product_says_it_is_gone(
     assert [(e.text, e.parse_mode) for e in dialog.edits] == [
         (texts.PRODUCT_ALREADY_GONE_TEXT, None)
     ]
-    assert _rows(dialog.edits[0]) == [_CARD_NAV]
+    assert _rows(dialog.edits[0]) == [_GONE_NAV]
     assert await dialog.state() is None
     assert len(dialog.callback_answers) == 1
 

@@ -95,6 +95,46 @@ class ProductRepository(
         result = await self._session.execute(stmt)
         return result.scalar_one()
 
+    async def count_by_user(self, user_id: int) -> int:
+        """Count all products of a user."""
+        stmt = select(func.count(Product.id)).where(Product.user_id == user_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one()
+
+    async def get_page_by_user(
+        self, user_id: int, limit: int, offset: int
+    ) -> list[Product]:
+        """Get one page of a user's products ordered by ascending id.
+
+        Bounds are validated before the query; the page is bounded by
+        ``limit``.
+        """
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+        stmt = (
+            select(Product)
+            .where(Product.user_id == user_id)
+            .order_by(Product.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_before(self, user_id: int, product_id: int) -> int:
+        """Count the user's products with an id lower than ``product_id``.
+
+        Equals the zero-based position of the product in the ``ORDER BY id``
+        listing; also valid for an already deleted ``product_id``.
+        """
+        stmt = select(func.count(Product.id)).where(
+            Product.user_id == user_id, Product.id < product_id
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one()
+
     async def get_all_with_active_alerts(self) -> list[Product]:
         """Get all product with active alerts."""
         stmt = select(Product).join(Product.alerts).where(Alert.is_active).distinct()

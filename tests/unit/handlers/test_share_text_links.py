@@ -29,6 +29,7 @@ from tests.unit.handlers.add_dialog_support import _Faults
 from tests.unit.handlers.add_dialog_support import _keyboard_callbacks
 from tests.unit.handlers.add_dialog_support import _responder
 from tests.unit.handlers.add_dialog_support import _TrackingStub
+from tests.unit.handlers.card_dialog_support import page_of
 
 _WB_LINK = "https://www.wildberries.ru/catalog/13511022/detail.aspx?size=41036292"
 _SHARE = f"Брюки чиносы прямые без стрелок черные Westrenger\n{_WB_LINK}"
@@ -51,7 +52,7 @@ def stub(monkeypatch: pytest.MonkeyPatch) -> _TrackingStub:
 @pytest.fixture
 def service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
-    mock.list_products.return_value = []
+    mock.list_page.return_value = page_of([])
     mock.find_tracked_product.return_value = None
     mock.product_limit.return_value = 50
     mock.preview.return_value = MarketplaceProductData(name="Товар", price=100_00)

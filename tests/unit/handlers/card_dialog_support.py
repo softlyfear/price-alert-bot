@@ -20,6 +20,7 @@ from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.models.product import Product
 from app.services.tracking import ProductCard
+from app.services.tracking import ProductPage
 
 NB = "\u00a0"
 DB_NAME = "Из базы <b>1"
@@ -31,6 +32,7 @@ PRODUCT_ID = 5
 WB_LINK = f"https://www.wildberries.ru/catalog/{DB_ARTICLE}/detail.aspx"
 MENU = ["menu:add", "menu:list", "menu:help"]
 CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
+CARD_PAGE1_NAV = [("← К списку", "lpage:1"), ("Главное меню", "menu:start")]
 EDIT_STATE = "EditAlert:waiting_target_price"
 EDIT_DATA: dict[str, Any] = {"alert_id": 11, "product_id": PRODUCT_ID}
 ADD_STATES = [
@@ -74,7 +76,21 @@ def product(
     )
 
 
-def card(price_fetched_at: datetime | None = DB_FETCHED_AT) -> ProductCard:
+def page_of(
+    products: list[Product], page: int = 1, pages: int = 1, total: int | None = None
+) -> ProductPage:
+    """One list page holding ``products`` (the service boundary's answer)."""
+    return ProductPage(
+        products=tuple(products),
+        total=len(products) if total is None else total,
+        page=page,
+        pages=pages,
+    )
+
+
+def card(
+    price_fetched_at: datetime | None = DB_FETCHED_AT, list_page: int = 1
+) -> ProductCard:
     """The tracked product with one ``below`` threshold of 1 500 rubles."""
     alert = Alert(
         id=11,
@@ -84,7 +100,9 @@ def card(price_fetched_at: datetime | None = DB_FETCHED_AT) -> ProductCard:
         direction=AlertDirection.below,
     )
     return ProductCard(
-        product=product(price_fetched_at=price_fetched_at), alerts=(alert,)
+        product=product(price_fetched_at=price_fetched_at),
+        alerts=(alert,),
+        list_page=list_page,
     )
 
 

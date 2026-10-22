@@ -61,6 +61,7 @@ class _Harness:
             False,
         )
         self.products = MagicMock(spec=ProductRepository)
+        self.products.count_before.return_value = 0
         self.alerts = MagicMock(spec=AlertRepository)
         monkeypatch.setattr(tracking_module, "UserRepository", lambda _s: self.users)
         monkeypatch.setattr(
@@ -80,30 +81,79 @@ def h(monkeypatch: pytest.MonkeyPatch) -> _Harness:
     return _Harness(monkeypatch)
 
 
-# --- list_products -------------------------------------------------------
+# --- list_page / list_page_of (PAB-108) -----------------------------------
 
 
 @pytest.mark.asyncio
-async def test_list_products_sorts_by_id_ascending_whatever_the_repo_order(
+async def test_list_page_reads_the_requested_window_for_the_internal_user_id(
     h: _Harness,
 ) -> None:
-    h.products.get_by_user_id.return_value = [_product(30), _product(5), _product(12)]
+    h.products.count_by_user.return_value = 23
+    h.products.get_page_by_user.return_value = [_product(21), _product(22)]
 
-    result = await h.service.list_products(_TG)
+    page = await h.service.list_page(_TG, 3)
 
-    assert [p.id for p in result] == [5, 12, 30]
-
-
-@pytest.mark.asyncio
-async def test_list_products_scopes_to_the_internal_user_id_not_the_telegram_id(
-    h: _Harness,
-) -> None:
-    h.products.get_by_user_id.return_value = []
-
-    assert await h.service.list_products(_TG) == []
-
+    assert [p.id for p in page.products] == [21, 22]
+    assert (page.total, page.page, page.pages) == (23, 3, 3)
     h.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG)
-    h.products.get_by_user_id.assert_awaited_once_with(_USER_ID)
+    h.products.count_by_user.assert_awaited_once_with(_USER_ID)
+    h.products.get_page_by_user.assert_awaited_once_with(_USER_ID, 10, 20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("asked", "shown", "offset"), [(0, 1, 0), (-5, 1, 0), (99, 3, 20), (2, 2, 10)]
+)
+async def test_list_page_clamps_the_page_into_one_to_pages(
+    h: _Harness, asked: int, shown: int, offset: int
+) -> None:
+    h.products.count_by_user.return_value = 23
+    h.products.get_page_by_user.return_value = []
+
+    page = await h.service.list_page(_TG, asked)
+
+    assert page.page == shown
+    h.products.get_page_by_user.assert_awaited_once_with(_USER_ID, 10, offset)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("total", "pages"), [(0, 1), (1, 1), (10, 1), (11, 2), (20, 2), (21, 3)]
+)
+async def test_list_page_counts_pages_as_ceil_of_total_by_ten_and_at_least_one(
+    h: _Harness, total: int, pages: int
+) -> None:
+    h.products.count_by_user.return_value = total
+    h.products.get_page_by_user.return_value = []
+
+    page = await h.service.list_page(_TG, 1)
+
+    assert (page.total, page.pages) == (total, pages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "total", "expected"),
+    [(0, 23, 1), (9, 23, 1), (10, 23, 2), (14, 23, 2), (22, 23, 3), (30, 23, 3)],
+)
+async def test_list_page_of_is_before_over_ten_plus_one_clamped_to_pages(
+    h: _Harness, before: int, total: int, expected: int
+) -> None:
+    h.products.count_by_user.return_value = total
+    h.products.count_before.return_value = before
+
+    assert await h.service.list_page_of(_TG, 500) == expected
+
+    h.products.count_before.assert_awaited_once_with(_USER_ID, 500)
+    h.products.count_by_user.assert_awaited_once_with(_USER_ID)
+
+
+@pytest.mark.asyncio
+async def test_list_page_of_with_no_products_left_is_page_one(h: _Harness) -> None:
+    h.products.count_by_user.return_value = 0
+    h.products.count_before.return_value = 0
+
+    assert await h.service.list_page_of(_TG, 7) == 1
 
 
 # --- get_product_card ----------------------------------------------------
@@ -125,6 +175,7 @@ async def test_get_product_card_returns_product_and_alerts_sorted_by_target(
 
     assert isinstance(card, ProductCard)
     assert card.product is product
+    assert card.list_page == 1
     assert isinstance(card.alerts, tuple)
     assert [a.target_price for a in card.alerts] == [100, 500, 900]
     h.products.get_by_id_for_user.assert_awaited_once_with(10, _USER_ID)
@@ -234,3 +285,19 @@ def test_alert_removal_values_are_the_three_outcomes() -> None:
         "removed",
         "removed_with_product",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("before", "page"), [(0, 1), (9, 1), (10, 2), (22, 3)])
+async def test_get_product_card_list_page_is_the_page_holding_the_product(
+    h: _Harness, before: int, page: int
+) -> None:
+    h.products.get_by_id_for_user.return_value = _product(10)
+    h.alerts.get_by_user_and_product.return_value = []
+    h.products.count_before.return_value = before
+
+    card = await h.service.get_product_card(_TG, 10)
+
+    assert card is not None
+    assert card.list_page == page
+    h.products.count_before.assert_awaited_once_with(_USER_ID, 10)

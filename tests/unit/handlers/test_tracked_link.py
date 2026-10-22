@@ -29,7 +29,7 @@ from tests.unit.handlers.add_dialog_support import _CARD_ID
 from tests.unit.handlers.add_dialog_support import _CHAT
 from tests.unit.handlers.add_dialog_support import _USER
 from tests.unit.handlers.add_dialog_support import _Dialog
-from tests.unit.handlers.card_dialog_support import CARD_NAV
+from tests.unit.handlers.card_dialog_support import CARD_PAGE1_NAV
 from tests.unit.handlers.card_dialog_support import CARD_TEXT
 from tests.unit.handlers.card_dialog_support import DB_ARTICLE
 from tests.unit.handlers.card_dialog_support import NB
@@ -44,7 +44,7 @@ _EXPECTED_ROWS = [
     [("🔄 Обновить цену", "pref:5")],
     [("➕ Добавить порог", "aadd:5")],
     [("Перестать следить", "pdel:5")],
-    CARD_NAV,
+    CARD_PAGE1_NAV,
 ]
 _Mover = Callable[[_Dialog], Awaitable[None]]
 

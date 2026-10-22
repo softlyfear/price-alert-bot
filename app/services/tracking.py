@@ -28,13 +28,27 @@ from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import UnsupportedMarketplaceError
 from app.services.failure_levels import failure_log_level
 
+LIST_PAGE_SIZE = 10
+"""Products per page of the "My products" list (PROJECT.md 2.13 R20)."""
+
 
 @dataclass(frozen=True, slots=True)
 class ProductCard:
-    """A product together with its alerts, sorted by `target_price`."""
+    """A product with its alerts (sorted by `target_price`) and its list page."""
 
     product: Product
     alerts: tuple[Alert, ...]
+    list_page: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProductPage:
+    """One page of the caller's products; `page` is already clamped."""
+
+    products: tuple[Product, ...]
+    total: int
+    page: int
+    pages: int
 
 
 class AlertRemoval(StrEnum):
@@ -137,11 +151,37 @@ class TrackingService:
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
         return self._effective_limit(user)
 
-    async def list_products(self, tg_user_id: int) -> list[Product]:
-        """Return the caller's products ordered by `id` ascending."""
+    async def list_page(self, tg_user_id: int, page: int) -> ProductPage:
+        """Return one page of the caller's products ordered by `id`.
+
+        `page` is user input: it is clamped to `[1, pages]`. The number of
+        queries is constant and does not depend on the number of products.
+        """
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        products = await self._products.get_by_user_id(user.id)
-        return sorted(products, key=lambda product: product.id)
+        total = await self._products.count_by_user(user.id)
+        pages = self._page_count(total)
+        page = min(max(page, 1), pages)
+        products = await self._products.get_page_by_user(
+            user.id, LIST_PAGE_SIZE, (page - 1) * LIST_PAGE_SIZE
+        )
+        return ProductPage(
+            products=tuple(products), total=total, page=page, pages=pages
+        )
+
+    async def list_page_of(self, tg_user_id: int, product_id: int) -> int:
+        """Return the list page holding `product_id`, clamped to `[1, pages]`.
+
+        Valid for an already deleted product: the page is computed from the
+        number of the caller's products with a lower `id`.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        total = await self._products.count_by_user(user.id)
+        before = await self._products.count_before(user.id, product_id)
+        return min(before // LIST_PAGE_SIZE + 1, self._page_count(total))
+
+    @staticmethod
+    def _page_count(total: int) -> int:
+        return max(1, -(-total // LIST_PAGE_SIZE))
 
     async def get_product_card(
         self, tg_user_id: int, product_id: int
@@ -174,9 +214,11 @@ class TrackingService:
 
     async def _build_card(self, user_id: int, product: Product) -> ProductCard:
         alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
+        before = await self._products.count_before(user_id, product.id)
         return ProductCard(
             product=product,
             alerts=tuple(sorted(alerts, key=lambda alert: alert.target_price)),
+            list_page=before // LIST_PAGE_SIZE + 1,
         )
 
     async def remove_product(self, tg_user_id: int, product_id: int) -> bool:

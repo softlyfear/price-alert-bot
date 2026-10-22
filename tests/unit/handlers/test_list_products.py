@@ -43,6 +43,7 @@ from tests.unit.conftest import build_fake_bot
 from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import make_command_update
 from tests.unit.conftest import send_message_responder
+from tests.unit.handlers.card_dialog_support import page_of
 
 if TYPE_CHECKING:
     from loguru import Record
@@ -53,8 +54,9 @@ _MAX_ID = 2_147_483_647
 _NAME = "Кроссовки <b>x*"
 _NB = "\u00a0"
 _NAV_ROW = [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")]
-_REFRESH_ROW = [("🔄 Обновить цены", "list:refresh")]
-_CARD_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
+_REFRESH_ROW = [("🔄 Обновить цены", "lref:1")]
+_CARD_NAV = [("← К списку", "lpage:1"), ("Главное меню", "menu:start")]
+_GONE_NAV = [("← К списку", "menu:list"), ("Главное меню", "menu:start")]
 _CARD_HEAD = (
     f"{_NAME}\n"
     "Маркетплейс: Wildberries\n"
@@ -141,7 +143,8 @@ class _Bot:
 @pytest.fixture
 def service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock(spec=TrackingService)
-    mock.list_products.return_value = []
+    mock.list_page.return_value = page_of([])
+    mock.list_page_of.return_value = 1
     mock.get_product_card.return_value = None
     mock.find_tracked_product.return_value = None
     mock.remove_product.return_value = False
@@ -164,7 +167,7 @@ _KINDS_WITH_CHAT = ["message", "inaccessible"]
 
 
 def _no_service_call(service: MagicMock) -> None:
-    service.list_products.assert_not_called()
+    service.list_page.assert_not_called()
     service.get_product_card.assert_not_called()
     service.remove_product.assert_not_called()
     service.remove_alert.assert_not_called()
@@ -187,14 +190,14 @@ async def test_list_with_no_products_shows_only_the_navigation_row(
     assert [r.text for r in bot.sent] == [texts.LIST_EMPTY_TEXT]
     rows = _keyboard(bot.sent[0]).inline_keyboard
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [_NAV_ROW]
-    service.list_products.assert_awaited_once_with(_USER)
+    service.list_page.assert_awaited_once_with(_USER, 1)
 
 
 @pytest.mark.asyncio
 async def test_list_shows_one_button_per_product_and_one_disclaimer(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.list_products.return_value = [_product(5), _product(9, "Шапка", 50)]
+    service.list_page.return_value = page_of([_product(5), _product(9, "Шапка", 50)])
 
     await bot.command("list")
 
@@ -213,34 +216,34 @@ async def test_list_shows_one_button_per_product_and_one_disclaimer(
 
 
 @pytest.mark.asyncio
-async def test_list_with_exactly_fifty_products_shows_fifty_and_no_cut_note(
+async def test_list_with_ten_products_is_one_page_without_marker_or_arrows(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.list_products.return_value = [_product(i) for i in range(1, 51)]
+    service.list_page.return_value = page_of([_product(i) for i in range(1, 11)])
 
     await bot.command("list")
 
     rows = _keyboard(bot.sent[0]).inline_keyboard
-    assert len(rows) == 50 + 2
-    assert rows[49][0].callback_data == "pcard:50"
-    assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
-    assert "Показаны первые" not in bot.sent[0].text
-    assert "товарами: 50." in bot.sent[0].text
+    assert len(rows) == 10 + 2
+    assert "Стр." not in bot.sent[0].text
+    assert "товарами: 10." in bot.sent[0].text
 
 
 @pytest.mark.asyncio
-async def test_list_with_fifty_one_products_shows_fifty_and_names_the_cut(
+async def test_list_with_several_pages_opens_page_one_with_marker_and_next_arrow(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.list_products.return_value = [_product(i) for i in range(1, 52)]
+    service.list_page.return_value = page_of(
+        [_product(i) for i in range(1, 11)], page=1, pages=3, total=23
+    )
 
     await bot.command("list")
 
-    rows = _keyboard(bot.sent[0]).inline_keyboard
-    assert len(rows) == 50 + 2
-    assert rows[49][0].callback_data == "pcard:50"
-    assert [(b.text, b.callback_data) for b in rows[-1]] == _NAV_ROW
-    assert "Показаны первые 50 из 51" in bot.sent[0].text
+    service.list_page.assert_awaited_once_with(_USER, 1)
+    assert bot.sent[0].text.startswith("Вы следите за товарами: 23. Стр. 1/3.\n")
+    assert [
+        (b.text, b.callback_data) for b in _keyboard(bot.sent[0]).inline_keyboard[10]
+    ] == [("▶", "lpage:2")]
 
 
 @pytest.mark.asyncio
@@ -262,7 +265,7 @@ async def test_list_from_a_message_without_sender_is_ignored(
     await bot.feed(update)
 
     assert bot.sent == []
-    service.list_products.assert_not_called()
+    service.list_page.assert_not_called()
 
 
 # --- "My products" menu button (PAB-092) -------------------------------------
@@ -274,14 +277,14 @@ async def test_menu_list_button_asks_the_service_for_the_presser_not_the_chat(
 ) -> None:
     await bot.press("menu:list")
 
-    service.list_products.assert_awaited_once_with(_USER)
+    service.list_page.assert_awaited_once_with(_USER, 1)
 
 
 @pytest.mark.asyncio
 async def test_menu_list_button_edits_in_place_with_the_same_screen_as_the_command(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.list_products.return_value = [_product(5), _product(9, "Шапка", 50)]
+    service.list_page.return_value = page_of([_product(5), _product(9, "Шапка", 50)])
     await bot.command("list")
 
     await bot.press("menu:list")
@@ -312,24 +315,10 @@ async def test_menu_list_button_with_no_products_shows_empty_text_and_nav_row(
 
 
 @pytest.mark.asyncio
-async def test_menu_list_button_still_cuts_the_list_at_fifty(
-    bot: _Bot, service: MagicMock
-) -> None:
-    service.list_products.return_value = [_product(i) for i in range(1, 52)]
-
-    await bot.press("menu:list")
-
-    rows = _keyboard(bot.edits[0]).inline_keyboard
-    assert len(rows) == 50 + 2
-    assert rows[49][0].callback_data == "pcard:50"
-    assert "Показаны первые 50 из 51" in bot.edits[0].text
-
-
-@pytest.mark.asyncio
 async def test_menu_list_button_on_an_inaccessible_message_sends_the_list_as_new(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.list_products.return_value = [_product(5)]
+    service.list_page.return_value = page_of([_product(5)])
 
     await bot.press("menu:list", accessible=False)
 
@@ -394,7 +383,7 @@ _DIALOG_STATES = [
 async def test_list_inside_an_add_dialog_state_answers_and_keeps_state_and_draft(
     bot: _Bot, service: MagicMock, state: str, data: dict[str, Any]
 ) -> None:
-    service.list_products.return_value = [_product(5)]
+    service.list_page.return_value = page_of([_product(5)])
     storage = bot.dispatcher.storage
     await storage.set_state(bot.key, state)
     await storage.set_data(bot.key, dict(data))
@@ -423,7 +412,9 @@ def _rows(request: SendMessage | EditMessageText) -> list[list[tuple[str, str | 
 
 def _one_alert_card() -> ProductCard:
     return ProductCard(
-        product=_product(5), alerts=(_alert(11, AlertDirection.below, 150_000),)
+        product=_product(5),
+        alerts=(_alert(11, AlertDirection.below, 150_000),),
+        list_page=1,
     )
 
 
@@ -437,6 +428,7 @@ async def test_open_card_edits_the_list_in_place_with_all_card_parts(
             _alert(11, AlertDirection.below, 100_000),
             _alert(12, AlertDirection.above, 200_000),
         ),
+        list_page=1,
     )
 
     await bot.press("pcard:5")
@@ -491,7 +483,9 @@ async def test_open_card_on_an_inaccessible_message_sends_the_card_as_new(
 async def test_open_card_without_any_message_pops_up_the_stale_alert_and_sends_nothing(
     bot: _Bot, service: MagicMock
 ) -> None:
-    service.get_product_card.return_value = ProductCard(product=_product(5), alerts=())
+    service.get_product_card.return_value = ProductCard(
+        product=_product(5), alerts=(), list_page=1
+    )
 
     await bot.press("pcard:5", **_PRESS["none"])
 
@@ -509,7 +503,7 @@ async def test_back_to_list_button_of_the_card_edits_the_card_into_the_list(
 ) -> None:
     """The button is taken from the real card keyboard, then pressed."""
     service.get_product_card.return_value = _one_alert_card()
-    service.list_products.return_value = [_product(5)]
+    service.list_page.return_value = page_of([_product(5)])
     await bot.press("pcard:5")
     back = _rows(bot.edits[0])[-1][0]
     assert back[0] == "← К списку"
@@ -517,7 +511,7 @@ async def test_back_to_list_button_of_the_card_edits_the_card_into_the_list(
 
     await bot.press(back[1])
 
-    service.list_products.assert_awaited_once_with(_USER)
+    service.list_page.assert_awaited_once_with(_USER, 1)
     assert len(bot.edits) == 2
     assert bot.edits[1].text.startswith("Вы следите за товарами: 1.")
     assert bot.sent == []
@@ -545,7 +539,7 @@ _REMOVE_CASES = [
         AlertRemoval.removed,
         False,
         "Порог удалён",
-        [_CARD_NAV],
+        [_GONE_NAV],
         None,
         id="removed-card-gone",
     ),
@@ -567,7 +561,7 @@ _REMOVE_CASES = [
         AlertRemoval.not_found,
         False,
         "Товар уже не отслеживается",
-        [_CARD_NAV],
+        [_GONE_NAV],
         None,
         id="not-found-card-gone",
     ),
@@ -614,7 +608,7 @@ async def test_remove_alert_with_product_edits_to_the_summary_and_nav_row(
     assert [(e.text, e.parse_mode) for e in bot.edits] == [
         (texts.LIST_ALERT_REMOVED_WITH_PRODUCT_TEXT, None)
     ]
-    assert _rows(bot.edits[0]) == [_CARD_NAV]
+    assert _rows(bot.edits[0]) == [_GONE_NAV]
     assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
 
 
@@ -679,7 +673,7 @@ async def test_remove_alert_with_a_forged_product_id_leaks_no_card_data(
 
     service.get_product_card.assert_awaited_once_with(_USER, 777)
     assert [e.text for e in bot.edits] == ["Порог удалён"]
-    assert _rows(bot.edits[0]) == [_CARD_NAV]
+    assert _rows(bot.edits[0]) == [_GONE_NAV]
     assert bot.sent == []
     assert not any(_NAME in (e.text or "") for e in bot.edits)
 
@@ -736,7 +730,7 @@ async def test_old_format_remove_button_is_stale_and_never_reaches_the_service(
         (False, texts.PRODUCT_ALREADY_GONE_TEXT),
     ],
 )
-async def test_remove_product_edits_in_place_with_nav_row_and_no_popup(
+async def test_remove_product_edits_in_place_into_outcome_plus_list_and_no_popup(
     bot: _Bot, service: MagicMock, removed: bool, text: str
 ) -> None:
     service.remove_product.return_value = removed
@@ -744,8 +738,10 @@ async def test_remove_product_edits_in_place_with_nav_row_and_no_popup(
     await bot.press("pdel:5")
 
     service.remove_product.assert_awaited_once_with(_USER, 5)
-    assert [(e.text, e.parse_mode) for e in bot.edits] == [(text, None)]
-    assert _rows(bot.edits[0]) == [_CARD_NAV]
+    assert [(e.text, e.parse_mode) for e in bot.edits] == [
+        (f"{text}\n\n{texts.LIST_EMPTY_TEXT}", None)
+    ]
+    assert _rows(bot.edits[0]) == [_NAV_ROW]
     assert bot.sent == []
     assert [(a.text, a.show_alert) for a in bot.answers] == [(None, None)]
 
@@ -758,9 +754,32 @@ async def test_remove_product_success_names_how_to_return(
 
     await bot.press("pdel:5")
 
-    assert bot.edits[0].text.endswith(
-        "добавьте его заново: «Главное меню» → «➕ Добавить товар»."
+    assert bot.edits[0].text.startswith(
+        "Больше не слежу за этим товаром, его пороги удалены. "
+        "Чтобы вернуть товар, добавьте его заново: "
+        "«Главное меню» → «➕ Добавить товар».\n\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_remove_product_draws_the_list_page_the_product_was_on(
+    bot: _Bot, service: MagicMock
+) -> None:
+    """Removing the only product of page 3 leaves page 2 (the service clamps)."""
+    service.remove_product.return_value = True
+    service.list_page_of.return_value = 2
+    service.list_page.return_value = page_of(
+        [_product(i) for i in range(11, 21)], page=2, pages=2, total=20
+    )
+
+    await bot.press("pdel:23")
+
+    service.remove_product.assert_awaited_once_with(_USER, 23)
+    service.list_page_of.assert_awaited_once_with(_USER, 23)
+    service.list_page.assert_awaited_once_with(_USER, 2)
+    assert bot.edits[0].text.startswith(texts.LIST_PRODUCT_REMOVED_TEXT)
+    assert "Вы следите за товарами: 20. Стр. 2/2." in bot.edits[0].text
+    assert _rows(bot.edits[0])[10] == [("◀", "lpage:1")]
 
 
 @pytest.mark.asyncio
@@ -775,7 +794,7 @@ async def test_remove_product_on_an_inaccessible_message_sends_the_outcome_as_ne
     assert bot.edits == []
     assert len(bot.sent) == 1
     assert bot.sent[0].chat_id == _CHAT
-    assert _rows(bot.sent[0]) == [_CARD_NAV]
+    assert _rows(bot.sent[0]) == [_NAV_ROW]
     assert len(bot.answers) == 1
 
 
@@ -816,7 +835,7 @@ async def test_foreign_and_missing_rows_get_the_same_answer_on_every_path(
     assert seen == [
         ("pcard:5", texts.LIST_GONE_ALERT_TEXT),
         ("adel:5:5", texts.PRODUCT_ALREADY_GONE_TEXT),
-        ("pdel:5", texts.PRODUCT_ALREADY_GONE_TEXT),
+        ("pdel:5", f"{texts.PRODUCT_ALREADY_GONE_TEXT}\n\n{texts.LIST_EMPTY_TEXT}"),
     ]
 
 

@@ -29,6 +29,7 @@ from tests.unit.handlers.add_dialog_support import _CARD_ID
 from tests.unit.handlers.add_dialog_support import _USER
 from tests.unit.handlers.add_dialog_support import _Dialog
 from tests.unit.handlers.card_dialog_support import PRODUCT_ID
+from tests.unit.handlers.card_dialog_support import page_of
 from tests.unit.handlers.card_dialog_support import product
 from tests.unit.handlers.card_dialog_support import rows
 
@@ -49,7 +50,7 @@ def _refresh_list_raises(refresher: MagicMock, service: MagicMock) -> None:
 
 
 def _list_screen_raises(refresher: MagicMock, service: MagicMock) -> None:
-    service.list_products.side_effect = _CRASH
+    service.list_page.side_effect = _CRASH
 
 
 def _refresh_product_raises(refresher: MagicMock, service: MagicMock) -> None:
@@ -62,12 +63,12 @@ def _card_read_raises(refresher: MagicMock, service: MagicMock) -> None:
 
 def _gone_screen_raises(refresher: MagicMock, service: MagicMock) -> None:
     refresher.refresh_product.return_value = RefreshGone()
-    service.list_products.side_effect = _CRASH
+    service.list_page.side_effect = _CRASH
 
 
 def _vanished_card_screen_raises(refresher: MagicMock, service: MagicMock) -> None:
     service.get_product_card.return_value = None
-    service.list_products.side_effect = _CRASH
+    service.list_page.side_effect = _CRASH
 
 
 _LIST_CASES = [
@@ -103,7 +104,7 @@ def refresher(card_dialog: _Dialog) -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def tracked_list(card_service: MagicMock) -> MagicMock:
-    card_service.list_products.return_value = [product()]
+    card_service.list_page.return_value = page_of([product()])
     return card_service
 
 
