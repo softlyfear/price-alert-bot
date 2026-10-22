@@ -287,6 +287,53 @@ async def test_product_race_loser_does_not_overwrite_the_winners_stamp(
     assert await _stored_stamp(db_session, first.product_id) == _OLD_STAMP
 
 
+async def _stored_initial(session: AsyncSession, product_id: int) -> int | None:
+    return (
+        await session.execute(
+            select(Product.initial_price).where(Product.id == product_id)
+        )
+    ).scalar_one()
+
+
+async def test_new_product_initial_price_equals_the_given_current_price(
+    db_session: AsyncSession,
+) -> None:
+    alert = await _add(
+        _service(db_session), next(_tg_ids), next(_articles), price=13_579
+    )
+
+    assert await _stored_initial(db_session, alert.product_id) == 13_579
+
+
+async def test_second_threshold_keeps_the_initial_price(
+    db_session: AsyncSession,
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    first = await _add(service, tg, article, target=9_000, price=15_000)
+
+    second = await _add(service, tg, article, target=20_000, price=18_000)
+
+    assert second.product_id == first.product_id
+    assert await _counts_for_user(db_session, tg) == (1, 2)
+    assert await _stored_initial(db_session, first.product_id) == 15_000
+
+
+async def test_product_race_loser_does_not_overwrite_the_winners_initial_price(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    first = await _add(service, tg, article, target=9_000, price=15_000)
+    await _first_call_sees_nothing(
+        monkeypatch, ProductRepository, "get_by_article_and_user", None
+    )
+
+    await _add(service, tg, article, target=8_000, price=2_000)
+
+    assert await _stored_initial(db_session, first.product_id) == 15_000
+
+
 async def test_foreign_key_violation_on_alert_is_not_reported_as_duplicate(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

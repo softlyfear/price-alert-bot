@@ -166,3 +166,55 @@ async def test_failure_keeps_price_fetched_at_and_moves_last_checked_at(
     assert fetched == old
     assert checked == _NOW  # moved from _OLD_CHECK: the attempt is recorded
     assert price == 10_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", _ENTRIES)
+async def test_success_changes_current_price_but_not_initial_price(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, entry: _Entry
+) -> None:
+    monkeypatch.setattr(price_service_module, "datetime", _FrozenDatetime)
+    product_id = await _seed(db_session, None)
+    await _set_initial(db_session, product_id, 10_000)
+    result = MarketplaceProductData(name="Item", price=9_500)
+
+    await entry(_service(result), product_id, db_session, result)
+
+    assert (await _stored(db_session, product_id))[2] == 9_500  # control
+    assert await _initial(db_session, product_id) == 10_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", _ENTRIES)
+@pytest.mark.parametrize("reason", list(FetchFailureReason))
+async def test_failure_keeps_initial_price(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    entry: _Entry,
+    reason: FetchFailureReason,
+) -> None:
+    monkeypatch.setattr(price_service_module, "datetime", _FrozenDatetime)
+    product_id = await _seed(db_session, None)
+    await _set_initial(db_session, product_id, 10_000)
+    result = MarketplaceFetchFailure(reason=reason, detail="stub")
+
+    await entry(_service(result), product_id, db_session, result)
+
+    assert (await _stored(db_session, product_id))[0] is None  # not fetched
+    assert await _initial(db_session, product_id) == 10_000
+
+
+async def _set_initial(session: AsyncSession, product_id: int, value: int) -> None:
+    product = (
+        await session.execute(select(Product).where(Product.id == product_id))
+    ).scalar_one()
+    product.initial_price = value
+    await session.flush()
+
+
+async def _initial(session: AsyncSession, product_id: int) -> int | None:
+    return (
+        await session.execute(
+            select(Product.initial_price).where(Product.id == product_id)
+        )
+    ).scalar_one()

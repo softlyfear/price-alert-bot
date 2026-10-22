@@ -43,6 +43,11 @@ class Product(Base, TimestampMixin):
             "previous_price >= 0", name="ck_products_previous_price_non_negative"
         )
     )
+    initial_price: Mapped[int | None] = mapped_column(
+        CheckConstraint(
+            "initial_price >= 0", name="ck_products_initial_price_non_negative"
+        )
+    )
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     price_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -269,6 +269,7 @@ class TrackingService:
                         "article": article,
                         "product_name": product_name,
                         "current_price": current_price,
+                        "initial_price": current_price,
                         "price_fetched_at": price_fetched_at,
                     }
                 )
