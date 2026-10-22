@@ -24,6 +24,7 @@ import httpx
 import pytest
 from sqlalchemy import func
 from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -509,4 +510,110 @@ async def test_equal_threshold_is_rejected_before_anything_is_written(
         await db_session.execute(select(func.count()).where(User.tg_user_id == tg))
     ).scalar_one()
     assert users == 0
+    assert client.fetches == 0
+
+
+async def _set_limit(session: AsyncSession, tg_user_id: int, limit: int | None) -> None:
+    """Direct UPDATE, as the customer does it by hand."""
+    await session.execute(
+        text("UPDATE users SET product_limit = :limit WHERE tg_user_id = :tg"),
+        {"limit": limit, "tg": tg_user_id},
+    )
+    session.expunge_all()  # force the next read to hit the database
+
+
+async def test_personal_limit_below_global_rejects_the_third_product(
+    db_session: AsyncSession,
+) -> None:
+    tg = next(_tg_ids)
+    service = _service(db_session, limit=50)
+    await _add(service, tg, next(_articles))
+    await _set_limit(db_session, tg, 2)
+    await _add(service, tg, next(_articles))
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await _add(service, tg, next(_articles))
+
+    assert excinfo.value.limit == 2
+    assert await _counts_for_user(db_session, tg) == (2, 2)
+
+
+async def test_personal_limit_above_global_admits_more_products(
+    db_session: AsyncSession,
+) -> None:
+    tg = next(_tg_ids)
+    service = _service(db_session, limit=1)
+    await _add(service, tg, next(_articles))
+    await _set_limit(db_session, tg, 3)
+
+    await _add(service, tg, next(_articles))
+    await _add(service, tg, next(_articles))
+
+    assert await _counts_for_user(db_session, tg) == (3, 3)
+
+
+async def test_null_personal_limit_falls_back_to_the_global_one(
+    db_session: AsyncSession,
+) -> None:
+    tg = next(_tg_ids)
+    service = _service(db_session, limit=1)
+    await _add(service, tg, next(_articles))
+    await _set_limit(db_session, tg, None)
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await _add(service, tg, next(_articles))
+
+    assert excinfo.value.limit == 1
+
+
+async def test_at_personal_limit_another_threshold_on_a_counted_product_is_allowed(
+    db_session: AsyncSession,
+) -> None:
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session, limit=50)
+    await _add(service, tg, article, target=9_000)
+    await _set_limit(db_session, tg, 1)
+
+    await _add(service, tg, article, target=8_000)
+
+    assert await _counts_for_user(db_session, tg) == (1, 2)
+
+
+async def test_product_limit_sees_a_direct_update_on_the_select_branch(
+    db_session: AsyncSession,
+) -> None:
+    tg = next(_tg_ids)
+    service = _service(db_session, limit=50)
+    assert await service.product_limit(tg) == 50  # insert branch, user created
+    await _set_limit(db_session, tg, 7)
+
+    assert await service.product_limit(tg) == 7  # select branch
+    assert await service.product_limit(next(_tg_ids)) == 50  # insert branch, NULL
+
+
+async def test_product_limit_sees_a_row_created_with_a_personal_limit(
+    db_session: AsyncSession,
+) -> None:
+    tg = next(_tg_ids)
+    await db_session.execute(
+        text("INSERT INTO users (tg_user_id, product_limit) VALUES (:tg, 9)"),
+        {"tg": tg},
+    )
+
+    assert await _service(db_session, limit=50).product_limit(tg) == 9
+
+
+async def test_preview_at_personal_limit_refuses_without_a_marketplace_request(
+    db_session: AsyncSession,
+) -> None:
+    tg = next(_tg_ids)
+    client = _CountingClient()
+    service = _service(db_session, limit=50, client=client)
+    await _add(service, tg, next(_articles))
+    await _set_limit(db_session, tg, 1)
+
+    with pytest.raises(ProductLimitExceededError) as excinfo:
+        await service.preview(tg, _WB, next(_articles))
+
+    assert excinfo.value.limit == 1
     assert client.fetches == 0

@@ -18,6 +18,7 @@ from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.models.product import Product
+from app.models.user import User
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
@@ -81,7 +82,7 @@ class TrackingService:
     ) -> MarketplaceFetchResult:
         """Fetch current product data for the dialog; failures are values."""
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        await self._ensure_within_limit(user.id, marketplace, article)
+        await self._ensure_within_limit(user, marketplace, article)
         try:
             client = self._client_factory(marketplace, self._http_client)
         except UnsupportedMarketplaceError as exc:
@@ -115,7 +116,7 @@ class TrackingService:
         """
         direction = choose_direction(current_price, target_price)
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        await self._ensure_within_limit(user.id, marketplace, article)
+        await self._ensure_within_limit(user, marketplace, article)
 
         product = await self._products.get_by_article_and_user(
             article, user.id, marketplace
@@ -130,6 +131,11 @@ class TrackingService:
                 price_fetched_at,
             )
         return await self._create_alert(user.id, product.id, target_price, direction)
+
+    async def product_limit(self, tg_user_id: int) -> int:
+        """Return the caller's effective product limit (personal or global)."""
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        return self._effective_limit(user)
 
     async def list_products(self, tg_user_id: int) -> list[Product]:
         """Return the caller's products ordered by `id` ascending."""
@@ -236,11 +242,17 @@ class TrackingService:
             raise
         return AlertChange.changed if updated else AlertChange.not_found
 
+    def _effective_limit(self, user: User) -> int:
+        """Personal limit when set (`is not None`), else the global default."""
+        return self._max_products if user.product_limit is None else user.product_limit
+
     async def _ensure_within_limit(
-        self, user_id: int, marketplace: Marketplace, article: int
+        self, user: User, marketplace: Marketplace, article: int
     ) -> None:
         """Raise when at the limit, unless the product is already counted."""
-        if await self._products.count_active_by_user(user_id) < self._max_products:
+        limit = self._effective_limit(user)
+        user_id = user.id
+        if await self._products.count_active_by_user(user_id) < limit:
             return
         product = await self._products.get_by_article_and_user(
             article, user_id, marketplace
@@ -249,7 +261,7 @@ class TrackingService:
             alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
             if any(alert.is_active for alert in alerts):
                 return
-        raise ProductLimitExceededError(self._max_products)
+        raise ProductLimitExceededError(limit)
 
     async def _create_product(
         self,

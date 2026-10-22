@@ -45,6 +45,7 @@ def card_service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock.find_tracked_product.return_value = card()
     mock.get_product_card.return_value = card()
     mock.list_products.return_value = []
+    mock.product_limit.return_value = 50
     monkeypatch.setattr(add_product_module, "TrackingService", lambda **_kw: mock)
     return mock
 

@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger
+from sqlalchemy import CheckConstraint
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
@@ -23,6 +24,9 @@ class User(Base, TimestampMixin):
 
     tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     tg_username: Mapped[str | None] = mapped_column(String(32), unique=True)
+    product_limit: Mapped[int | None] = mapped_column(
+        CheckConstraint("product_limit > 0", name="ck_users_product_limit_positive")
+    )
 
     products: Mapped[list["Product"]] = relationship(
         "Product",
