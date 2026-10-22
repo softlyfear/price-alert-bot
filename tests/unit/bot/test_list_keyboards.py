@@ -60,8 +60,8 @@ def test_list_keyboard_has_one_button_per_product_with_name_and_price() -> None:
     ).inline_keyboard
 
     assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
-        [(f"Кроссовки — 1{_NB}990{_NB}₽", "pcard:7")],
-        [(f"Шапка — 0,50{_NB}₽", "pcard:9")],
+        [(f"1{_NB}990{_NB}₽ · Кроссовки", "pcard:7")],
+        [(f"0,50{_NB}₽ · Шапка", "pcard:9")],
         _LIST_REFRESH_ROW,
         _NAV_ROW,
     ]
@@ -70,19 +70,29 @@ def test_list_keyboard_has_one_button_per_product_with_name_and_price() -> None:
 def test_list_keyboard_cuts_a_long_name_to_forty_characters_with_ellipsis() -> None:
     button = product_list_keyboard([_product(1, "я" * 100)]).inline_keyboard[0][0]
 
-    assert button.text == "я" * 39 + "…" + f" — 1{_NB}990{_NB}₽"
+    assert button.text == f"1{_NB}990{_NB}₽ · " + "я" * 39 + "…"
+
+
+def test_list_keyboard_button_starts_with_the_price_and_a_middle_dot_separator() -> (
+    None
+):
+    button = product_list_keyboard([_product(1, "Кроссовки")]).inline_keyboard[0][0]
+
+    assert button.text == f"1{_NB}990{_NB}₽ \u00b7 Кроссовки"
+    assert "\u2022" not in button.text
+    assert " — " not in button.text
 
 
 def test_list_keyboard_keeps_a_forty_character_name_intact() -> None:
     button = product_list_keyboard([_product(1, "я" * 40)]).inline_keyboard[0][0]
 
-    assert button.text.startswith("я" * 40 + " — ")
+    assert button.text == f"1{_NB}990{_NB}₽ · " + "я" * 40
 
 
 def test_list_keyboard_collapses_whitespace_and_newlines_in_the_name() -> None:
     button = product_list_keyboard([_product(1, "a \n\n  b\tc")]).inline_keyboard[0][0]
 
-    assert button.text.startswith("a b c — ")
+    assert button.text == f"1{_NB}990{_NB}₽ · a b c"
 
 
 def test_list_keyboard_with_exactly_fifty_products_shows_all_of_them() -> None:
@@ -141,8 +151,8 @@ def test_card_keyboard_shows_arrows_only_on_buttons_with_a_same_amount_twin() ->
     ).inline_keyboard
 
     assert [[b.text for b in row] for row in rows[:3]] == [
-        [f"✏️ ↓ 1{_NB}000{_NB}₽", "🗑 Убрать"],
-        [f"✏️ ↑ 1{_NB}000{_NB}₽", "🗑 Убрать"],
+        [f"✏️ 📉 1{_NB}000{_NB}₽", "🗑 Убрать"],
+        [f"✏️ 📈 1{_NB}000{_NB}₽", "🗑 Убрать"],
         [f"✏️ 500{_NB}₽", "🗑 Убрать"],
     ]
 
@@ -347,8 +357,8 @@ def test_card_keyboard_arrow_stands_only_on_the_matching_amounts() -> None:
     ).inline_keyboard
 
     assert [row[0].text for row in rows[:3]] == [
-        f"✏️ ↓ 1{_NB}000{_NB}₽",
-        f"✏️ ↑ 1{_NB}000{_NB}₽",
+        f"✏️ 📉 1{_NB}000{_NB}₽",
+        f"✏️ 📈 1{_NB}000{_NB}₽",
         f"✏️ 2{_NB}000{_NB}₽",
     ]
 
@@ -365,7 +375,7 @@ def test_card_keyboard_edit_label_at_the_maximum_price_with_arrow_fits_20_chars(
     ).inline_keyboard
 
     labels = [row[0].text for row in rows[:2]]
-    assert labels[0] == f"✏️ ↓ 21{_NB}474{_NB}836,47{_NB}₽"
+    assert labels[0] == f"✏️ 📉 21{_NB}474{_NB}836,47{_NB}₽"
     assert all(len(label) <= 20 for label in labels)
 
 

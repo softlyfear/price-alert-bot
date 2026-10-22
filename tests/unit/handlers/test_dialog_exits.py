@@ -81,13 +81,10 @@ async def test_dialog_list_clears_the_dialog_and_shows_the_list_of_the_presser(
     edit = card_dialog.edits[0]
     assert (edit.chat_id, edit.message_id) == (_CHAT, _CARD_ID)
     assert edit.text == (
-        "Вы следите за товарами: 1.\n"
-        "Выберите товар, чтобы посмотреть пороги или перестать следить.\n"
-        "Цены на 14:05\n"
-        "Цена без учёта персональных скидок."
+        "Вы следите за товарами: 1.\nЦены на 14:05\nЦена без учёта персональных скидок."
     )
     assert [b for row in rows(edit) for b in row][0] == (
-        f"Из базы <b>1 — 1{NB}755{NB}₽",
+        f"1{NB}755{NB}₽ · Из базы <b>1",
         "pcard:5",
     )
     assert len(card_dialog.callback_answers) == 1
