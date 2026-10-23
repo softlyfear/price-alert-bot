@@ -49,9 +49,12 @@ logged and never put into `detail`.
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 from typing import cast
 
 from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import Response
+from curl_cffi.requests import exceptions as curl_errors
 from curl_cffi.requests.exceptions import RequestException
 from loguru import logger
 from pydantic import ValidationError
@@ -128,6 +131,9 @@ class OzonSession:
     `HTTPS_PROXY`, ...; `trust_env` alone does not), Chrome fingerprint,
     TLS verification on. With a `proxy` the whole traffic goes through it by
     `socks5h` (O10); the credentials are held in the libcurl session.
+    A connection dropped before the response (`ConnectionError`,
+    `ProxyError`: the proxy drops a share of tunnels) is sent once more; a
+    timeout is not.
     """
 
     def __init__(self, proxy: SocksProxy | None = None) -> None:
@@ -138,6 +144,13 @@ class OzonSession:
             discard_cookies=True,
             allow_redirects=False,
         )
+
+    async def _send(self, url: str, **kwargs: Any) -> Response:
+        """`request("GET", ...)`, repeated once if the connection was dropped."""
+        try:
+            return await self._session.request("GET", url, **kwargs)
+        except curl_errors.ConnectionError, curl_errors.ProxyError:
+            return await self._session.request("GET", url, **kwargs)
 
     async def get(
         self,
@@ -156,8 +169,7 @@ class OzonSession:
         known, its body is not read (aborting stops the download at the next
         chunk; closing without the abort would drain it).
         """
-        response = await self._session.request(
-            "GET",
+        response = await self._send(
             url,
             params=params,
             headers={"User-Agent": access.user_agent},
@@ -189,9 +201,7 @@ class OzonSession:
         read: the stream is aborted on every exit. Raises `RequestException`;
         `CancelledError` passes through.
         """
-        response = await self._session.request(
-            "GET", url, timeout=timeout_seconds, stream=True
-        )
+        response = await self._send(url, timeout=timeout_seconds, stream=True)
         try:
             status = int(response.status_code)
             location: str | None = None

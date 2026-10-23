@@ -13,6 +13,7 @@ import contextlib
 import socket
 import time
 import tracemalloc
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
@@ -358,6 +359,56 @@ async def test_hanging_upstream_gives_502_after_the_handshake_deadline(
             answer = await _exchange(relay, b"CONNECT ozon.test:443 HTTP/1.1\r\n\r\n")
 
     assert answer == b"HTTP/1.1 502 Bad Gateway\r\n\r\n"
+
+
+@pytest.mark.asyncio
+async def test_tunnel_dropped_by_the_proxy_is_opened_again() -> None:
+    with SocksStub(drop_first=2, default_target=None) as stub:
+        async with SocksRelay(_proxy(stub)) as relay:
+            _reader, writer = await _tunnel(relay, "ozon.test:443")
+            await _close(writer)
+            failure = relay.upstream_failure
+        attempts = len(stub.connections)
+
+    assert attempts == 3
+    assert failure is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stub_kwargs", "detail"),
+    [
+        ({"drop_first": 100}, "proxy_unreachable"),
+        ({"mode": "close"}, "proxy_protocol_error"),
+    ],
+)
+async def test_proxy_dropping_every_tunnel_gives_502_after_three_attempts(
+    stub_kwargs: dict[str, Any], detail: str
+) -> None:
+    with SocksStub(**stub_kwargs) as stub:
+        async with SocksRelay(_proxy(stub)) as relay:
+            answer = await _exchange(relay, b"CONNECT ozon.test:443 HTTP/1.1\r\n\r\n")
+            failure = relay.upstream_failure
+        attempts = len(stub.connections)
+
+    assert answer == b"HTTP/1.1 502 Bad Gateway\r\n\r\n"
+    assert attempts == 3
+    assert failure == detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["reject_auth", "reject_connect", "hang"])
+async def test_refusal_and_deadline_are_not_retried(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(socks_relay, "_HANDSHAKE_TIMEOUT_SECONDS", 0.3)
+    with SocksStub(mode=mode) as stub:
+        async with SocksRelay(_proxy(stub)) as relay:
+            answer = await _exchange(relay, b"CONNECT ozon.test:443 HTTP/1.1\r\n\r\n")
+        attempts = len(stub.connections)
+
+    assert answer == b"HTTP/1.1 502 Bad Gateway\r\n\r\n"
+    assert attempts == 1
 
 
 @pytest.mark.asyncio

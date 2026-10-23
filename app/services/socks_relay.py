@@ -18,6 +18,14 @@ exists for one acquisition and is closed on every exit, cancellation included.
 through the proxy, then close. Failures carry a closed set of `DETAIL_PROXY_*`
 constants; they never contain the proxy host or the credentials.
 
+A tunnel the proxy drops while it is being opened (a reset or a close in the
+handshake, a refused connection) is opened again, up to `_TUNNEL_ATTEMPTS`
+times: the customer's proxy drops a share of tunnels at random (measured from
+the server on 2026-10-23: 2 of 20), and one page of Ozon opens dozens of them.
+A missed deadline and an explicit refusal (authorisation, `CONNECT`) are not
+retried. The relay remembers the last upstream refusal (`upstream_failure`),
+so the browser step can tell a proxy failure from an Ozon one.
+
 Secrets: host, login and password are `MaskedStr`, `repr` of `SocksProxy` and
 of the relay hides everything, and the authorisation request is built by a
 helper returning a masked value, so a traceback with locals does not show it.
@@ -49,6 +57,8 @@ _ALLOWED_PORT = 443
 _MAX_HEAD_BYTES = 8192
 _HEAD_TIMEOUT_SECONDS = 10.0
 _HANDSHAKE_TIMEOUT_SECONDS = 10.0
+_TUNNEL_ATTEMPTS = 3
+_TUNNEL_RETRY_DELAY_SECONDS = 0.2
 _CHUNK_BYTES = 65536
 _DRAIN_ACCEPT_SECONDS = 0.05
 _LOOPBACK = "127.0.0.1"
@@ -76,11 +86,16 @@ class _MaskedBytes(bytes):
 
 
 class SocksError(Exception):
-    """A proxy refusal; `detail` is one of the `DETAIL_PROXY_*` constants."""
+    """A proxy refusal; `detail` is one of the `DETAIL_PROXY_*` constants.
 
-    def __init__(self, detail: str) -> None:
+    `dropped` marks a tunnel the proxy dropped while it was being opened: the
+    cue for `_open_tunnel` to try again.
+    """
+
+    def __init__(self, detail: str, *, dropped: bool = False) -> None:
         super().__init__(detail)
         self.detail = detail
+        self.dropped = dropped
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -194,6 +209,24 @@ async def _handshake(
 async def _open_tunnel(
     proxy: SocksProxy, host: str, port: int
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """`_open_tunnel_once`, repeated while the proxy drops the tunnel.
+
+    Raises the `SocksError` of the last attempt.
+    """
+    attempt = 1
+    while True:
+        try:
+            return await _open_tunnel_once(proxy, host, port)
+        except SocksError as e:
+            if not e.dropped or attempt >= _TUNNEL_ATTEMPTS:
+                raise
+        attempt += 1
+        await asyncio.sleep(_TUNNEL_RETRY_DELAY_SECONDS)
+
+
+async def _open_tunnel_once(
+    proxy: SocksProxy, host: str, port: int
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Connect to the proxy and `CONNECT` to host:port; raises `SocksError`.
 
     The connection is closed on every failure and on cancellation.
@@ -211,9 +244,13 @@ async def _open_tunnel(
             return reader, writer
     except SocksError:
         raise
-    except (OSError, TimeoutError) as e:
+    except TimeoutError as e:
         raise SocksError(DETAIL_PROXY_UNREACHABLE) from e
-    except (asyncio.IncompleteReadError, UnicodeError, ValueError) as e:
+    except OSError as e:
+        raise SocksError(DETAIL_PROXY_UNREACHABLE, dropped=True) from e
+    except asyncio.IncompleteReadError as e:
+        raise SocksError(DETAIL_PROXY_PROTOCOL_ERROR, dropped=True) from e
+    except (UnicodeError, ValueError) as e:
         raise SocksError(DETAIL_PROXY_PROTOCOL_ERROR) from e
 
 
@@ -258,6 +295,7 @@ class SocksRelay:
         self._tasks: set[asyncio.Task[None]] = set()
         self._url: str | None = None
         self._closing = False
+        self.upstream_failure: str | None = None
 
     def __repr__(self) -> str:
         return "SocksRelay(<masked>)"
@@ -360,6 +398,7 @@ class SocksRelay:
         try:
             up_reader, up_writer = await _open_tunnel(self._proxy, host, port)
         except SocksError as e:
+            self.upstream_failure = e.detail
             logger.warning(f"Ozon proxy relay: upstream refused: {e.detail}")
             await self._reply(writer, "502 Bad Gateway")
             return

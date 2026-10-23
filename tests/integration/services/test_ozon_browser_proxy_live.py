@@ -272,3 +272,42 @@ async def test_launch_failure_with_a_proxy_is_launch_failed_and_closes_the_relay
     assert caught.value.stage is OzonAccessStage.launch_failed
     assert len(seen_relay) == 1
     await _assert_refused(seen_relay[0])
+
+
+@pytest.mark.asyncio
+async def test_browser_failure_after_a_proxy_refusal_is_proxy_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = install(
+        monkeypatch,
+        _Fake(
+            goto_raises=PlaywrightError("Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED")
+        ),
+    )
+    with SocksStub() as stub:
+        original = fake.chromium.launch
+
+        async def launch(**kwargs: Any) -> Any:
+            # The pre-check has passed; now the proxy refuses the browser's tunnel.
+            stub.mode = "reject_connect"
+            server = urlsplit(kwargs["proxy"]["server"])
+            assert server.hostname is not None
+            assert server.port is not None
+            reader, writer = await asyncio.open_connection(server.hostname, server.port)
+            writer.write(b"CONNECT shop.example.test:443 HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            await asyncio.wait_for(reader.read(), _FUSE)
+            writer.close()
+            return await original(**kwargs)
+
+        fake.chromium.launch = launch  # type: ignore[method-assign]
+
+        with pytest.raises(OzonAccessFetchError) as caught:
+            await asyncio.wait_for(
+                fetch_ozon_access(sandbox=True, home_url=_HOME, proxy=_proxy(stub)),
+                _FUSE,
+            )
+
+    assert caught.value.stage is OzonAccessStage.proxy_failed
+    assert caught.value.detail == "proxy_connect_rejected"
+    assert isinstance(caught.value.__cause__, PlaywrightError)

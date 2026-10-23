@@ -23,10 +23,11 @@ With a proxy (`PROJECT.md` section 2.14, O10, R2/R3) the proxy is first
 pre-checked (handshake, authorisation, `CONNECT` to the host of `home_url`
 through it): a refusal is `proxy_failed` and Chromium is not started. Then the
 browser goes through a local `SocksRelay` that lives exactly as long as the
-browser. A proxy failing after the pre-check is not translated into
-`proxy_failed` (named limit of the scheme): a refusal on the navigation is
-`launch_failed`, a later one ends as `challenge_timeout`. Without a proxy the
-path is unchanged: no relay, no pre-check.
+browser. A Playwright failure while the relay has seen an upstream refusal is
+`proxy_failed` with the relay's detail (the proxy dropped the browser, not
+Ozon); a refusal that does not break the browser still ends as
+`challenge_timeout`. Without a proxy the path is unchanged: no relay, no
+pre-check.
 """
 
 import asyncio
@@ -79,7 +80,8 @@ async def fetch_ozon_access(
     browser). A Playwright failure becomes
     `OzonAccessFetchError(launch_failed, <detail constant or class name>)`,
     chained to the original; the exception text is never copied. With a
-    `proxy`, a refusal of the pre-check is
+    `proxy`, a refusal of the pre-check, or a Playwright failure after the
+    relay saw an upstream refusal, is
     `OzonAccessFetchError(proxy_failed, <DETAIL_PROXY_* constant>)`.
     """
     try:
@@ -92,12 +94,19 @@ async def fetch_ozon_access(
         except SocksError as e:
             raise OzonAccessFetchError(OzonAccessStage.proxy_failed, e.detail) from e
         async with SocksRelay(proxy) as relay:
-            return await _fetch_access(
-                sandbox=sandbox,
-                home_url=home_url,
-                cookie_domain=cookie_domain,
-                proxy_url=relay.url,
-            )
+            try:
+                return await _fetch_access(
+                    sandbox=sandbox,
+                    home_url=home_url,
+                    cookie_domain=cookie_domain,
+                    proxy_url=relay.url,
+                )
+            except PlaywrightError as e:
+                if relay.upstream_failure is None:
+                    raise
+                raise OzonAccessFetchError(
+                    OzonAccessStage.proxy_failed, relay.upstream_failure
+                ) from e
     except PlaywrightError as e:
         raise OzonAccessFetchError(
             OzonAccessStage.launch_failed, classify_failure(e)
