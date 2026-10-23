@@ -102,7 +102,7 @@ uv run pytest --cov=app --cov-report=term-missing
 
 Стек в `docker-compose.yml`: PostgreSQL, Redis, одноразовый сервис `migrate` и бот `app`. Данные PostgreSQL и Redis лежат в именованных томах. Ни один сервис не публикует порт наружу. Пределы памяти и CPU, время на остановку и остальные числа заданы в `docker-compose.yml` вместе с обоснованием в комментариях.
 
-**Запуск и обновление — только `make docker-up`.** Цель собирает образ, останавливает `app` и поднимает стек. `app` и `migrate` лежат под профилем compose `price-alert-bot`: голые `docker compose up -d`, `stop`, `restart` трогают только PostgreSQL и Redis, бот поднимается только через `make` (или с `--profile price-alert-bot`). Остановка — `make docker-down`, журналы — `make docker-logs`, перезапуск — `make docker-restart`.
+**Запуск и обновление — только `make docker-up`.** Цель собирает образ, останавливает `app` и поднимает стек. Все сервисы стека лежат под профилем compose `price-alert-bot`: голые `docker compose up -d`, `stop`, `restart`, `down` его не трогают, стек управляется только через `make` (или с `--profile price-alert-bot`). Остановка — `make docker-down`, журналы — `make docker-logs`, перезапуск — `make docker-restart`.
 
 **Первый запуск:**
 
