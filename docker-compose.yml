@@ -1,7 +1,7 @@
 # Production-like stack: PostgreSQL + Redis + one-shot migrations + the bot.
 #
-# app and migrate are under the profile `price-alert-bot`: a bare `docker compose`
-# command touches only postgres and redis. Start and update the bot ONLY with
+# Every service is under the profile `price-alert-bot`: a bare `docker compose`
+# command touches nothing of this stack. Start and update it ONLY with
 # `make docker-up` (build -> stop app -> up -d, with the profile): migrations must
 # not run under a live bot.
 #
@@ -38,6 +38,7 @@ x-logging: &default-logging
 services:
   postgres:
     image: postgres:17.6-alpine
+    profiles: ["price-alert-bot"]
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB__USER:?DB__USER is required in the environment file}
@@ -58,6 +59,7 @@ services:
 
   redis:
     image: redis:7.4.11-alpine
+    profiles: ["price-alert-bot"]
     restart: unless-stopped
     volumes:
       # Default RDB snapshots land in /data: FSM states survive down/up.
