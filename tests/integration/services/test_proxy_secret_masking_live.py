@@ -123,7 +123,8 @@ async def test_session_refused_by_the_proxy_leaves_no_marker_in_the_journal(
             await session.aclose()
 
     assert type(caught.value).__name__ == "ProxyError"  # positive control
-    assert [c.username for c in stub.connections] == [_LOGIN]  # it was really sent
+    # It was really sent, twice: a `ProxyError` is sent once more by the session.
+    assert [c.username for c in stub.connections] == [_LOGIN, _LOGIN]
     _assert_clean("".join(journal))
     _assert_clean(repr(session))
 

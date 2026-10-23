@@ -16,6 +16,9 @@ Modes (`SocksStub(mode=...)`):
 - malformed answers: `bad_version`, `bad_method`, `bad_auth_version`,
   `bad_connect_version`, `bad_atyp`;
 - `reset_after_reply`: answer `CONNECT`, then reset the connection.
+
+`drop_first=N` resets the first N connections right after the greeting,
+whatever the mode (a proxy dropping tunnels at random).
 """
 
 from __future__ import annotations
@@ -90,8 +93,10 @@ class SocksStub:
         default_target: int | None = None,
         username: str = USERNAME,
         password: str = PASSWORD,
+        drop_first: int = 0,
     ) -> None:
         self.mode = mode
+        self.drop_first = drop_first
         self.username = username
         self.password = password
         self.require_auth = require_auth
@@ -161,6 +166,14 @@ class SocksStub:
             rec.closed.set()
 
     def _dialogue(self, conn: socket.socket, rec: SocksConnection) -> None:
+        with self._lock:
+            index = self.connections.index(rec)
+        if index < self.drop_first:
+            conn.recv(_CHUNK)
+            conn.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            return
         mode = self.mode
         if mode == "close":
             # Read the greeting first: closing with unread data would be a reset.
