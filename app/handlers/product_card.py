@@ -46,5 +46,6 @@ def card_screen(
         [(alert.direction, alert.target_price) for alert in card.alerts],
         price_label,
         initial_line=initial_line,
+        card_price=product.card_price,
     )
     return text, product_card_keyboard(product.id, card.alerts, card.list_page)

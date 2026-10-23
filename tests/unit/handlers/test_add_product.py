@@ -286,6 +286,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
         "article": 12345678,
         "product_name": _NAME,
         "current_price": _PRICE,
+        "card_price": None,
         "link_message_id": 77,  # PAB-091 marker: the id of the link message
     }
 
@@ -330,6 +331,7 @@ async def _at_waiting_price(dialog: _Dialog) -> None:
             "article": 12345678,
             "product_name": _NAME,
             "current_price": _PRICE,
+            "card_price": None,
         },
     )
 
@@ -1250,6 +1252,7 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
         "article": 22222222,
         "product_name": _NAME_B,
         "current_price": 222,
+        "card_price": None,
         "link_message_id": _MSG_B,
     }
     card = [(e.message_id, e.text) for e in dialog.edits if _NAME_B in e.text]
@@ -1677,3 +1680,39 @@ async def test_confirm_passes_a_valid_aware_stamp_from_the_draft_unchanged(
     await dialog.press(CB_ADD_CONFIRM)
 
     assert stub.add_fetched_at == [datetime(2026, 10, 21, 11, 5, tzinfo=UTC)]
+
+
+@pytest.mark.asyncio
+async def test_card_price_is_shown_kept_in_the_draft_and_passed_to_add_tracking(
+    dialog: _Dialog, stub: _TrackingStub
+) -> None:
+    stub.preview_result = MarketplaceProductData(
+        name=_NAME, price=_PRICE, card_price=189_000
+    )
+    card_label = f"(по карте Ozon: 1{_NBSP}890{_NBSP}₽)"
+    await dialog.command("add")
+
+    await dialog.say(_WB_LINK, message_id=77)
+    assert f"1{_NBSP}990{_NBSP}₽ {card_label}" in dialog.outcome.text
+    assert (await dialog.data())["card_price"] == 189_000
+
+    await dialog.say("1500")
+    assert card_label in dialog.last_text
+
+    confirm_id = (await dialog.data())["confirm_message_id"]
+    await dialog.press(CB_ADD_CONFIRM, message_id=confirm_id)
+    assert stub.add_card_prices == [189_000]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [True, 0, -5, "189000", 1.5])
+async def test_broken_card_price_in_the_draft_reaches_add_tracking_as_none(
+    dialog: _Dialog, stub: _TrackingStub, raw: object
+) -> None:
+    await dialog.set_state(
+        AddProduct.confirming.state, {**_CONFIRMING_DATA, "card_price": raw}
+    )
+
+    await dialog.press(CB_ADD_CONFIRM)
+
+    assert stub.add_card_prices == [None]

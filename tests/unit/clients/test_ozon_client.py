@@ -52,6 +52,7 @@ from tests.unit.ozon_stubs import make_access
 _ARTICLE = 3593896354
 _NAME = "Лонгслив тельняшка длинный рукав 1 шт"
 _PRICE_KOPECKS = 49500
+_CARD_PRICE_KOPECKS = 47100
 _FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent.parent
     / "fixtures"
@@ -178,11 +179,13 @@ def _failure(reason: FetchFailureReason, detail: str) -> MarketplaceFetchFailure
 async def test_success_on_fixture_returns_name_and_price_without_card(
     fixture_bytes: bytes,
 ) -> None:
-    """Page prices: 495 (no Ozon card), 471 (card), 1 742 (crossed out). Only
-    495 is tracked; `cardPrice` instead of `price` would give 47100."""
+    """Page prices: 495 (no Ozon card), 471 (card), 1 742 (crossed out). 495
+    is tracked, 471 goes along as `card_price`; the crossed-out one is unread."""
     run = await _run(_ok(fixture_bytes))
 
-    assert run.result == MarketplaceProductData(name=_NAME, price=_PRICE_KOPECKS)
+    assert run.result == MarketplaceProductData(
+        name=_NAME, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
+    )
     assert run.records == []
     assert len(run.session.requests) == 1
     assert run.access.invalidated == []
@@ -301,7 +304,9 @@ async def test_refusal_then_200_returns_data_with_the_new_access(
     issues access 2 after `invalidate`), the first one those of access 1."""
     run = await _run(_status_only(first), _ok(fixture_bytes))
 
-    assert run.result == MarketplaceProductData(name=_NAME, price=_PRICE_KOPECKS)
+    assert run.result == MarketplaceProductData(
+        name=_NAME, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
+    )
     assert [r[2] for r in run.session.requests] == [make_access(1), make_access(2)]
     assert run.access.invalidated == [make_access(1)]
     assert run.access.get_calls == 2
@@ -561,7 +566,9 @@ async def test_title_length_boundary_2_to_150(title: str, ok: bool) -> None:
     result, _ = await _fetch(_ok(_with_title(title)))
 
     if ok:
-        assert result == MarketplaceProductData(name=title, price=_PRICE_KOPECKS)
+        assert result == MarketplaceProductData(
+            name=title, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
+        )
     else:
         assert isinstance(result, MarketplaceFetchFailure)
         assert result.reason is FetchFailureReason.bad_payload
@@ -573,7 +580,9 @@ async def test_price_at_int32_limit_is_accepted() -> None:
     under 2 147 483 647 kopecks."""
     result, _ = await _fetch(_ok(_with_price(f"21{_T}474{_T}836{_T}{_RUB}")))
 
-    assert result == MarketplaceProductData(name=_NAME, price=2_147_483_600)
+    assert result == MarketplaceProductData(
+        name=_NAME, price=2_147_483_600, card_price=_CARD_PRICE_KOPECKS
+    )
 
 
 @pytest.mark.asyncio
@@ -586,7 +595,9 @@ async def test_unknown_extra_widgets_and_keys_do_not_break_parsing() -> None:
 
     result, _ = await _fetch(_ok(_body(edit)))
 
-    assert result == MarketplaceProductData(name=_NAME, price=_PRICE_KOPECKS)
+    assert result == MarketplaceProductData(
+        name=_NAME, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
+    )
 
 
 @pytest.mark.asyncio

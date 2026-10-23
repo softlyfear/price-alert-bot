@@ -48,6 +48,10 @@ class Product(Base, TimestampMixin):
             "initial_price >= 0", name="ck_products_initial_price_non_negative"
         )
     )
+    # Price with the marketplace card (Ozon), for display only; None if unknown.
+    card_price: Mapped[int | None] = mapped_column(
+        CheckConstraint("card_price >= 0", name="ck_products_card_price_non_negative")
+    )
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     price_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -50,6 +50,14 @@ def rubles_to_kopecks(text: str) -> int:
     return kopecks
 
 
+def format_price_with_card(price: int, card_price: int | None) -> str:
+    """`format_price(price)`, plus `(по карте Ozon: ...)` when the card is cheaper."""
+    text = format_price(price)
+    if card_price is not None and card_price < price:
+        text = f"{text} (по карте Ozon: {format_price(card_price)})"
+    return text
+
+
 def format_price(kopecks: int) -> str:
     """Format kopecks as `1 990 ₽` / `1 990,50 ₽` with U+00A0 separators."""
     if kopecks < 0:

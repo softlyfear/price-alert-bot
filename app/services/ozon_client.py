@@ -19,6 +19,7 @@ Policy decisions that live here, not in the schema:
   `out_of_stock` (follow-up: PAB-075). `not_found` only for HTTP 404.
 - The tracked price is `webPrice.price`, without the Ozon card (`PROJECT.md`
   section 2.9): the site may show the user a lower price than the bot.
+  `webPrice.cardPrice` goes along as `card_price`, for display only.
 
 Access (`PROJECT.md` section 2.14): Ozon answers only a request that carries
 the cookies of a passed anti-bot check and the UA of the browser that passed
@@ -430,7 +431,9 @@ class OzonClient(BaseMarketplaceClient):
                 )
 
             heading = OzonProductHeadingState.model_validate_json(heading_raw)
-            return MarketplaceProductData(name=heading.title, price=price.price)
+            return MarketplaceProductData(
+                name=heading.title, price=price.price, card_price=price.card_price
+            )
         except ValidationError as e:
             # A closed, named exception set: the `model_validate_json` calls
             # and `MarketplaceProductData(...)` are the only calls here that

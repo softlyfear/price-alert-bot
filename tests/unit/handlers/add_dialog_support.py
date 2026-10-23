@@ -69,6 +69,7 @@ class _TrackingStub:
         self.preview_calls: list[tuple[int, Marketplace, int]] = []
         self.add_calls: list[tuple[Any, ...]] = []
         self.add_fetched_at: list[datetime | None] = []
+        self.add_card_prices: list[int | None] = []
         self.preview_result: Any = MarketplaceProductData(name=_NAME, price=_PRICE)
         self.preview_error: Exception | None = None
         self.add_error: Exception | None = None
@@ -111,10 +112,14 @@ class _TrackingStub:
         return self.preview_result
 
     async def add_tracking(
-        self, *args: Any, price_fetched_at: datetime | None
+        self,
+        *args: Any,
+        price_fetched_at: datetime | None,
+        card_price: int | None = None,
     ) -> Alert:
         self.add_calls.append(args)
         self.add_fetched_at.append(price_fetched_at)
+        self.add_card_prices.append(card_price)
         if self.add_error is not None:
             raise self.add_error
         return Alert(

@@ -454,3 +454,18 @@ def test_batch_size_asks_the_factory_with_the_marketplace_and_shared_http_client
 
     assert service.batch_size(Marketplace.wb) == 37
     assert calls == [(Marketplace.wb, http)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("card_price", [95_000, None])
+async def test_apply_result_stores_the_fresh_card_price(card_price: int | None) -> None:
+    product = _make_product(current_price=123_456)
+    product.card_price = 1
+    data = MarketplaceProductData(name="Товар", price=100_000, card_price=card_price)
+    harness = _build_harness(
+        product=product, market_data=data, alerts=[], user=_make_user()
+    )
+
+    await harness.service.apply_result(1, data, _session(harness))
+
+    assert product.card_price == card_price
