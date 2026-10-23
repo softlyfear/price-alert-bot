@@ -74,8 +74,10 @@ def test_revision_follows_the_initial_price_one() -> None:
     assert revision.down_revision == PARENT_REVISION_ID
 
 
-def test_revision_is_the_single_head() -> None:
-    assert _SCRIPTS.get_heads() == [REVISION_ID]
+def test_revision_is_followed_by_the_card_price_one() -> None:
+    child = _SCRIPTS.get_revision("d3a8c61f0b27")
+    assert child is not None
+    assert child.down_revision == REVISION_ID
 
 
 @pytest.mark.asyncio

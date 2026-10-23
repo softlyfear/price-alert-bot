@@ -209,13 +209,15 @@ class TrackingService:
         target_price: int,
         *,
         price_fetched_at: datetime | None,
+        card_price: int | None = None,
     ) -> Alert:
         """Create (or reuse) the product and add an alert for it.
 
         The direction follows from the threshold versus `current_price`;
         an equal threshold raises `TargetEqualsCurrentPriceError` before
         any database access. `price_fetched_at` is the moment the price was
-        fetched (the dialog's `preview`); it is stored only for a new product.
+        fetched (the dialog's `preview`); it, like `card_price`, is stored
+        only for a new product.
         """
         direction = choose_direction(current_price, target_price)
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
@@ -232,6 +234,7 @@ class TrackingService:
                 product_name,
                 current_price,
                 price_fetched_at,
+                card_price,
             )
         return await self._create_alert(user.id, product.id, target_price, direction)
 
@@ -426,6 +429,7 @@ class TrackingService:
         product_name: str,
         current_price: int,
         price_fetched_at: datetime | None,
+        card_price: int | None,
     ) -> Product:
         try:
             async with self._session.begin_nested():
@@ -438,6 +442,7 @@ class TrackingService:
                         "current_price": current_price,
                         "initial_price": current_price,
                         "price_fetched_at": price_fetched_at,
+                        "card_price": card_price,
                     }
                 )
         except IntegrityError:

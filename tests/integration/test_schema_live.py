@@ -48,6 +48,7 @@ EXPECTED_CHECKS = {
     ("products", "ck_products_current_price_non_negative"),
     ("products", "ck_products_previous_price_non_negative"),
     ("products", "ck_products_initial_price_non_negative"),
+    ("products", "ck_products_card_price_non_negative"),
     ("alerts", "ck_alerts_target_price_non_negative"),
     ("users", "ck_users_product_limit_positive"),
 }
@@ -208,6 +209,7 @@ EXPECTED_MODEL_CHECKS = {
     ("products", "ck_products_current_price_non_negative", "current_price >= 0"),
     ("products", "ck_products_previous_price_non_negative", "previous_price >= 0"),
     ("products", "ck_products_initial_price_non_negative", "initial_price >= 0"),
+    ("products", "ck_products_card_price_non_negative", "card_price >= 0"),
     ("alerts", "ck_alerts_target_price_non_negative", "target_price >= 0"),
     ("users", "ck_users_product_limit_positive", "product_limit > 0"),
 }
@@ -303,9 +305,10 @@ async def test_downgrade_restores_old_schema_and_upgrade_reapplies_new_one(
     path_before = list(sys.path)
 
     await connection.run_sync(_run_revision, "downgrade")
-    # Only the checks of later revisions (PAB-103, PAB-105) are left.
+    # Only the checks of later revisions (PAB-103, PAB-105, card_price) are left.
     assert await _catalog_checks(db_session) == {
         ("products", "ck_products_initial_price_non_negative"),
+        ("products", "ck_products_card_price_non_negative"),
         ("users", "ck_users_product_limit_positive"),
     }
     assert await _catalog_defaults(db_session) == dict.fromkeys(

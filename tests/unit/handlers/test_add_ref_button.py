@@ -126,6 +126,7 @@ async def test_button_card_is_stored_in_fsm_with_the_pressed_message_as_marker(
         "article": 1234567,
         "product_name": _NAME,
         "current_price": _PRICE,
+        "card_price": None,
         "link_message_id": _BUTTON_ID,
     }
 
@@ -423,5 +424,6 @@ async def test_button_from_the_confirming_step_replaces_the_other_products_draft
         "article": 777,
         "product_name": _NAME,
         "current_price": _PRICE,
+        "card_price": None,
         "link_message_id": _BUTTON_ID,
     }

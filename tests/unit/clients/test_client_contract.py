@@ -218,6 +218,6 @@ async def test_ozon_batch_default_on_the_real_fixture_is_one_request_per_article
     assert len(session.requests) == 1
     assert results == {
         3593896354: MarketplaceProductData(
-            name="Лонгслив тельняшка длинный рукав 1 шт", price=49500
+            name="Лонгслив тельняшка длинный рукав 1 шт", price=49500, card_price=47100
         )
     }

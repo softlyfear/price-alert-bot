@@ -18,6 +18,7 @@ from app.domain.money import MAX_PRICE_KOPECKS
 from app.domain.money import PRICE_DISCLAIMER_FULL
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.domain.money import format_price
+from app.domain.money import format_price_with_card
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
@@ -408,23 +409,32 @@ def article_failure_text(marketplace: Marketplace, reason: FetchFailureReason) -
             assert_never(marketplace)
 
 
-def product_found_text(marketplace: Marketplace, name: str, current_price: int) -> str:
+def product_found_text(
+    marketplace: Marketplace,
+    name: str,
+    current_price: int,
+    card_price: int | None = None,
+) -> str:
     """Product card shown after a successful preview (plain text, no markup)."""
     return (
         f"Нашёл товар на {marketplace_title(marketplace)}:\n{name}\n"
-        f"Текущая цена: {format_price(current_price)}\n"
+        f"Текущая цена: {format_price_with_card(current_price, card_price)}\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n\n" + ADD_PROMPT_PRICE_TEXT
     )
 
 
 def confirm_text(
-    name: str, current_price: int, target_price: int, direction: AlertDirection
+    name: str,
+    current_price: int,
+    target_price: int,
+    direction: AlertDirection,
+    card_price: int | None = None,
 ) -> str:
     """Confirmation step text (plain text, no markup)."""
     return (
         "Проверьте и подтвердите:\n"
         f"Товар: {name}\n"
-        f"Текущая цена: {format_price(current_price)}\n"
+        f"Текущая цена: {format_price_with_card(current_price, card_price)}\n"
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}."
     )
@@ -479,6 +489,7 @@ def product_card_text(
     price_label: str | None = None,
     *,
     initial_line: str | None = None,
+    card_price: int | None = None,
 ) -> str:
     """Product card with its thresholds (plain text, no markup)."""
     when = f" (цена на {price_label})" if price_label is not None else ""
@@ -486,7 +497,7 @@ def product_card_text(
         name,
         f"Маркетплейс: {marketplace_title(marketplace)}",
         url,
-        f"Текущая цена: {format_price(current_price)}{when}",
+        f"Текущая цена: {format_price_with_card(current_price, card_price)}{when}",
     ]
     if initial_line is not None:
         lines.append(initial_line)
@@ -538,12 +549,16 @@ EDIT_UNCHANGED_TEXT: Final[str] = "Порог не изменился."
 
 
 def edit_prompt_text(
-    name: str, current_price: int, direction: AlertDirection, target_price: int
+    name: str,
+    current_price: int,
+    direction: AlertDirection,
+    target_price: int,
+    card_price: int | None = None,
 ) -> str:
     """Prompt of the threshold edit step (plain text, no markup)."""
     return (
         f"{name}\n"
-        f"Текущая цена: {format_price(current_price)}\n"
+        f"Текущая цена: {format_price_with_card(current_price, card_price)}\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n"
         f"Изменяемый порог: {direction_arrow(direction)} "
         f"{format_price(target_price)}\n\n"

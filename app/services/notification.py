@@ -14,6 +14,7 @@ from app.domain.exceptions import DomainError
 from app.domain.links import build_product_url
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.domain.money import format_price
+from app.domain.money import format_price_with_card
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.product import Product
@@ -80,7 +81,8 @@ class NotificationService:
             f"{_headline(alert.direction)}\n"
             f"Товар: {product.product_name}\n"
             f"Артикул: {product.article}\n"
-            f"Текущая цена: {format_price(product.current_price)}\n"
+            "Текущая цена: "
+            f"{format_price_with_card(product.current_price, product.card_price)}\n"
             f"{_threshold_label(alert.direction)} {format_price(alert.target_price)}\n"
             f"{PRICE_DISCLAIMER_SHORT}.\n"
             f"Ссылка: {build_product_url(product.marketplace, product.article)}"

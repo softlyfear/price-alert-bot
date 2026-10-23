@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 _FUSE = 60.0
 _ARTICLE = 3593896354
 _EXPECTED = MarketplaceProductData(
-    name="Лонгслив тельняшка длинный рукав 1 шт", price=49500
+    name="Лонгслив тельняшка длинный рукав 1 шт", price=49500, card_price=47100
 )
 
 

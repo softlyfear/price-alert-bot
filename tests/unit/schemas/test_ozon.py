@@ -371,3 +371,23 @@ def test_fixture_states_round_trip_as_json_strings(states: dict[str, str]) -> No
     """Sanity: every value is a JSON string (double encoding is the fact)."""
     for value in states.values():
         assert isinstance(json.loads(value), dict)
+
+
+def test_fixture_card_price_is_47100_kopecks(states: dict[str, str]) -> None:
+    price = OzonPriceState.model_validate_json(_state(states, "webPrice"))
+
+    assert price.card_price == 47100
+
+
+@pytest.mark.parametrize(
+    "raw", [{}, {"cardPrice": None}, {"cardPrice": "471 руб."}, {"cardPrice": 471}]
+)
+def test_absent_or_unrecognized_card_price_is_none_not_an_error(
+    raw: dict[str, Any],
+) -> None:
+    price = OzonPriceState.model_validate(
+        {"isAvailable": True, "price": "495\u2009\u20bd", **raw}
+    )
+
+    assert price.price == 49500
+    assert price.card_price is None

@@ -493,6 +493,7 @@ async def test_add_tracking_creates_new_product_then_below_alert(
             "current_price": 15_000,
             "initial_price": 15_000,
             "price_fetched_at": None,
+            "card_price": None,
         }
     )
     harness.alerts.create.assert_awaited_once_with(

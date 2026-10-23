@@ -15,9 +15,10 @@ Only the fields `OzonClient` reads are modeled:
 
 - `OzonProductHeadingState.title` - the product name.
 - `OzonPriceState.isAvailable` / `price` - availability and the price
-  without the Ozon card. `cardPrice` (a payment-condition, i.e. personal,
-  price) and `originalPrice` (crossed out) are deliberately not read
-  (`PROJECT.md` sections 2.9, 2.11).
+  without the Ozon card, the tracked one. `cardPrice` (the price paid with the
+  Ozon card) is read for display only and is tolerant: absent or in an
+  unknown form it is `None`, never a validation error. `originalPrice`
+  (crossed out) is not read.
 - `OzonDetailSkuState.copyText` - the article the page shows; the client
   compares it with the requested article.
 
@@ -79,6 +80,20 @@ def parse_rubles_to_kopecks(value: object) -> int:
 OzonPriceKopecks = Annotated[int, BeforeValidator(parse_rubles_to_kopecks)]
 
 
+def parse_optional_rubles_to_kopecks(value: object) -> int | None:
+    """`parse_rubles_to_kopecks`, but `None` for anything it rejects."""
+    try:
+        return parse_rubles_to_kopecks(value)
+    except ValueError:
+        return None
+
+
+# A display-only price: an unknown form is dropped, not a payload error.
+OzonOptionalPriceKopecks = Annotated[
+    int | None, BeforeValidator(parse_optional_rubles_to_kopecks)
+]
+
+
 class OzonProductHeadingState(BaseModel):
     """State of the `webProductHeading` widget: the product name."""
 
@@ -99,6 +114,7 @@ class OzonPriceState(BaseModel):
 
     is_available: Annotated[bool, Field(strict=True, alias="isAvailable")]
     price: OzonPriceKopecks
+    card_price: Annotated[OzonOptionalPriceKopecks, Field(alias="cardPrice")] = None
 
 
 class OzonDetailSkuState(BaseModel):
