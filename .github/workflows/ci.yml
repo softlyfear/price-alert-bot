@@ -130,7 +130,7 @@ jobs:
           ENV_FILE: ${{ runner.temp }}/compose-ci.env
         run: |
           printf '%s\n' 'DB__USER=ci' 'DB__PASSWORD=ci-password' 'DB__NAME=ci' > "$ENV_FILE"
-          docker compose --env-file "$ENV_FILE" config -q
+          docker compose --env-file "$ENV_FILE" --profile price-alert-bot config -q
 
   image:
     name: Image build and smoke checks

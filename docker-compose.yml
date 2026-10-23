@@ -1,8 +1,9 @@
 # Production-like stack: PostgreSQL + Redis + one-shot migrations + the bot.
 #
-# Start and update ONLY with `make docker-up` (build -> stop app -> up -d):
-# a bare `docker compose up -d` re-runs the finished `migrate` service on every
-# call, even while `app` is running, and migrations must not run under a live bot.
+# app and migrate are under the profile `price-alert-bot`: a bare `docker compose`
+# command touches only postgres and redis. Start and update the bot ONLY with
+# `make docker-up` (build -> stop app -> up -d, with the profile): migrations must
+# not run under a live bot.
 #
 # Environment: one file outside git, `.env` in the repo root by default,
 # another path via `make docker-up ENV_FILE=/path/to/file`. The same file is
@@ -72,6 +73,7 @@ services:
   # One-shot: brings the schema to head, then exits. app starts only after exit code 0.
   migrate:
     image: price-alert-bot
+    profiles: ["price-alert-bot"]
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     env_file: ${ENV_FILE:-.env}
@@ -93,6 +95,7 @@ services:
 
   app:
     image: price-alert-bot
+    profiles: ["price-alert-bot"]
     build:
       context: .
     restart: unless-stopped

@@ -133,7 +133,8 @@ db-downgrade:
 #   make docker-up ENV_FILE=/path/to/file
 ENV_FILE ?= .env
 export ENV_FILE
-COMPOSE := docker compose --env-file "$(ENV_FILE)"
+# The bot profile: app and migrate are skipped by compose without it.
+COMPOSE := docker compose --env-file "$(ENV_FILE)" --profile price-alert-bot
 
 # The single build path of operator and CI (PAB-086): compose, BuildKit when available.
 # Default build attestations are off: they make the image ID differ between two

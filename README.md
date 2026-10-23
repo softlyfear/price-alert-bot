@@ -102,7 +102,7 @@ uv run pytest --cov=app --cov-report=term-missing
 
 Стек в `docker-compose.yml`: PostgreSQL, Redis, одноразовый сервис `migrate` и бот `app`. Данные PostgreSQL и Redis лежат в именованных томах. Ни один сервис не публикует порт наружу. Пределы памяти и CPU, время на остановку и остальные числа заданы в `docker-compose.yml` вместе с обоснованием в комментариях.
 
-**Запуск и обновление — только `make docker-up`.** Цель собирает образ, останавливает `app` и поднимает стек. Голый `docker compose up -d` заново применит миграцию при работающем боте, а миграции схемы должны идти при остановленном `app`. Остановка — `make docker-down`, журналы — `make docker-logs`, перезапуск — `make docker-restart`.
+**Запуск и обновление — только `make docker-up`.** Цель собирает образ, останавливает `app` и поднимает стек. `app` и `migrate` лежат под профилем compose `price-alert-bot`: голые `docker compose up -d`, `stop`, `restart` трогают только PostgreSQL и Redis, бот поднимается только через `make` (или с `--profile price-alert-bot`). Остановка — `make docker-down`, журналы — `make docker-logs`, перезапуск — `make docker-restart`.
 
 **Первый запуск:**
 
@@ -138,7 +138,7 @@ uv run pytest --cov=app --cov-report=term-missing
 
 - **Quality gate:** `ruff check`, `ruff format --check`, `mypy app tests`, `lint-imports`, `pytest` с покрытием `app` и порогом 100. В job есть сервис PostgreSQL (передаётся через `TEST_DATABASE_URL`) и установленный Chromium.
 - **Проверка почт ИИ-ассистентов** в истории коммитов (`scripts/check-ai-email`).
-- **Скрипты и compose:** `shellcheck --severity=warning scripts/*` и `docker compose config -q` на фиктивных значениях.
+- **Скрипты и compose:** `shellcheck --severity=warning scripts/*` и `docker compose --profile price-alert-bot config -q` на фиктивных значениях.
 - **Образ:** `make docker-build` дважды (пересборка без изменений не меняет ID образа и не оставляет безымянных образов) и дымовые проверки `scripts/smoke-image price-alert-bot`.
 
 Порог покрытия 100 задан только в шаге CI. Без PostgreSQL (нет ни `TEST_DATABASE_URL`, ни Docker) интеграционные тесты БД пропускаются, и шаг краснеет по покрытию; без Chromium падают тесты браузера. В обоих случаях лечится окружением, а не порогом. Локальный прогон `make test-cov` порогом не краснеет.
