@@ -208,7 +208,7 @@ def _ozon_fixture() -> bytes:
 async def test_ozon_batch_default_on_the_real_fixture_is_one_request_per_article() -> (
     None
 ):
-    """PAB-081 AC1: the real capture (page price 495 rub, no Ozon card) through the
+    """PAB-081 AC1: the real capture (page price 471 rub with the Ozon card) through the
     inherited default; the repeated article is requested once."""
     session = FakeOzonSession(OzonReply(200, _ozon_fixture()))
     client: BaseMarketplaceClient = OzonClient(session, StubOzonAccess())
@@ -218,6 +218,6 @@ async def test_ozon_batch_default_on_the_real_fixture_is_one_request_per_article
     assert len(session.requests) == 1
     assert results == {
         3593896354: MarketplaceProductData(
-            name="Лонгслив тельняшка длинный рукав 1 шт", price=49500, card_price=47100
+            name="Лонгслив тельняшка длинный рукав 1 шт", price=47100
         )
     }

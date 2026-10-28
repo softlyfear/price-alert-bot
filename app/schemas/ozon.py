@@ -14,11 +14,10 @@ the strings inside it (`Model.model_validate_json(state_string)`).
 Only the fields `OzonClient` reads are modeled:
 
 - `OzonProductHeadingState.title` - the product name.
-- `OzonPriceState.isAvailable` / `price` - availability and the price
-  without the Ozon card, the tracked one. `cardPrice` (the price paid with the
-  Ozon card) is read for display only and is tolerant: absent or in an
-  unknown form it is `None`, never a validation error. `originalPrice`
-  (crossed out) is not read.
+- `OzonPriceState.isAvailable` / `price` / `cardPrice` - availability, the
+  price without the Ozon card and the price with it. `cardPrice` is tolerant:
+  absent or in an unknown form it is `None`, never a validation error; the
+  client then falls back to `price`. `originalPrice` (crossed out) is not read.
 - `OzonDetailSkuState.copyText` - the article the page shows; the client
   compares it with the requested article.
 
@@ -105,7 +104,8 @@ class OzonProductHeadingState(BaseModel):
 class OzonPriceState(BaseModel):
     """State of the `webPrice` widget.
 
-    `price` is the price without the Ozon card, in kopecks after validation.
+    `price` / `card_price` are the prices without / with the Ozon card, in
+    kopecks after validation.
     `isAvailable` is a strict `bool`: `false` was never observed, so what it
     means is a client policy decision.
     """

@@ -38,7 +38,7 @@ from tests.unit.ozon_stubs import StubOzonAccess
 _FUSE = 30.0
 _ARTICLE = 3593896354
 _EXPECTED = MarketplaceProductData(
-    name="Лонгслив тельняшка длинный рукав 1 шт", price=49500, card_price=47100
+    name="Лонгслив тельняшка длинный рукав 1 шт", price=47100
 )
 _BODY = f"/body?size={len(FIXTURE.read_bytes()) + 10}"
 

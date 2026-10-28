@@ -16,15 +16,10 @@ _MAX_PRICE_KOPECKS = 2_147_483_647
 
 
 class MarketplaceProductData(BaseModel):
-    """Base marketplace validation schema. Prices are in kopecks.
-
-    `card_price` is the price with the marketplace card (Ozon), shown next to
-    `price` for reference only; thresholds compare `price`.
-    """
+    """Base marketplace validation schema. `price` is in kopecks."""
 
     name: Annotated[str, Field(min_length=2, max_length=150)]
     price: Annotated[int, Field(gt=0, le=_MAX_PRICE_KOPECKS)]
-    card_price: Annotated[int | None, Field(gt=0, le=_MAX_PRICE_KOPECKS)] = None
 
     model_config = {
         "extra": "forbid",

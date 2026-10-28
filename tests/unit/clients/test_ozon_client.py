@@ -161,6 +161,13 @@ def _with_price(text: Any) -> bytes:
     return _body(edit)
 
 
+def _with_card_price(text: Any) -> bytes:
+    def edit(d: dict[str, Any]) -> None:
+        d[_PRICE_KEY]["cardPrice"] = text
+
+    return _body(edit)
+
+
 def _with_title(text: Any) -> bytes:
     def edit(d: dict[str, Any]) -> None:
         d[_HEADING_KEY]["title"] = text
@@ -176,16 +183,14 @@ def _failure(reason: FetchFailureReason, detail: str) -> MarketplaceFetchFailure
 
 
 @pytest.mark.asyncio
-async def test_success_on_fixture_returns_name_and_price_without_card(
+async def test_success_on_fixture_returns_name_and_the_card_price(
     fixture_bytes: bytes,
 ) -> None:
-    """Page prices: 495 (no Ozon card), 471 (card), 1 742 (crossed out). 495
-    is tracked, 471 goes along as `card_price`; the crossed-out one is unread."""
+    """Page prices: 495 (no Ozon card), 471 (card), 1 742 (crossed out). Only
+    471 is tracked; `price` instead of `cardPrice` would give 49500."""
     run = await _run(_ok(fixture_bytes))
 
-    assert run.result == MarketplaceProductData(
-        name=_NAME, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
-    )
+    assert run.result == MarketplaceProductData(name=_NAME, price=_CARD_PRICE_KOPECKS)
     assert run.records == []
     assert len(run.session.requests) == 1
     assert run.access.invalidated == []
@@ -304,9 +309,7 @@ async def test_refusal_then_200_returns_data_with_the_new_access(
     issues access 2 after `invalidate`), the first one those of access 1."""
     run = await _run(_status_only(first), _ok(fixture_bytes))
 
-    assert run.result == MarketplaceProductData(
-        name=_NAME, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
-    )
+    assert run.result == MarketplaceProductData(name=_NAME, price=_CARD_PRICE_KOPECKS)
     assert [r[2] for r in run.session.requests] == [make_access(1), make_access(2)]
     assert run.access.invalidated == [make_access(1)]
     assert run.access.get_calls == 2
@@ -522,7 +525,11 @@ _BAD_PAYLOAD_CELLS: list[tuple[str, bytes, str]] = [
     ("price-unparseable", _with_price("по запросу"), _VALIDATION),
     ("price-zero", _with_price(f"0{_T}{_RUB}"), _VALIDATION),
     ("price-number", _with_price(495), _VALIDATION),
-    ("price-over-int32", _with_price(f"21{_T}474{_T}837{_T}{_RUB}"), _VALIDATION),
+    (
+        "card-price-over-int32",
+        _with_card_price(f"21{_T}474{_T}837{_T}{_RUB}"),
+        _VALIDATION,
+    ),
     ("title-151-chars", _with_title("т" * 151), _VALIDATION),
     ("title-1-char", _with_title("т"), _VALIDATION),
     ("title-empty", _with_title(""), _VALIDATION),
@@ -566,9 +573,7 @@ async def test_title_length_boundary_2_to_150(title: str, ok: bool) -> None:
     result, _ = await _fetch(_ok(_with_title(title)))
 
     if ok:
-        assert result == MarketplaceProductData(
-            name=title, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
-        )
+        assert result == MarketplaceProductData(name=title, price=_CARD_PRICE_KOPECKS)
     else:
         assert isinstance(result, MarketplaceFetchFailure)
         assert result.reason is FetchFailureReason.bad_payload
@@ -578,11 +583,30 @@ async def test_title_length_boundary_2_to_150(title: str, ok: bool) -> None:
 async def test_price_at_int32_limit_is_accepted() -> None:
     """21 474 836 rubles = 2 147 483 600 kopecks, the largest ruble amount
     under 2 147 483 647 kopecks."""
-    result, _ = await _fetch(_ok(_with_price(f"21{_T}474{_T}836{_T}{_RUB}")))
 
-    assert result == MarketplaceProductData(
-        name=_NAME, price=2_147_483_600, card_price=_CARD_PRICE_KOPECKS
-    )
+    def edit(d: dict[str, Any]) -> None:
+        d[_PRICE_KEY]["price"] = f"21{_T}474{_T}836{_T}{_RUB}"
+        del d[_PRICE_KEY]["cardPrice"]
+
+    result, _ = await _fetch(_ok(_body(edit)))
+
+    assert result == MarketplaceProductData(name=_NAME, price=2_147_483_600)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("card_price", [None, "по запросу"], ids=["absent", "bad"])
+async def test_without_a_usable_card_price_the_regular_price_is_tracked(
+    card_price: str | None,
+) -> None:
+    def edit(d: dict[str, Any]) -> None:
+        if card_price is None:
+            del d[_PRICE_KEY]["cardPrice"]
+        else:
+            d[_PRICE_KEY]["cardPrice"] = card_price
+
+    result, _ = await _fetch(_ok(_body(edit)))
+
+    assert result == MarketplaceProductData(name=_NAME, price=_PRICE_KOPECKS)
 
 
 @pytest.mark.asyncio
@@ -595,9 +619,7 @@ async def test_unknown_extra_widgets_and_keys_do_not_break_parsing() -> None:
 
     result, _ = await _fetch(_ok(_body(edit)))
 
-    assert result == MarketplaceProductData(
-        name=_NAME, price=_PRICE_KOPECKS, card_price=_CARD_PRICE_KOPECKS
-    )
+    assert result == MarketplaceProductData(name=_NAME, price=_CARD_PRICE_KOPECKS)
 
 
 @pytest.mark.asyncio
