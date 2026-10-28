@@ -364,19 +364,3 @@ async def test_send_alert_factory_failure_is_a_delivery_error_without_mark() -> 
 
     assert _sent(bot) == []
     assert alert.triggered_at is None
-
-
-@pytest.mark.asyncio
-async def test_send_alert_shows_a_cheaper_card_price_in_brackets() -> None:
-    bot = build_fake_bot(responder=send_message_responder())
-    product = _product(Marketplace.ozon)
-    product.card_price = 135900
-
-    await NotificationService(bot, alert_keyboard=_keyboard).send_alert(
-        _alert(AlertDirection.below), product, _user()
-    )
-
-    assert (
-        "Текущая цена: 1\xa0429\xa0₽ (по карте Ozon: 1\xa0359\xa0₽)\n"
-        in _sent(bot)[0].text
-    )

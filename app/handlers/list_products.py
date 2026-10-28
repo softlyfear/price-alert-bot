@@ -318,7 +318,6 @@ def create_router() -> Router:
                 card.product.current_price,
                 alert.direction,
                 alert.target_price,
-                card.product.card_price,
             ),
             reply_markup=edit_cancel_keyboard(card.product.id),
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,
@@ -360,15 +359,11 @@ def create_router() -> Router:
             product.product_name,
             product.current_price,
             price_fetched_at=product.price_fetched_at,
-            card_price=product.card_price,
         )
         await edit_callback_message(
             callback,
             texts.product_found_text(
-                product.marketplace,
-                product.product_name,
-                product.current_price,
-                product.card_price,
+                product.marketplace, product.product_name, product.current_price
             ),
             reply_markup=cancel_keyboard(),
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,

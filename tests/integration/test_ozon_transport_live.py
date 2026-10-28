@@ -249,7 +249,7 @@ async def test_body_of_exactly_the_cap_still_parses(
         result = await _client_fetch(monkeypatch, stub, f"/body?size={_CAP}")
 
     assert result == MarketplaceProductData(
-        name="Лонгслив тельняшка длинный рукав 1 шт", price=49500, card_price=47100
+        name="Лонгслив тельняшка длинный рукав 1 шт", price=47100
     )
 
 

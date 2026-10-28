@@ -32,7 +32,6 @@ class ProductRepository(
             "previous_price",
             "price_fetched_at",
             "initial_price",
-            "card_price",
         }
 
     @property
@@ -62,7 +61,6 @@ class ProductRepository(
             "current_price",
             "previous_price",
             "last_checked_at",
-            "card_price",
         }
 
     async def get_by_user_id(self, user_id: int) -> list[Product]:

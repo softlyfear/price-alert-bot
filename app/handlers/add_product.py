@@ -80,7 +80,6 @@ _KEY_MARKETPLACE = "marketplace"
 _KEY_ARTICLE = "article"
 _KEY_NAME = "product_name"
 _KEY_CURRENT_PRICE = "current_price"
-_KEY_CARD_PRICE = "card_price"
 _KEY_TARGET_PRICE = "target_price"
 _KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
 _KEY_LINK_MESSAGE_ID = "link_message_id"
@@ -237,13 +236,6 @@ def _parse_fetched_at(raw: object) -> datetime | None:
     return value
 
 
-def _card_price(raw: object) -> int | None:
-    """The draft's card price; anything but a positive int is None."""
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
-        return raw
-    return None
-
-
 async def enter_price_step(
     state: FSMContext,
     marketplace: Marketplace,
@@ -252,12 +244,11 @@ async def enter_price_step(
     price: int,
     *,
     price_fetched_at: datetime | None,
-    card_price: int | None = None,
 ) -> None:
     """Move the dialog to the threshold step with the product draft in FSM.
 
-    The timestamp and card price keys are always written (None included) so
-    a previous draft's value never leaks into this product.
+    The timestamp key is always written (ISO string or None) so a previous
+    draft's value never leaks into this product.
     """
     await state.update_data(
         {
@@ -265,7 +256,6 @@ async def enter_price_step(
             _KEY_ARTICLE: article,
             _KEY_NAME: name,
             _KEY_CURRENT_PRICE: price,
-            _KEY_CARD_PRICE: card_price,
             _KEY_PRICE_FETCHED_AT: (
                 price_fetched_at.isoformat() if price_fetched_at is not None else None
             ),
@@ -444,14 +434,11 @@ async def _check_and_deliver(
         result.name,
         result.price,
         price_fetched_at=fetched_at,
-        card_price=result.card_price,
     )
     await _deliver_outcome(
         anchor,
         notice,
-        texts.product_found_text(
-            marketplace, result.name, result.price, result.card_price
-        ),
+        texts.product_found_text(marketplace, result.name, result.price),
         reply_markup=cancel_keyboard(),
         parse_mode=None,
     )
@@ -660,13 +647,7 @@ def create_router() -> Router:
         await state.update_data({_KEY_TARGET_PRICE: target_price})
         await state.set_state(AddProduct.confirming)
         card = await message.answer(
-            texts.confirm_text(
-                name,
-                current_price,
-                target_price,
-                direction,
-                _card_price(data.get(_KEY_CARD_PRICE)),
-            ),
+            texts.confirm_text(name, current_price, target_price, direction),
             reply_markup=confirm_keyboard(),
             parse_mode=None,
         )
@@ -740,7 +721,6 @@ def create_router() -> Router:
                 current_price,
                 target_price,
                 price_fetched_at=_parse_fetched_at(data.get(_KEY_PRICE_FETCHED_AT)),
-                card_price=_card_price(data.get(_KEY_CARD_PRICE)),
             )
         except ProductLimitExceededError as exc:
             await _finish(callback, state, texts.limit_exceeded_text(exc.limit))

@@ -152,7 +152,6 @@ class PriceService:
 
         product.previous_price = previous_price
         product.current_price = current_price
-        product.card_price = market_data.card_price
         product.last_checked_at = now_utc
         product.price_fetched_at = now_utc
 

@@ -17,9 +17,9 @@ Policy decisions that live here, not in the schema:
   otherwise the price could belong to another SKU (`bad_payload`).
 - `isAvailable: false` was never observed, so it is `bad_payload`, not
   `out_of_stock` (follow-up: PAB-075). `not_found` only for HTTP 404.
-- The tracked price is `webPrice.price`, without the Ozon card (`PROJECT.md`
-  section 2.9): the site may show the user a lower price than the bot.
-  `webPrice.cardPrice` goes along as `card_price`, for display only.
+- The tracked price is `webPrice.cardPrice`, the price with the Ozon card
+  (customer decision 2026-10-28); `webPrice.price` only when the card price
+  is absent or unparsable.
 
 Access (`PROJECT.md` section 2.14): Ozon answers only a request that carries
 the cookies of a passed anti-bot check and the UA of the browser that passed
@@ -431,9 +431,8 @@ class OzonClient(BaseMarketplaceClient):
                 )
 
             heading = OzonProductHeadingState.model_validate_json(heading_raw)
-            return MarketplaceProductData(
-                name=heading.title, price=price.price, card_price=price.card_price
-            )
+            tracked = price.card_price if price.card_price is not None else price.price
+            return MarketplaceProductData(name=heading.title, price=tracked)
         except ValidationError as e:
             # A closed, named exception set: the `model_validate_json` calls
             # and `MarketplaceProductData(...)` are the only calls here that

@@ -220,6 +220,21 @@ def test_product_card_names_the_marketplace_it_came_from(
     assert other not in text.split("\n\n")[0]
 
 
+@pytest.mark.parametrize(
+    ("marketplace", "price_line"),
+    [
+        (Marketplace.wb, "Текущая цена: 1\u00a0990\u00a0₽"),
+        (Marketplace.ozon, "Текущая цена по карте Ozon: 1\u00a0990\u00a0₽"),
+    ],
+)
+def test_product_card_says_the_ozon_price_is_the_card_one(
+    marketplace: Marketplace, price_line: str
+) -> None:
+    text = texts.product_found_text(marketplace, "Item", 199_000)
+
+    assert text.split("\n")[2] == price_line
+
+
 def test_bare_article_hints_say_wildberries_first_then_ozon() -> None:
     for text in (
         texts.ADD_PROMPT_LINK_TEXT,

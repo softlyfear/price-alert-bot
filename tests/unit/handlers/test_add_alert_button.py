@@ -49,7 +49,6 @@ _DRAFT_FROM_DB: dict[str, Any] = {
     "article": DB_ARTICLE,
     "product_name": DB_NAME,
     "current_price": DB_PRICE,
-    "card_price": None,
     "price_fetched_at": DB_FETCHED_AT.isoformat(),
 }
 _START_STATES: list[tuple[str | None, dict[str, Any]]] = [
@@ -142,7 +141,6 @@ async def test_amount_then_confirm_adds_the_threshold_with_the_data_from_the_db(
         DB_PRICE,
         150_000,
         price_fetched_at=DB_FETCHED_AT,
-        card_price=None,
     )
     card_service.preview.assert_not_called()
     assert await card_dialog.state() is None
@@ -174,10 +172,7 @@ async def test_null_stamp_of_the_product_reaches_add_tracking_as_none(
 
     await card_dialog.press(CB_ADD_CONFIRM, message_id=sent_message_id(0))
 
-    assert card_service.add_tracking.await_args.kwargs == {
-        "price_fetched_at": None,
-        "card_price": None,
-    }
+    assert card_service.add_tracking.await_args.kwargs == {"price_fetched_at": None}
 
 
 @pytest.mark.asyncio

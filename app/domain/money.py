@@ -2,8 +2,8 @@
 
 The bot compares the tracked price against the threshold using the public
 price returned by a marketplace API, which excludes personal discounts
-(wallet balances, marketplace cards, loyalty points, etc.). This module
-holds the two approved wordings of the disclaimer that must accompany any
+(wallet balances, loyalty points, etc.); for Ozon it is the Ozon card price.
+This module holds the two approved wordings of the disclaimer that must accompany any
 price shown to the user, so both the bot layer (`app/bot/**`,
 `app/handlers/**`) and `NotificationService` read the same text instead of
 keeping independent copies that could drift apart.
@@ -28,8 +28,9 @@ _PRICE_RE: Final[re.Pattern[str]] = re.compile(
 PRICE_DISCLAIMER_SHORT: Final[str] = "Цена без учёта персональных скидок"
 
 PRICE_DISCLAIMER_FULL: Final[str] = (
-    "Бот показывает цену без учёта персональных скидок: кошелька или карты "
-    "маркетплейса, баллов и т. п. На сайте цена для вас может быть ниже."
+    "Бот показывает цену без учёта персональных скидок: кошелька, баллов "
+    "и т. п.; для Ozon — цену по карте Ozon. На сайте цена для вас может "
+    "быть ниже."
 )
 
 
@@ -48,14 +49,6 @@ def rubles_to_kopecks(text: str) -> int:
     if kopecks > MAX_PRICE_KOPECKS:
         raise InvalidPriceInputError("price is too large")
     return kopecks
-
-
-def format_price_with_card(price: int, card_price: int | None) -> str:
-    """`format_price(price)`, plus `(по карте Ozon: ...)` when the card is cheaper."""
-    text = format_price(price)
-    if card_price is not None and card_price < price:
-        text = f"{text} (по карте Ozon: {format_price(card_price)})"
-    return text
 
 
 def format_price(kopecks: int) -> str:
