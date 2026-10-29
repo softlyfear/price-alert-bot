@@ -1,4 +1,4 @@
-.PHONY: help install update install-browser run test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks docker-restart clean-all
+.PHONY: help install update install-browser run codex codex-models test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks docker-restart clean-all
 
 RED    := \033[0;31m
 GREEN  := \033[0;32m
@@ -16,6 +16,8 @@ help:
 	@echo "  update         — Update all dependencies"
 	@echo "  install-browser — Install Chromium for Playwright (version of the locked package)"
 	@echo "  run            — Run dev server with auto-reload"
+	@echo "  codex          — Refresh agent models and launch Codex"
+	@echo "  codex-models   — Refresh agent models only"
 	@echo ""
 	@echo "$(GREEN)Quality:$(NC)"
 	@echo "  fmt            — Format + fix code (ruff)"
@@ -68,6 +70,12 @@ run:
 		uv run python -m alembic upgrade head; \
 	fi
 	uv run uvicorn app.main:app --reload
+
+codex:
+	./scripts/codex
+
+codex-models:
+	python3 scripts/codex_models.py
 
 fmt:
 	@echo "$(GREEN)==> Formatting...$(NC)"
