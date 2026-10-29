@@ -25,7 +25,7 @@ set -euo pipefail
 # occurrences only (`@domain`), so a customer's own address is not affected.
 # The Copilot local part is a negative character class (anything but `@`,
 # whitespace, `<`/`>`), not an allow-list: a positive class missing `[`/`]`
-# let `…+copilot-swe-agent[bot]@users.noreply.github.com` through.
+# let a GitHub bot address with a numeric user-ID prefix through.
 readonly PATTERN='@([a-z0-9-]+\.)*(anthropic\.com|claude\.ai|openai\.com|cursor\.com|cursor\.sh|codeium\.com)\b|[^@[:space:]<>]*copilot[^@[:space:]<>]*@users\.noreply\.github\.com'
 readonly CUT_MARKER='------------------------ >8 ------------------------'
 readonly ZERO_SHA='0000000000000000000000000000000000000000'

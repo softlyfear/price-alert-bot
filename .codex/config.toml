@@ -1,0 +1,12 @@
+# Named roles select Sol High or Terra High in .codex/agents/*.toml.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+
+# Codex's supported equivalent of the imported telemetry preference.
+[analytics]
+enabled = false
+
+# Claude's .mcp.json is not read by Codex.
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
