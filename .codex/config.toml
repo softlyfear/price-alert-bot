@@ -7,6 +7,6 @@ max_concurrent_threads_per_session = 3
 [analytics]
 enabled = false
 
-# Claude's .mcp.json is not read by Codex.
+# Project-scoped Context7 MCP server.
 [mcp_servers.context7]
 url = "https://mcp.context7.com/mcp"

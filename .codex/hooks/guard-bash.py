@@ -141,7 +141,7 @@ def _wipes_project(target: str, cwd: str, project: str) -> bool:
     path = os.path.normpath(os.path.join(cwd, os.path.expanduser(base or ".")))
     guarded = (
         project,
-        *(os.path.join(project, name) for name in (".claude", ".codex", ".agents")),
+        *(os.path.join(project, name) for name in ("docs", ".codex", ".agents")),
     )
     return path in guarded or project.startswith(path.rstrip("/") + "/")
 
