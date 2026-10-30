@@ -1,8 +1,8 @@
-"""recreate database
+"""sqlite baseline
 
-Revision ID: c55fadc558a3
+Revision ID: 6cd914885374
 Revises:
-Create Date: 2026-03-27 20:10:54.590828
+Create Date: 2026-10-30 19:52:32.182856
 
 """
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "c55fadc558a3"
+revision: str = "6cd914885374"
 down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -26,52 +26,72 @@ def upgrade() -> None:
         "users",
         sa.Column("tg_user_id", sa.BigInteger(), nullable=False),
         sa.Column("tg_username", sa.String(length=32), nullable=True),
+        sa.Column("product_limit", sa.Integer(), nullable=True),
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("TIMEZONE('utc', now())"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("TIMEZONE('utc', now())"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
+        sa.CheckConstraint(
+            "length(tg_username) <= 32", name="ck_users_tg_username_length"
+        ),
+        sa.CheckConstraint("product_limit > 0", name="ck_users_product_limit_positive"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tg_user_id"),
         sa.UniqueConstraint("tg_username"),
+        sqlite_autoincrement=True,
     )
     op.create_table(
         "products",
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column(
-            "marketplace", sa.Enum("wb", "ozon", name="marketplace"), nullable=False
+            "marketplace",
+            sa.Enum("wb", "ozon", name="marketplace", create_constraint=True),
+            nullable=False,
         ),
         sa.Column("article", sa.BigInteger(), nullable=False),
         sa.Column("product_name", sa.String(), nullable=False),
         sa.Column("current_price", sa.Integer(), nullable=False),
         sa.Column("previous_price", sa.Integer(), nullable=True),
+        sa.Column("initial_price", sa.Integer(), nullable=True),
         sa.Column("last_checked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("price_fetched_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("TIMEZONE('utc', now())"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("TIMEZONE('utc', now())"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
+        ),
+        sa.CheckConstraint(
+            "current_price >= 0", name="ck_products_current_price_non_negative"
+        ),
+        sa.CheckConstraint(
+            "previous_price >= 0", name="ck_products_previous_price_non_negative"
+        ),
+        sa.CheckConstraint(
+            "initial_price >= 0", name="ck_products_initial_price_non_negative"
         ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "user_id", "marketplace", "article", name="uq_user_marketplace_article"
         ),
+        sqlite_autoincrement=True,
     )
     op.create_index(op.f("ix_products_user_id"), "products", ["user_id"], unique=False)
     op.create_table(
@@ -81,25 +101,31 @@ def upgrade() -> None:
         sa.Column("target_price", sa.Integer(), nullable=False),
         sa.Column(
             "direction",
-            sa.Enum("below", "above", name="alertdirection"),
+            sa.Enum("below", "above", name="alertdirection", create_constraint=True),
             nullable=False,
         ),
         sa.Column(
-            "is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False
+            "is_active",
+            sa.Boolean(create_constraint=True, name="ck_alerts_is_active_boolean"),
+            server_default=sa.text("(true)"),
+            nullable=False,
         ),
         sa.Column("triggered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("TIMEZONE('utc', now())"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("TIMEZONE('utc', now())"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
+        ),
+        sa.CheckConstraint(
+            "target_price >= 0", name="ck_alerts_target_price_non_negative"
         ),
         sa.ForeignKeyConstraint(["product_id"], ["products.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
@@ -111,6 +137,7 @@ def upgrade() -> None:
             "target_price",
             name="uq_alerts_user_product_logic",
         ),
+        sqlite_autoincrement=True,
     )
     op.create_index(
         op.f("ix_alerts_product_id"), "alerts", ["product_id"], unique=False

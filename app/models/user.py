@@ -21,6 +21,12 @@ class User(Base, TimestampMixin):
     """Represents a Telegram user for tracked products and alerts."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "length(tg_username) <= 32", name="ck_users_tg_username_length"
+        ),
+        {"sqlite_autoincrement": True},
+    )
 
     tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     tg_username: Mapped[str | None] = mapped_column(String(32), unique=True)

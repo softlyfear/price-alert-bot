@@ -23,6 +23,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING
 from typing import Self
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -125,6 +126,13 @@ class _FakeSession:
         tb: TracebackType | None,
     ) -> None:
         self._owner.open -= 1
+        if exc_type is not None:
+            self.outcome = "rollback"
+        self.tx_active = False
+
+    async def commit(self) -> None:
+        self.outcome = "commit"
+        self.tx_active = False
 
     def begin(self) -> _FakeTransaction:
         return _FakeTransaction(self)
@@ -148,11 +156,9 @@ class _FakeUsers:
     def __init__(self) -> None:
         self.calls: list[int] = []
 
-    async def get_or_create_by_tg_id(
-        self, tg_user_id: int, tg_username: str | None = None
-    ) -> tuple[User, bool]:
+    async def get_by_tg_id(self, tg_user_id: int) -> User | None:
         self.calls.append(tg_user_id)
-        return User(id=_USER_ID, tg_user_id=tg_user_id), False
+        return User(id=_USER_ID, tg_user_id=tg_user_id)
 
 
 class _FakeProducts:
@@ -216,6 +222,9 @@ class _FakePriceService:
     async def apply_result(
         self, product_id: int, result: MarketplaceFetchResult, session: AsyncSession
     ) -> None:
+        cast(
+            _FakeSession, session
+        ).tx_active = True  # real apply_result begins the write
         self.tx_active_at_apply.append(cast(_FakeSession, session).tx_active)
         if self.apply_hook is not None:
             await self.apply_hook(product_id)
@@ -997,3 +1006,13 @@ async def test_refresh_itself_does_not_spend_the_budget() -> None:
     await rig.refresher.refresh_product(_TG_USER, 1)
 
     assert rig.refresher.reserve(_TG_USER) is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_product_of_unknown_user_is_gone_without_creating_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _Rig([])
+    monkeypatch.setattr(rig.users, "get_by_tg_id", AsyncMock(return_value=None))
+    assert isinstance(await rig.refresher.refresh_product(_TG_USER, 123), RefreshGone)
+    assert rig.service.fetch_calls == []

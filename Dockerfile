@@ -34,7 +34,8 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 # Unprivileged regular user (not a system one) with a fixed UID; its home is
 # declared as /nonexistent and not created, nothing writes there.
-RUN useradd --uid 10001 --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin app
+RUN useradd --uid 10001 --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin app \
+    && mkdir /data && chown 10001:10001 /data && chmod 700 /data
 
 WORKDIR /app
 
@@ -52,11 +53,12 @@ RUN playwright install --with-deps chromium --no-shell \
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY app ./app
+COPY scripts/sqlite_backup.py ./scripts/sqlite_backup.py
 
 # Normalize modes so the image does not depend on the umask of the build host:
 # readable by everyone, writable by root only. .venv is left as built, except
 # the lock file uv leaves there with mode 666 (world-writable).
-RUN chmod -R u=rwX,go=rX /app/app /app/alembic /app/alembic.ini \
+RUN chmod -R u=rwX,go=rX /app/app /app/alembic /app/alembic.ini /app/scripts \
     && chmod 644 /app/.venv/.lock
 
 USER 10001

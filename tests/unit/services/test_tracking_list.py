@@ -60,6 +60,9 @@ class _Harness:
             User(id=_USER_ID, tg_user_id=_TG),
             False,
         )
+        self.users.get_by_tg_id.return_value = (
+            self.users.get_or_create_by_tg_id.return_value[0]
+        )
         self.products = MagicMock(spec=ProductRepository)
         self.products.count_before.return_value = 0
         self.alerts = MagicMock(spec=AlertRepository)
@@ -95,7 +98,7 @@ async def test_list_page_reads_the_requested_window_for_the_internal_user_id(
 
     assert [p.id for p in page.products] == [21, 22]
     assert (page.total, page.page, page.pages) == (23, 3, 3)
-    h.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG)
+    h.users.get_by_tg_id.assert_awaited_once_with(_TG)
     h.products.count_by_user.assert_awaited_once_with(_USER_ID)
     h.products.get_page_by_user.assert_awaited_once_with(_USER_ID, 10, 20)
 

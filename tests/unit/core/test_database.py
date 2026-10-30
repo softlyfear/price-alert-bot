@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -107,16 +108,8 @@ def _make_settings(
     return Settings(
         _env_file=None,
         db=DatabaseSettings(
-            USER="test-user",
-            PASSWORD=SecretStr(password),
-            HOST=host,
-            PORT=5432,
-            NAME=name,
+            PATH=Path(f"{password}.sqlite3"),
             ECHO=echo,
-            POOL_SIZE=pool_size,
-            MAX_OVERFLOW=max_overflow,
-            POOL_PRE_PING=pool_pre_ping,
-            POOL_RECYCLE=pool_recycle,
             AUTOFLUSH=autoflush,
             EXPIRE_ON_COMMIT=expire_on_commit,
         ),
@@ -184,63 +177,15 @@ def test_get_engine_and_get_sessionmaker_are_cached_and_bound_by_identity(
     assert sessionmaker_first.kw["bind"] is engine_first
 
 
-@pytest.mark.parametrize(
-    ("echo", "pool_pre_ping"),
-    [(True, False), (False, True)],
-    ids=["echo-true-preping-false", "echo-false-preping-true"],
-)
-def test_get_engine_reads_pool_and_connection_parameters_from_settings(
-    monkeypatch: pytest.MonkeyPatch,
-    echo: bool,
-    pool_pre_ping: bool,
+@pytest.mark.parametrize("echo", [True, False])
+def test_get_engine_reads_connection_parameters_from_settings(
+    monkeypatch: pytest.MonkeyPatch, echo: bool
 ) -> None:
-    """AC2 (engine side): all six engine-level parameters are read from
-    settings at construction time and land on the real engine/pool objects.
-
-    ``echo``/``pool_pre_ping`` are parametrized over *both* opposite
-    boolean assignments rather than fixed at one pair: a single ``Settings``
-    instance cannot distinguish "read the configured value" from "always
-    return ``True``" for a field whose configured value happens to be
-    ``True`` in that one instance, and cannot catch the two engine
-    parameters being swapped with each other unless they hold different
-    values -- running both assignments closes both gaps at once, without
-    needing them to differ from *each other* in a single call the way
-    ``pool_size``/``max_overflow`` do below.
-
-    Mutations demonstrated on copies outside the working tree (AC14), all
-    four red on at least one of the two parametrized cases (see the ticket
-    report for the exact commands and output):
-
-    - swapping ``echo=`` and ``pool_pre_ping=`` at the
-      ``create_async_engine(...)`` call site;
-    - hard-coding ``echo=True`` regardless of settings;
-    - hard-coding ``pool_pre_ping=True`` regardless of settings;
-    - swapping ``pool_size=``/``max_overflow=`` (distinct integers, so this
-      one is caught on either parametrized case).
-    """
-    monkeypatch.setattr(
-        database,
-        "get_settings",
-        lambda: _make_settings(
-            host="params-host",
-            name="params-db",
-            echo=echo,
-            pool_size=3,
-            max_overflow=7,
-            pool_pre_ping=pool_pre_ping,
-            pool_recycle=1234,
-        ),
-    )
-
+    settings = _make_settings(echo=echo)
+    monkeypatch.setattr(database, "get_settings", lambda: settings)
     engine = database.get_engine()
-
-    assert engine.url.host == "params-host"
-    assert engine.url.database == "params-db"
+    assert engine.url.database == str(settings.db.PATH)
     assert engine.echo is echo
-    assert engine.pool.size() == 3  # type: ignore[attr-defined]
-    assert engine.pool._max_overflow == 7  # type: ignore[attr-defined]
-    assert engine.pool._pre_ping is pool_pre_ping
-    assert engine.pool._recycle == 1234
 
 
 @pytest.mark.parametrize(
@@ -662,3 +607,11 @@ async def test_get_async_session_error_path_logs_without_leaking_password_marker
 
     assert marker not in record["message"]
     assert all(marker not in str(value) for value in extra.values())
+
+
+@pytest.mark.parametrize("value", [0, -1, 301, float("inf"), float("nan")])
+def test_engine_rejects_invalid_busy_timeout(value: float, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="busy_timeout_seconds"):
+        database.create_sqlite_engine(
+            tmp_path / "db.sqlite3", busy_timeout_seconds=value
+        )

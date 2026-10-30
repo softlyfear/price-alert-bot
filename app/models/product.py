@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger
 from sqlalchemy import CheckConstraint
-from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
 from sqlalchemy import UniqueConstraint
@@ -15,6 +14,7 @@ from sqlalchemy.orm import relationship
 
 from app.models.base import Base
 from app.models.base import TimestampMixin
+from app.models.base import UTCDateTime
 from app.models.enums import Marketplace
 
 if TYPE_CHECKING:
@@ -30,7 +30,9 @@ class Product(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace))
+    marketplace: Mapped[Marketplace] = mapped_column(
+        Enum(Marketplace, create_constraint=True, validate_strings=True)
+    )
     article: Mapped[int] = mapped_column(BigInteger)
     product_name: Mapped[str] = mapped_column()
     current_price: Mapped[int] = mapped_column(
@@ -48,8 +50,8 @@ class Product(Base, TimestampMixin):
             "initial_price >= 0", name="ck_products_initial_price_non_negative"
         )
     )
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    price_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    price_fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     __table_args__ = (
         UniqueConstraint(
@@ -58,6 +60,7 @@ class Product(Base, TimestampMixin):
             "article",
             name="uq_user_marketplace_article",
         ),
+        {"sqlite_autoincrement": True},
     )
 
     user: Mapped["User"] = relationship(

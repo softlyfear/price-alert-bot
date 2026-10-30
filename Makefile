@@ -1,4 +1,4 @@
-.PHONY: help install update install-browser run codex codex-models test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade pre-commit hooks docker-restart clean-all
+.PHONY: help install update install-browser run codex codex-models test test-v test-cov test-watch clean fmt type check docker-build docker-up docker-down docker-logs migrate migrate-create db-upgrade db-downgrade db-backup db-restore pre-commit hooks docker-restart clean-all
 
 RED    := \033[0;31m
 GREEN  := \033[0;32m
@@ -37,6 +37,8 @@ help:
 	@echo "  migrate-create — Create migration only"
 	@echo "  db-upgrade     — Apply pending migrations"
 	@echo "  db-downgrade   — Rollback last migration"
+	@echo "  db-backup      — Save a live SQLite backup to BACKUP"
+	@echo "  db-restore     — Restore BACKUP while app is stopped (OVERWRITE=1)"
 	@echo ""
 	@echo "$(GREEN)Docker:$(NC)"
 	@echo "  docker-build   — Build image"
@@ -141,6 +143,9 @@ db-downgrade:
 #   make docker-up ENV_FILE=/path/to/file
 ENV_FILE ?= .env
 export ENV_FILE
+BACKUP ?=
+OVERWRITE ?=
+export BACKUP OVERWRITE
 # The stack profile: every service is skipped by compose without it.
 COMPOSE := docker compose --env-file "$(ENV_FILE)" --profile price-alert-bot
 
@@ -163,6 +168,34 @@ docker-logs:
 	$(COMPOSE) logs -f
 
 docker-restart: docker-down docker-up
+
+# The container emits a checked snapshot; a hard link publishes it without ever
+# replacing an existing host backup, even if another process wins the race.
+db-backup:
+	@set -eu; \
+	test -n "$$BACKUP" || { echo 'Set BACKUP to a new file path' >&2; exit 1; }; \
+	test ! -e "$$BACKUP" && test ! -L "$$BACKUP" || { echo 'Backup already exists' >&2; exit 1; }; \
+	tmp="$$(mktemp "$${BACKUP}.tmp.XXXXXX")"; \
+	trap 'rm -f -- "$$tmp"' EXIT HUP INT TERM; \
+	$(COMPOSE) exec -T app python -m scripts.sqlite_backup backup /data/price-alert-bot.sqlite3 - > "$$tmp"; \
+	ln -- "$$tmp" "$$BACKUP"; \
+	echo "Backup saved to $$BACKUP"
+
+# Refuse restore while either service can be using the volume. Do not run any
+# other SQLite clients against the volume until restore finishes.
+db-restore:
+	@set -eu; \
+	test -n "$$BACKUP" && test -f "$$BACKUP" || { echo 'Set BACKUP to an existing file' >&2; exit 1; }; \
+	resolved="$$(readlink -f -- "$$BACKUP")"; \
+	for suffix in -wal -shm -journal; do \
+	  test ! -e "$$resolved$$suffix" && test ! -L "$$resolved$$suffix" || { echo 'Backup has SQLite sidecars; close its clients first' >&2; exit 1; }; \
+	done; \
+	running="$$( $(COMPOSE) ps -q --status running app migrate )"; \
+	test -z "$$running" || { echo 'Stop app and migrate before restore' >&2; exit 1; }; \
+	flag=''; \
+	if [ "$$OVERWRITE" = 1 ]; then flag='--overwrite'; fi; \
+	$(COMPOSE) run --rm --no-deps -T migrate python -m scripts.sqlite_backup restore - /data/price-alert-bot.sqlite3 $$flag < "$$BACKUP"; \
+	echo 'SQLite restore completed'
 
 clean:
 	@find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o -name .mypy_cache -o -name htmlcov -o -name "*.egg-info" \) -exec rm -rf {} + 2>/dev/null || true

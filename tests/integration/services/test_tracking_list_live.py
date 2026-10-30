@@ -237,10 +237,9 @@ async def test_list_page_statement_count_is_the_same_for_3_and_25_products(
     )
     big_count = await _count_statements(db_session, lambda: service.list_page(big, 1))
 
-    # INSERT .. ON CONFLICT + SELECT of the existing user (get_or_create), then
-    # COUNT and the page: four, whatever N is. The ticket counted the user as one.
-    assert small_count == (4, 0)
-    assert big_count == (4, 0)
+    # A user lookup, COUNT and page query: three statements, independent of N.
+    assert small_count == (3, 0)
+    assert big_count == (3, 0)
 
 
 async def test_card_costs_exactly_one_statement_more_than_without_the_page_lookup(

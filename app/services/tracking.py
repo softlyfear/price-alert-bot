@@ -123,8 +123,9 @@ class TrackingService:
         self, tg_user_id: int, marketplace: Marketplace, article: int
     ) -> MarketplaceFetchResult:
         """Fetch current product data for the dialog; failures are values."""
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        await self._ensure_within_limit(user, marketplace, article)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is not None:
+            await self._ensure_within_limit(user, marketplace, article)
         return await self._fetch(marketplace, article, routes_on_not_found=False)
 
     async def resolve_short_link(
@@ -163,8 +164,11 @@ class TrackingService:
         the same number could be a different product there (PROJECT.md 2.15
         R21). The limit is checked before the first network request.
         """
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        await self._ensure_within_limit_any(user, BARE_ARTICLE_MARKETPLACES, article)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is not None:
+            await self._ensure_within_limit_any(
+                user, BARE_ARTICLE_MARKETPLACES, article
+            )
         *leading, last = BARE_ARTICLE_MARKETPLACES
         for marketplace in leading:
             result = await self._fetch(marketplace, article, routes_on_not_found=True)
@@ -237,8 +241,8 @@ class TrackingService:
 
     async def product_limit(self, tg_user_id: int) -> int:
         """Return the caller's effective product limit (personal or global)."""
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        return self._effective_limit(user)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        return self._max_products if user is None else self._effective_limit(user)
 
     async def list_page(self, tg_user_id: int, page: int) -> ProductPage:
         """Return one page of the caller's products ordered by `id`.
@@ -246,7 +250,9 @@ class TrackingService:
         `page` is user input: it is clamped to `[1, pages]`. The number of
         queries is constant and does not depend on the number of products.
         """
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is None:
+            return ProductPage(products=(), total=0, page=1, pages=1)
         total = await self._products.count_by_user(user.id)
         pages = self._page_count(total)
         page = min(max(page, 1), pages)
@@ -263,7 +269,9 @@ class TrackingService:
         Valid for an already deleted product: the page is computed from the
         number of the caller's products with a lower `id`.
         """
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is None:
+            return 1
         total = await self._products.count_by_user(user.id)
         before = await self._products.count_before(user.id, product_id)
         return min(before // LIST_PAGE_SIZE + 1, self._page_count(total))
@@ -279,7 +287,9 @@ class TrackingService:
 
         A foreign and a missing `product_id` are indistinguishable.
         """
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is None:
+            return None
         product = await self._products.get_by_id_for_user(product_id, user.id)
         if product is None:
             return None
@@ -290,10 +300,11 @@ class TrackingService:
     ) -> ProductCard | None:
         """Return the caller's product by (marketplace, article), or None.
 
-        Reads the database only: no marketplace request, no writes besides
-        the existing `get_or_create_by_tg_id`.
+        Reads the database only: no marketplace request or writes.
         """
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is None:
+            return None
         product = await self._products.get_by_article_and_user(
             article, user.id, marketplace
         )
@@ -309,7 +320,9 @@ class TrackingService:
         Candidates follow `BARE_ARTICLE_MARKETPLACES`; the first tracked one
         wins. Reads the database only.
         """
-        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        user = await self._users.get_by_tg_id(tg_user_id)
+        if user is None:
+            return None
         for marketplace in BARE_ARTICLE_MARKETPLACES:
             product = await self._products.get_by_article_and_user(
                 article, user.id, marketplace

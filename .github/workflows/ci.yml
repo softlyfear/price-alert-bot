@@ -17,24 +17,6 @@ jobs:
     name: Quality gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17.6-alpine
-        env:
-          # Throwaway credentials of a service container that lives for this job only.
-          POSTGRES_USER: ci
-          POSTGRES_PASSWORD: ci-password
-          POSTGRES_DB: ci_test
-        ports:
-          - 5432:5432
-        # TCP (-h 127.0.0.1), not the unix socket: during first initialisation the
-        # image runs a temporary server that answers on the socket only.
-        options: >-
-          --health-cmd "pg_isready -h 127.0.0.1 -U ci -d ci_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-          --health-start-period 5s
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,8 +68,6 @@ jobs:
         run: uv run lint-imports
 
       - name: pytest --cov=app --cov-report=term-missing --cov-fail-under=100
-        env:
-          TEST_DATABASE_URL: postgresql+asyncpg://ci:ci-password@127.0.0.1:5432/ci_test
         run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=100
 
   ai-email:
@@ -121,15 +101,15 @@ jobs:
       - name: shellcheck --version
         run: shellcheck --version
 
-      - name: shellcheck --severity=warning scripts/*
-        run: shellcheck --severity=warning scripts/*
+      - name: shellcheck shell scripts
+        run: shellcheck --severity=warning scripts/check-ai-email scripts/codex scripts/pre-push scripts/smoke-image
 
       # Dummy values only: the repository holds no env file and no secrets.
       - name: docker compose config -q
         env:
           ENV_FILE: ${{ runner.temp }}/compose-ci.env
         run: |
-          printf '%s\n' 'DB__USER=ci' 'DB__PASSWORD=ci-password' 'DB__NAME=ci' > "$ENV_FILE"
+          : > "$ENV_FILE"
           docker compose --env-file "$ENV_FILE" --profile price-alert-bot config -q
 
   image:
@@ -149,7 +129,7 @@ jobs:
       # Dummy values only: the repository holds no env file and no secrets.
       - name: Create dummy env file
         run: |
-          printf '%s\n' 'DB__USER=ci' 'DB__PASSWORD=ci-password' 'DB__NAME=ci' > "$RUNNER_TEMP/compose-ci.env"
+          : > "$RUNNER_TEMP/compose-ci.env"
           echo "ENV_FILE=$RUNNER_TEMP/compose-ci.env" >> "$GITHUB_ENV"
 
       # The same target the operator uses (flags live in the Makefile only).

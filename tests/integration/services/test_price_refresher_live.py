@@ -45,14 +45,15 @@ from loguru import logger
 from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import QueuePool
 
 import app.services.notification as notification_module
 import app.services.price_service as price_service_module
+from app.core.database import create_sqlite_engine
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
@@ -116,9 +117,9 @@ def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest_asyncio.fixture
 async def engine(database_url: str) -> AsyncIterator[AsyncEngine]:
     """A private engine whose pool the tests can read; test rows are removed."""
-    created = create_async_engine(
-        database_url, pool_size=5, max_overflow=0, pool_timeout=5
-    )
+    path = make_url(database_url).database
+    assert path is not None
+    created = create_sqlite_engine(path)
 
     async def purge() -> None:
         async with created.begin() as connection:

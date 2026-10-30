@@ -20,14 +20,14 @@ Codex читает проектные инструкции из корневог
 | Бот | `aiogram` 3 | long polling |
 | FSM-хранилище | `RedisStorage` | состояния переживают рестарт |
 | Web | `FastAPI` + `uvicorn` | `lifespan`, `/health`, точка роста под API и админку |
-| БД | PostgreSQL + `SQLAlchemy` 2.0 async + `asyncpg` | |
+| БД | SQLite + `SQLAlchemy` 2.0 async + `aiosqlite` | файл на локальном постоянном томе, один экземпляр бота |
 | Миграции | `alembic` | |
 | HTTP | `httpx` | общий `AsyncClient` на процесс |
 | Браузер | `playwright` (Chromium) | только получение доступа через антибот: токен Wildberries, cookies Ozon |
 | HTTP Ozon | `curl_cffi` | TLS-отпечаток Chrome, только `ozon_client` |
 | Логи | `loguru` | контекст через `logger.bind()` |
 | Планировщик | собственный asyncio-цикл | интервал из `.env`, по умолчанию 15 минут |
-| Тесты | `pytest` + `pytest-asyncio` | unit на моках, интеграционные на реальном PostgreSQL |
+| Тесты | `pytest` + `pytest-asyncio` | unit на моках, интеграционные на файловой SQLite |
 | Качество | `mypy --strict`, `ruff` | |
 
 `redis` в зависимостях — ради `RedisStorage`.

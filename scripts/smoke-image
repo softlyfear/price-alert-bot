@@ -33,8 +33,8 @@ docker image inspect --format '{{.Id}}' "$IMAGE" > /dev/null 2>&1 \
 
 # (1) /app content, no uv.
 out="$(drun "$IMAGE" ls -A /app 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$out" | LC_ALL=C sort | tr '\n' ' ')" = ".venv alembic alembic.ini app " ]; then
-    pass "(1) /app holds exactly .venv alembic alembic.ini app"
+if [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$out" | LC_ALL=C sort | tr '\n' ' ')" = ".venv alembic alembic.ini app scripts " ]; then
+    pass "(1) /app holds exactly .venv alembic alembic.ini app scripts"
 else
     fail "(1) /app content" "rc=$rc, got: $(printf '%s' "$out" | tr '\n' ' ')"
 fi
@@ -48,8 +48,8 @@ dist_py='
 import re, sys
 from importlib.metadata import distributions
 names = {re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() for d in distributions()}
-absent = "pytest mypy ruff testcontainers docker requests urllib3 import-linter pre-commit".split()
-present = "aiogram sqlalchemy asyncpg uvicorn alembic playwright".split()
+absent = "pytest mypy ruff asyncpg testcontainers docker requests urllib3 import-linter pre-commit".split()
+present = "aiogram aiosqlite sqlalchemy uvicorn alembic playwright".split()
 print(f"distributions: {len(names)}")
 bad = [f"unexpected {n}" for n in absent if n in names] + [f"missing {n}" for n in present if n not in names]
 if bad:

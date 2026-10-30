@@ -90,7 +90,7 @@ async def test_create_accepts_price_fetched_at_and_persists_it(
             {"id": created.id},
         )
     ).scalar_one()
-    assert stored == stamp
+    assert stored == "2026-10-21 11:05:00.000000"
 
 
 @pytest.mark.asyncio

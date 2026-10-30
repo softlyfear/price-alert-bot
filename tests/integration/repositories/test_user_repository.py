@@ -284,3 +284,24 @@ async def test_list_paginated_accepts_boundary_limits_ordered_by_id(
 
     one_row_page = await repository.list_paginated(offset=existing_count, limit=1)
     assert [u.id for u in one_row_page] == [first.id]
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_returns_conflict_winner_after_initial_miss(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = await make_user(db_session, tg_user_id=950_000_777)
+    repository = UserRepository(db_session)
+    lookup = repository.get_by_tg_id
+    calls = 0
+
+    async def missed_once(tg_user_id: int) -> User | None:
+        nonlocal calls
+        calls += 1
+        return None if calls == 1 else await lookup(tg_user_id)
+
+    monkeypatch.setattr(repository, "get_by_tg_id", missed_once)
+    result, created = await repository.get_or_create_by_tg_id(existing.tg_user_id)
+    assert result.id == existing.id
+    assert created is False
+    assert calls == 2

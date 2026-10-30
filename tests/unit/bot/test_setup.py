@@ -8,6 +8,7 @@ Covers AC3 (profile), AC4(a)/(b) (secrets), and the ``InFlightUpdatesTracker``/
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -50,20 +51,7 @@ def _make_settings(
 ) -> Settings:
     return Settings(
         _env_file=None,
-        db=DatabaseSettings(
-            USER="u",
-            PASSWORD=SecretStr("db-pass"),
-            HOST="db-host",
-            PORT=5432,
-            NAME="db-name",
-            ECHO=False,
-            POOL_SIZE=1,
-            MAX_OVERFLOW=1,
-            POOL_PRE_PING=False,
-            POOL_RECYCLE=1,
-            AUTOFLUSH=False,
-            EXPIRE_ON_COMMIT=False,
-        ),
+        db=DatabaseSettings(PATH=Path("test-database.sqlite3")),
         tg=BotSecret(BOT_TOKEN=SecretStr(bot_token)),
         redis=RedisSettings(
             HOST=redis_host,

@@ -31,7 +31,7 @@ import pytest
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -133,11 +133,11 @@ async def test_failed_check_rolls_back_only_its_own_write_on_postgresql(
     """Mutation: remove ``session.begin()`` from ``_apply_one`` (the failed
     product's flushed write would stay, or the neighbours' would be lost)."""
     ids = await _seed_three_products(db_session)
-    connection = db_session.bind
-    assert isinstance(connection, AsyncConnection)
+    await db_session.commit()
+    engine = db_session.bind
+    assert isinstance(engine, AsyncEngine)
     sessionmaker = async_sessionmaker(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
+        bind=engine,
         autoflush=False,
         expire_on_commit=False,
     )

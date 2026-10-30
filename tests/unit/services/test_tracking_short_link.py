@@ -82,6 +82,9 @@ class _Harness:
             User(id=7, tg_user_id=1),
             False,
         )
+        self.users.get_by_tg_id.return_value = (
+            self.users.get_or_create_by_tg_id.return_value[0]
+        )
         self.products = MagicMock(spec=ProductRepository)
         self.products.count_active_by_user.return_value = active_count
         self.products.get_by_article_and_user.return_value = None

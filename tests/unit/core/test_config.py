@@ -90,33 +90,8 @@ _SPECIAL_CHARS_PASSWORD = "p@ss/w:o#r%d?a&b+c= пароль"
 def _make_db_settings(
     *, password: str = "db-marker-pass", host: str = "db-host"
 ) -> DatabaseSettings:
-    """Build a DatabaseSettings with realistic, non-secret-looking values.
-
-    Kept as a factory so scenario tests only override the field(s) they
-    actually vary, instead of repeating twelve unrelated arguments.
-
-    ``password`` is passed as a plain ``str`` and left for pydantic itself
-    to coerce into ``SecretStr``, rather than wrapped in ``SecretStr(...)``
-    here. This matters for the leak guards below: if ``PASSWORD`` were ever
-    changed back to a plain ``str`` field, a marker pre-wrapped in
-    ``SecretStr`` here would make pydantic reject it as the wrong input
-    type, and the guard would fail at this construction call instead of at
-    the ``repr``/``str``/``model_dump`` assertion it exists to protect.
-    """
-    return DatabaseSettings(
-        USER="db_user",
-        PASSWORD=password,  # type: ignore[arg-type]
-        HOST=host,
-        PORT=5432,
-        NAME="pricebot",
-        ECHO=False,
-        POOL_SIZE=5,
-        MAX_OVERFLOW=10,
-        POOL_PRE_PING=True,
-        POOL_RECYCLE=1800,
-        AUTOFLUSH=False,
-        EXPIRE_ON_COMMIT=False,
-    )
+    """Build test settings without an external database."""
+    return DatabaseSettings(PATH=Path(host))
 
 
 def _make_bot_secret(*, token: str = "bot-marker-token") -> BotSecret:
@@ -378,30 +353,11 @@ def test_redis_url_with_special_character_password_roundtrips() -> None:
 # Existed since the start of the project, 0% covered before this ticket.
 
 
-def test_database_url_roundtrips_special_character_password_via_sqlalchemy() -> None:
-    db = _make_db_settings(password=_SPECIAL_CHARS_PASSWORD, host="db-host")
-
+def test_database_url_roundtrips_special_characters_in_path() -> None:
+    db = DatabaseSettings(PATH=Path("/tmp/a %25 database.sqlite3"))
     parsed = make_url(db.DATABASE_URL)
-
-    assert parsed.drivername == "postgresql+asyncpg"
-    assert parsed.username == "db_user"
-    assert parsed.password == _SPECIAL_CHARS_PASSWORD
-    assert parsed.host == "db-host"
-    assert parsed.port == 5432
-    assert parsed.database == "pricebot"
-
-
-# --- Secrets never leak: repr / str / model_dump / model_dump_json --------
-
-
-def test_database_password_secret_not_leaked_in_repr_str_and_dumps() -> None:
-    marker = "db-marker-do-not-leak"
-    db = _make_db_settings(password=marker)
-
-    assert marker not in repr(db)
-    assert marker not in str(db)
-    assert marker not in str(db.model_dump())
-    assert marker not in db.model_dump_json()
+    assert parsed.drivername == "sqlite+aiosqlite"
+    assert parsed.database == "/tmp/a %25 database.sqlite3"
 
 
 def test_bot_token_secret_not_leaked_in_repr_str_and_dumps() -> None:
@@ -487,22 +443,9 @@ def test_hide_input_in_errors_also_hides_raw_value_for_non_secret_field(
     independent guard: removing ``hide_input_in_errors`` breaks this test
     too, not only the password-specific one above.
     """
-    monkeypatch.delenv("DB__PORT", raising=False)
-    bad_port_marker = "not-an-integer-marker"
-    malformed_db = {
-        "USER": "db_user",
-        "PASSWORD": SecretStr("db-marker-pass"),
-        "HOST": "db-host",
-        "PORT": bad_port_marker,
-        "NAME": "pricebot",
-        "ECHO": False,
-        "POOL_SIZE": 5,
-        "MAX_OVERFLOW": 10,
-        "POOL_PRE_PING": True,
-        "POOL_RECYCLE": 1800,
-        "AUTOFLUSH": False,
-        "EXPIRE_ON_COMMIT": False,
-    }
+    monkeypatch.delenv("DB__BUSY_TIMEOUT_SECONDS", raising=False)
+    bad_port_marker = "not-a-number-marker"
+    malformed_db = {"BUSY_TIMEOUT_SECONDS": bad_port_marker}
     # Built outside the `with` block for the same reason as in
     # `test_missing_redis_host_validation_error_hides_raw_password_via_settings`
     # above: a `ValidationError` from either factory call would otherwise
@@ -521,7 +464,8 @@ def test_hide_input_in_errors_also_hides_raw_value_for_non_secret_field(
 
     errors = excinfo.value.errors()
     assert any(
-        e["type"] == "int_parsing" and e["loc"] == ("db", "PORT") for e in errors
+        e["type"] == "float_parsing" and e["loc"] == ("db", "BUSY_TIMEOUT_SECONDS")
+        for e in errors
     )
     assert bad_port_marker not in str(excinfo.value)
 
@@ -618,18 +562,8 @@ def _set_env_for_get_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     variable outside the set below cannot merge in underneath it.
     """
     _delenv_settings_prefix_space(monkeypatch)
-    monkeypatch.setenv("DB__USER", "db_user")
-    monkeypatch.setenv("DB__PASSWORD", "db-marker-pass")
-    monkeypatch.setenv("DB__HOST", "db-host")
-    monkeypatch.setenv("DB__PORT", "5432")
-    monkeypatch.setenv("DB__NAME", "pricebot")
-    monkeypatch.setenv("DB__ECHO", "false")
-    monkeypatch.setenv("DB__POOL_SIZE", "5")
-    monkeypatch.setenv("DB__MAX_OVERFLOW", "10")
-    monkeypatch.setenv("DB__POOL_PRE_PING", "true")
-    monkeypatch.setenv("DB__POOL_RECYCLE", "1800")
-    monkeypatch.setenv("DB__AUTOFLUSH", "false")
-    monkeypatch.setenv("DB__EXPIRE_ON_COMMIT", "false")
+    monkeypatch.setenv("DB__PATH", "db-host")
+    monkeypatch.setenv("DB__BUSY_TIMEOUT_SECONDS", "12")
     monkeypatch.setenv("TG__BOT_TOKEN", "tg-marker-token")
     monkeypatch.setenv("REDIS__HOST", "redis-host")
 
@@ -667,7 +601,7 @@ def test_get_settings_builds_settings_from_environment_variables(
 
     settings = get_settings.__wrapped__()
 
-    assert settings.db.HOST == "db-host"
+    assert str(settings.db.PATH) == "db-host"
     assert settings.tg.BOT_TOKEN.get_secret_value() == "tg-marker-token"
     assert settings.redis.HOST == "redis-host"
 
@@ -746,7 +680,7 @@ def test_settings_builds_from_explicit_values_across_all_sections() -> None:
 
     settings = Settings(_env_file=None, db=db, tg=tg, redis=redis, app=app)
 
-    assert settings.db.HOST == "explicit-db-host"
+    assert str(settings.db.PATH) == "explicit-db-host"
     assert settings.tg.BOT_TOKEN.get_secret_value() == "explicit-bot-token"
     assert settings.redis.HOST == "explicit-redis-host"
     assert settings.app.SCHEDULER_INTERVAL_SECONDS == 111
@@ -1209,3 +1143,22 @@ def test_env_example_documents_the_display_timezone_default() -> None:
         AppSettings.model_validate({"DISPLAY_TIMEZONE": values[0]}).DISPLAY_TIMEZONE
         == AppSettings().DISPLAY_TIMEZONE
     )
+
+
+@pytest.mark.parametrize("path", ["", " ", ":memory:", "/"])
+def test_sqlite_database_path_rejects_non_file_values(path: str) -> None:
+    with pytest.raises(ValidationError):
+        DatabaseSettings.model_validate({"PATH": path})
+
+
+@pytest.mark.parametrize("value", [0, -1, 301, float("inf"), float("nan")])
+def test_sqlite_busy_timeout_rejects_unbounded_or_nonfinite_values(
+    value: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        DatabaseSettings(BUSY_TIMEOUT_SECONDS=value)
+
+
+@pytest.mark.parametrize("value", [0.01, 300.0])
+def test_sqlite_busy_timeout_accepts_finite_bounds(value: float) -> None:
+    assert value == DatabaseSettings(BUSY_TIMEOUT_SECONDS=value).BUSY_TIMEOUT_SECONDS
