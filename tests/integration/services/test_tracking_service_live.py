@@ -441,7 +441,7 @@ async def test_preview_at_limit_refuses_before_any_marketplace_request(
     assert client.fetches == 0
 
 
-async def test_preview_registers_the_user_and_returns_the_client_result(
+async def test_preview_does_not_register_the_user_and_returns_the_client_result(
     db_session: AsyncSession,
 ) -> None:
     tg = next(_tg_ids)
@@ -455,7 +455,7 @@ async def test_preview_registers_the_user_and_returns_the_client_result(
     users = (
         await db_session.execute(select(func.count()).where(User.tg_user_id == tg))
     ).scalar_one()
-    assert users == 1
+    assert users == 0
 
 
 async def test_below_and_above_alerts_with_the_same_target_coexist(
@@ -584,7 +584,8 @@ async def test_product_limit_sees_a_direct_update_on_the_select_branch(
 ) -> None:
     tg = next(_tg_ids)
     service = _service(db_session, limit=50)
-    assert await service.product_limit(tg) == 50  # insert branch, user created
+    assert await service.product_limit(tg) == 50  # unknown user
+    await UserRepository(db_session).get_or_create_by_tg_id(tg)
     await _set_limit(db_session, tg, 7)
 
     assert await service.product_limit(tg) == 7  # select branch

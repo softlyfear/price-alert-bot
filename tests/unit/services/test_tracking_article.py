@@ -104,6 +104,9 @@ class _Harness:
             User(id=_USER_ID, tg_user_id=_TG),
             False,
         )
+        self.users.get_by_tg_id.return_value = (
+            self.users.get_or_create_by_tg_id.return_value[0]
+        )
         self.products = MagicMock(spec=ProductRepository)
         self.products.count_active_by_user.return_value = active_count
 
@@ -313,7 +316,7 @@ async def test_limit_is_checked_for_the_internal_user_id_not_the_telegram_id(
 
     await h.service.preview_article(_TG, _ARTICLE)
 
-    h.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG)
+    h.users.get_by_tg_id.assert_awaited_once_with(_TG)
     h.products.count_active_by_user.assert_awaited_once_with(_USER_ID)
 
 
@@ -487,7 +490,7 @@ async def test_find_scopes_the_lookup_to_the_internal_user_id(
 
     await h.service.find_tracked_article(_TG, _ARTICLE)
 
-    h.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG)
+    h.users.get_by_tg_id.assert_awaited_once_with(_TG)
     assert [c.args[1] for c in h.products.get_by_article_and_user.await_args_list] == [
         _USER_ID,
         _USER_ID,

@@ -79,6 +79,11 @@ class _FakeSession:
 
     async def __aexit__(self, *exc_info: object) -> None:
         self.closed = True
+        if exc_info[0] is not None:
+            self.outcome = "rollback"
+
+    async def commit(self) -> None:
+        self.outcome = "commit"
 
     def begin(self) -> _FakeTransaction:
         return _FakeTransaction(self)

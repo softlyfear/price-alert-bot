@@ -7,8 +7,8 @@ license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "aiogram==3.26.0",
+    "aiosqlite>=0.22",
     "alembic>=1.18.4",
-    "asyncpg>=0.31.0",
     "curl_cffi==0.16.3",
     "fastapi==0.135.1",
     "httpx>=0.28.1",
@@ -30,7 +30,6 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.7",
-    "testcontainers>=4.15.0",
 ]
 
 
@@ -63,15 +62,6 @@ force-single-line = true
 python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
-
-# Third-party packages without stubs/py.typed, named individually (measured
-# by running `mypy app tests` without a global `ignore_missing_imports`, not
-# guessed) — a global override would also silence a missing module of our own
-# package, e.g. a commit deleting an imported `app/**` module (PAB-065,
-# попытка 3, AC 4).
-[[tool.mypy.overrides]]
-module = ["asyncpg", "asyncpg.*"]
-ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

@@ -189,7 +189,11 @@ async def test_check_product_returns_early_when_product_is_missing() -> None:
         product=None, market_data=MarketplaceProductData(name="Товар", price=100)
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.product_repo.get_by_id.assert_called_once_with(1)
     harness.client.get_product_data.assert_not_called()
@@ -227,7 +231,11 @@ async def test_fetch_failure_updates_timestamp_only_and_logs_expected_level(
     sink_id = logger.add(_sink, level=0)
     before = datetime.now(UTC)
     try:
-        await harness.service.check_product(1, cast(AsyncSession, harness.session))
+        await harness.service.apply_result(
+            1,
+            harness.client.get_product_data.return_value,
+            cast(AsyncSession, harness.session),
+        )
     finally:
         logger.remove(sink_id)
     after = datetime.now(UTC)
@@ -288,7 +296,11 @@ async def test_predicate_matrix(
         product=product, market_data=market_data, alerts=[alert], user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     assert harness.notification.send_alert.called is expected_triggered
     assert product.previous_price == previous_price
@@ -304,7 +316,11 @@ async def test_cooldown_none_sends() -> None:
         product=product, market_data=market_data, alerts=[alert], user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_called_once()
 
@@ -319,7 +335,11 @@ async def test_cooldown_within_window_suppresses() -> None:
         product=product, market_data=market_data, alerts=[alert], user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_not_called()
 
@@ -334,7 +354,11 @@ async def test_cooldown_past_window_sends() -> None:
         product=product, market_data=market_data, alerts=[alert], user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_called_once()
 
@@ -356,7 +380,11 @@ async def test_cooldown_boundary_exact_equality_sends(
         product=product, market_data=market_data, alerts=[alert], user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_called_once()
 
@@ -379,7 +407,11 @@ async def test_cooldown_boundary_one_microsecond_short_suppresses(
         product=product, market_data=market_data, alerts=[alert], user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_not_called()
 
@@ -400,7 +432,11 @@ async def test_naive_triggered_at_raises_type_error() -> None:
     )
 
     with pytest.raises(TypeError):
-        await harness.service.check_product(1, cast(AsyncSession, harness.session))
+        await harness.service.apply_result(
+            1,
+            harness.client.get_product_data.return_value,
+            cast(AsyncSession, harness.session),
+        )
 
 
 @pytest.mark.asyncio
@@ -427,7 +463,11 @@ async def test_delivery_failure_of_one_alert_does_not_block_the_rest() -> None:
 
     sink_id = logger.add(_sink, level=0)
     try:
-        await harness.service.check_product(1, cast(AsyncSession, harness.session))
+        await harness.service.apply_result(
+            1,
+            harness.client.get_product_data.return_value,
+            cast(AsyncSession, harness.session),
+        )
     finally:
         logger.remove(sink_id)
 
@@ -447,7 +487,11 @@ async def test_no_active_alerts_updates_price_and_returns() -> None:
     market_data = MarketplaceProductData(name="Товар", price=90000)
     harness = _build_harness(product=product, market_data=market_data, alerts=[])
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     assert product.current_price == 90000
     assert product.previous_price == 100000
@@ -465,7 +509,11 @@ async def test_user_missing_flushes_without_sending() -> None:
         product=product, market_data=market_data, alerts=[alert], user=None
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_not_called()
     cast(AsyncMock, harness.session.flush).assert_called_once()
@@ -482,7 +530,11 @@ async def test_repository_calls_do_not_grow_with_alert_count() -> None:
         product=product, market_data=market_data, alerts=alerts, user=_make_user()
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.product_repo.get_by_id.assert_called_once_with(1)
     harness.alert_repo.get_active_by_product.assert_called_once_with(product.id)
@@ -513,7 +565,11 @@ async def test_above_cooldown_within_window_suppresses_repeat() -> None:
         user=_make_user(),
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_not_called()
 
@@ -532,7 +588,11 @@ async def test_above_cooldown_past_window_sends_again() -> None:
         user=_make_user(),
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_called_once()
 
@@ -554,7 +614,11 @@ async def test_above_cooldown_boundary_exact_equality_sends(
         user=_make_user(),
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_called_once()
 
@@ -578,7 +642,11 @@ async def test_above_cooldown_boundary_one_microsecond_short_suppresses(
         user=_make_user(),
     )
 
-    await harness.service.check_product(1, cast(AsyncSession, harness.session))
+    await harness.service.apply_result(
+        1,
+        harness.client.get_product_data.return_value,
+        cast(AsyncSession, harness.session),
+    )
 
     harness.notification.send_alert.assert_not_called()
 
@@ -622,7 +690,11 @@ async def test_telegram_failure_text_is_absent_from_stderr_under_production_logg
 
     setup_logging()
     try:
-        await harness.service.check_product(1, cast(AsyncSession, harness.session))
+        await harness.service.apply_result(
+            1,
+            harness.client.get_product_data.return_value,
+            cast(AsyncSession, harness.session),
+        )
         logger.error("control {marker}", marker=_TOKEN_MARKER)
     finally:
         logger.remove()

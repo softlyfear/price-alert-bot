@@ -64,17 +64,18 @@ async def _apply_one(
 ) -> bool:
     """Apply a fetched result in its own session and transaction; ``True`` on success.
 
-    ``begin()`` commits on a clean exit and rolls back on an exception; the
-    handlers sit outside the ``async with``, so the transaction is rolled back
-    and the session closed before they run. Any ``Exception`` is a product
-    failure. A ``CancelledError`` is a product failure too unless cancellation
-    was requested (see ``_requested_cancel``), in which case it propagates.
+    The service starts its write transaction before reading. A successful apply
+    is committed; closing the session rolls back on failure or cancellation.
+    Any ``Exception`` is a product failure. A ``CancelledError`` is a product
+    failure too unless cancellation was requested (see ``_requested_cancel``),
+    in which case it propagates.
     The lookup sits inside the ``try``: a missing batch entry fails only this
     product.
     """
     try:
-        async with sessionmaker() as session, session.begin():
+        async with sessionmaker() as session:
             await price_service.apply_result(product_id, results[article], session)
+            await session.commit()
     except Exception:
         logger.bind(product_id=product_id).exception("Product check failed")
         return False

@@ -39,7 +39,6 @@ from app.bot.setup import create_bot
 from app.bot.setup import create_dispatcher
 from app.bot.setup import create_storage
 from app.bot.setup import wait_for_inflight_updates
-from app.core.config import Settings
 from app.core.config import get_settings
 from app.core.database import dispose_engine
 from app.core.database import get_engine
@@ -412,23 +411,6 @@ async def _cleanup_failed_startup(
     await _run_steps(steps)
 
 
-def _warn_if_pool_budget_exceeded(settings: Settings) -> None:
-    """Warn when the scheduler may want more connections than the pool offers.
-
-    Each concurrent check holds one pooled connection; the bot's handlers need
-    some too. Only a warning: startup proceeds, workers queue for connections.
-    """
-    capacity = settings.db.POOL_SIZE + settings.db.MAX_OVERFLOW
-    if capacity <= settings.app.MARKETPLACE_CONCURRENCY:
-        logger.warning(
-            "MARKETPLACE_CONCURRENCY={concurrency} is not below the DB pool "
-            "capacity POOL_SIZE + MAX_OVERFLOW={capacity}; bot handlers may "
-            "wait for connections",
-            concurrency=settings.app.MARKETPLACE_CONCURRENCY,
-            capacity=capacity,
-        )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Start every dependency, hand control to the app, then tear it down.
@@ -464,8 +446,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     setup_logging()
     settings = get_settings()
     get_engine()
-    _warn_if_pool_budget_exceeded(settings)
-
     storage = create_storage(settings)
     await _ensure_redis_available(storage)
 

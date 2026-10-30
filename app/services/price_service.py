@@ -83,33 +83,12 @@ class PriceService:
         A product deleted since the batch was loaded is a no-op.
         """
 
-        product = await self._product_repo_factory(session).get_by_id(product_id)
+        product_repo = self._product_repo_factory(session)
+        await product_repo.begin_write()
+        product = await product_repo.get_by_id(product_id)
         if product is None:
             return
         await self._apply(product, result, session)
-
-    async def check_product(self, product_id: int, session: AsyncSession) -> None:
-        """Check product and send alerts.
-
-        `triggered_at` is never assigned here: `NotificationService.send_alert`
-        is the sole writer, and only after a confirmed delivery
-        (PROJECT.md section 2.5). This method only reads it for the cooldown
-        gate in `_apply`.
-        """
-
-        product = await self._product_repo_factory(session).get_by_id(product_id)
-        if product is None:
-            return
-
-        # `self._client_factory` may raise `UnsupportedMarketplaceError` for a
-        # marketplace with no registered client. Deliberately not caught here:
-        # this is a configuration/programming error, not a per-product
-        # marketplace failure (`MarketplaceFetchFailure` does not apply), and
-        # letting it propagate relies on the scheduler loop (PAB-032) isolating
-        # one product's failure from the rest of the pass.
-        client = self._client_factory(product.marketplace, self._http_client)
-        market_data = await client.get_product_data(product.article)
-        await self._apply(product, market_data, session)
 
     async def _apply(
         self,
@@ -314,11 +293,14 @@ class PriceRefresher:
         """Refresh every product of the user."""
 
         async with self._sessionmaker() as session, session.begin():
-            user, _ = await self._user_repo_factory(session).get_or_create_by_tg_id(
-                tg_user_id
-            )
-            products = await self._product_repo_factory(session).get_by_user_id(user.id)
-            items = [(p.id, p.marketplace, p.article) for p in products]
+            user = await self._user_repo_factory(session).get_by_tg_id(tg_user_id)
+            if user is None:
+                items = []
+            else:
+                products = await self._product_repo_factory(session).get_by_user_id(
+                    user.id
+                )
+                items = [(p.id, p.marketplace, p.article) for p in products]
         return await self._refresh(items, tg_user_id, "list")
 
     async def refresh_product(
@@ -327,9 +309,9 @@ class PriceRefresher:
         """Refresh one product; `RefreshGone` if it is not the caller's."""
 
         async with self._sessionmaker() as session, session.begin():
-            user, _ = await self._user_repo_factory(session).get_or_create_by_tg_id(
-                tg_user_id
-            )
+            user = await self._user_repo_factory(session).get_by_tg_id(tg_user_id)
+            if user is None:
+                return RefreshGone()
             product = await self._product_repo_factory(session).get_by_id_for_user(
                 product_id, user.id
             )
@@ -467,8 +449,9 @@ class PriceRefresher:
             if results is None:
                 return RefreshFailure.error
             result = results[article]
-            async with self._sessionmaker() as session, session.begin():
+            async with self._sessionmaker() as session:
                 await self._price_service.apply_result(product_id, result, session)
+                await session.commit()
         except Exception:
             logger.bind(product_id=product_id).exception("Manual refresh apply failed")
             return RefreshFailure.error

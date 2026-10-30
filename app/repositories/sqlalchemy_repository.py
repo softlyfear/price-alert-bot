@@ -29,6 +29,24 @@ class SQLAlchemyRepository[
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def begin_write(self) -> None:
+        """Acquire the SQLite write transaction before any reads.
+
+        A caller-owned transaction may already have a connection. An existing
+        read transaction cannot be promoted. Call this on a fresh session,
+        not inside a ``session.begin()`` context; it begins the transaction.
+        """
+        if self._session.in_transaction():
+            connection = await self._session.connection()
+        else:
+            connection = await self._session.connection(
+                execution_options={"sqlite_write": True}
+            )
+        sync_connection = connection.sync_connection
+        assert sync_connection is not None  # An active session supplies a connection.
+        if not sync_connection.get_execution_options().get("sqlite_write"):
+            raise RuntimeError("SQLite write transaction must begin before any reads")
+
     @property
     @abstractmethod
     def _create_fields(self) -> set[str]:

@@ -60,6 +60,9 @@ class _Harness:
             User(id=_USER_ID, tg_user_id=_TG),
             False,
         )
+        self.users.get_by_tg_id.return_value = (
+            self.users.get_or_create_by_tg_id.return_value[0]
+        )
         self.products = MagicMock(spec=ProductRepository)
         self.alerts = MagicMock(spec=AlertRepository)
         self.client_factory = MagicMock()
@@ -110,7 +113,7 @@ async def test_find_scopes_the_lookup_to_the_internal_user_id_and_the_marketplac
 
     await h.service.find_tracked_product(_TG, Marketplace.ozon, _ARTICLE)
 
-    h.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG)
+    h.users.get_by_tg_id.assert_awaited_once_with(_TG)
     h.products.get_by_article_and_user.assert_awaited_once_with(
         _ARTICLE, _USER_ID, Marketplace.ozon
     )

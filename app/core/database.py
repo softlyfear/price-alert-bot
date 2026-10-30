@@ -2,14 +2,71 @@
 
 from collections.abc import AsyncGenerator
 from functools import lru_cache
+from math import ceil
+from math import isfinite
+from pathlib import Path
+from typing import Any
 
 from loguru import logger
+from sqlalchemy import event
+from sqlalchemy.engine import URL
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import get_settings
+
+
+def create_sqlite_engine(
+    path: str | Path,
+    *,
+    echo: bool = False,
+    busy_timeout_seconds: float = 30.0,
+) -> AsyncEngine:
+    """Create a file-based SQLite engine with shared transaction semantics.
+
+    SQLite can have several readers but only one writer. A write unit of work
+    requests the ``sqlite_write`` execution option before its first SQL; this
+    acquires the write lock before reading, avoiding stale-snapshot upgrades.
+    The database directory is provisioned by the operator, not this function.
+    """
+    if not isfinite(busy_timeout_seconds) or not 0 < busy_timeout_seconds <= 300:
+        raise ValueError("busy_timeout_seconds must be finite and within (0, 300]")
+    timeout_ms = ceil(busy_timeout_seconds * 1000)
+    engine = create_async_engine(
+        URL.create("sqlite+aiosqlite", database=str(path)),
+        echo=echo,
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:
+        # SQLAlchemy emits BEGIN for reads as well as writes. This ensures a
+        # SAVEPOINT is nested inside a real transaction, including on Python
+        # versions where sqlite3 defaults to legacy transaction control.
+        dbapi_connection.isolation_level = None
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute(f"PRAGMA busy_timeout={timeout_ms}")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            mode = cursor.fetchone()
+            if mode is None or mode[0].lower() != "wal":
+                raise RuntimeError("SQLite database could not enable WAL mode")
+        finally:
+            cursor.close()
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def begin_sqlite(connection: Connection) -> None:
+        statement = (
+            "BEGIN IMMEDIATE"
+            if connection.get_execution_options().get("sqlite_write")
+            else "BEGIN"
+        )
+        connection.exec_driver_sql(statement)
+
+    return engine
 
 
 @lru_cache
@@ -40,13 +97,10 @@ def get_engine() -> AsyncEngine:
     synchronous call path reaches ``get_engine()``.
     """
     settings = get_settings()
-    return create_async_engine(
-        url=settings.db.DATABASE_URL,
+    return create_sqlite_engine(
+        path=settings.db.PATH,
         echo=settings.db.ECHO,
-        pool_size=settings.db.POOL_SIZE,
-        max_overflow=settings.db.MAX_OVERFLOW,
-        pool_pre_ping=settings.db.POOL_PRE_PING,
-        pool_recycle=settings.db.POOL_RECYCLE,
+        busy_timeout_seconds=settings.db.BUSY_TIMEOUT_SECONDS,
     )
 
 

@@ -156,7 +156,7 @@ async def test_lifespan_fails_honestly_on_invalid_db_port_and_missing_bot_token(
     monkeypatch.setenv("DB__USER", "db_user")
     monkeypatch.setenv("DB__PASSWORD", db_password_marker)
     monkeypatch.setenv("DB__HOST", "db-host")
-    monkeypatch.setenv("DB__PORT", "not-a-port")  # invalid: AC5
+    monkeypatch.setenv("DB__BUSY_TIMEOUT_SECONDS", "not-a-number")  # invalid: AC5
     monkeypatch.setenv("DB__NAME", "pricebot")
     monkeypatch.setenv("DB__ECHO", "false")
     monkeypatch.setenv("DB__POOL_SIZE", "5")
@@ -297,20 +297,7 @@ def _make_orchestration_settings(
     scheduler interval, cooldown and concurrency (PAB-069)."""
     return Settings(
         _env_file=None,
-        db=DatabaseSettings(
-            USER="u",
-            PASSWORD=SecretStr("db-pass"),
-            HOST="db-host",
-            PORT=5432,
-            NAME="db-name",
-            ECHO=False,
-            POOL_SIZE=pool_size,
-            MAX_OVERFLOW=max_overflow,
-            POOL_PRE_PING=False,
-            POOL_RECYCLE=1,
-            AUTOFLUSH=False,
-            EXPIRE_ON_COMMIT=False,
-        ),
+        db=DatabaseSettings(PATH=Path("test-database.sqlite3")),
         tg=BotSecret(BOT_TOKEN=SecretStr(bot_token)),
         redis=RedisSettings(
             HOST="redis-host",
@@ -2107,53 +2094,6 @@ async def test_http_client_constructor_failure_cleans_up_without_touching_it(
     assert bot_factory_calls == []
     assert probe.events == ["close_storage", "dispose_engine"]
     assert "Shutdown step failed" not in capsys.readouterr().err
-
-
-# --- PAB-069 AC12: DB pool budget warning -----------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("pool_size", "max_overflow", "concurrency", "expect_warning"),
-    [
-        (5, 10, 5, False),  # .env.example defaults
-        (2, 3, 4, False),  # one below the capacity
-        (2, 3, 5, True),  # exactly the capacity
-        (2, 3, 6, True),  # above the capacity
-    ],
-)
-async def test_lifespan_warns_once_when_concurrency_reaches_the_pool_capacity(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    pool_size: int,
-    max_overflow: int,
-    concurrency: int,
-    expect_warning: bool,
-) -> None:
-    """Mutations: ``<`` instead of ``<=`` (the equality cell goes quiet),
-    inverted comparison, warning without the two figures. Startup is not
-    cancelled: ``lifespan`` yields in every cell."""
-    start_polling, stop_polling = _controlled_polling()
-    _patch_orchestration_factories(
-        monkeypatch,
-        bot=build_fake_bot(),
-        start_polling=start_polling,
-        stop_polling=stop_polling,
-        settings=_make_orchestration_settings(
-            pool_size=pool_size, max_overflow=max_overflow, concurrency=concurrency
-        ),
-    )
-
-    async with main.lifespan(main.app):
-        await asyncio.sleep(0)
-
-    lines = [line for line in capsys.readouterr().err.splitlines() if "WARNING" in line]
-    if not expect_warning:
-        assert lines == []
-        return
-    assert len(lines) == 1
-    assert f"MARKETPLACE_CONCURRENCY={concurrency}" in lines[0]
-    assert f"POOL_SIZE + MAX_OVERFLOW={pool_size + max_overflow}" in lines[0]
 
 
 # --- PAB-078: a dead background task ends the process (Р1-Р7; AC1-AC7) -----

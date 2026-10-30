@@ -163,6 +163,7 @@ def _build(
         User(id=_USER_ID, tg_user_id=_TG_USER_ID, product_limit=personal_limit),
         True,
     )
+    users.get_by_tg_id.return_value = users.get_or_create_by_tg_id.return_value[0]
 
     products = MagicMock(spec=ProductRepository)
     products.count_active_by_user.return_value = active_count
@@ -258,7 +259,7 @@ async def test_preview_registers_user_by_telegram_id_and_scopes_by_internal_id(
     with pytest.raises(ProductLimitExceededError):
         await harness.service.preview(_TG_USER_ID, _WB, _ARTICLE)
 
-    harness.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
+    harness.users.get_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
     harness.products.count_active_by_user.assert_awaited_once_with(_USER_ID)
     harness.products.get_by_article_and_user.assert_awaited_once_with(
         _ARTICLE, _USER_ID, _WB
@@ -1085,7 +1086,7 @@ async def test_product_limit_returns_the_effective_limit(
     harness = _build(monkeypatch, personal_limit=personal)
 
     assert await harness.service.product_limit(_TG_USER_ID) == expected
-    harness.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
+    harness.users.get_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
 
 
 @pytest.mark.asyncio

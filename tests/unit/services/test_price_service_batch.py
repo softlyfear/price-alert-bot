@@ -343,7 +343,10 @@ async def test_check_product_and_apply_result_leave_the_same_state(
     via_check, product_a = build()
     via_apply, product_b = build()
 
-    await via_check.service.check_product(1, _session(via_check))
+    article = 860043555
+    via_check.client.get_products_data.return_value = {article: result}
+    fetched = await via_check.service.fetch_prices(Marketplace.wb, [article])
+    await via_check.service.apply_result(1, fetched[article], _session(via_check))
     await via_apply.service.apply_result(1, result, _session(via_apply))
 
     assert vars(product_a).keys() == vars(product_b).keys()

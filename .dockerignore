@@ -5,6 +5,9 @@
 !alembic.ini
 !alembic
 !app
+!scripts
+scripts/*
+!scripts/sqlite_backup.py
 
 # Re-exclusions go after the allows (the last matching rule wins).
 **/.env*

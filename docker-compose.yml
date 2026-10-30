@@ -1,4 +1,4 @@
-# Production-like stack: PostgreSQL + Redis + one-shot migrations + the bot.
+# Production-like stack: SQLite + Redis + one-shot migrations + the bot.
 #
 # Every service is under the profile `price-alert-bot`: a bare `docker compose`
 # command touches nothing of this stack. Start and update it ONLY with
@@ -8,8 +8,7 @@
 # Environment: one file outside git, `.env` in the repo root by default,
 # another path via `make docker-up ENV_FILE=/path/to/file`. The same file is
 # used for interpolation (`--env-file`) and as `env_file` of app and migrate.
-# Variables the stack needs from it: DB__USER, DB__PASSWORD, DB__NAME (required
-# here), plus everything the application settings require (see .env.example).
+# Application settings are described in .env.example.
 # No secret value lives in this file.
 #
 # Limits:
@@ -36,27 +35,6 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
-  postgres:
-    image: postgres:17.6-alpine
-    profiles: ["price-alert-bot"]
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB__USER:?DB__USER is required in the environment file}
-      POSTGRES_PASSWORD: ${DB__PASSWORD:?DB__PASSWORD is required in the environment file}
-      POSTGRES_DB: ${DB__NAME:?DB__NAME is required in the environment file}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      # TCP (-h 127.0.0.1), not the unix socket: the temporary first-initialization
-      # server of the image listens on the socket only, and a socket probe reports
-      # "ready" while the real server is not up yet.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-    logging: *default-logging
-
   redis:
     image: redis:7.4.11-alpine
     profiles: ["price-alert-bot"]
@@ -80,21 +58,18 @@ services:
     restart: "no"
     env_file: ${ENV_FILE:-.env}
     environment:
-      DB__HOST: postgres
-      DB__PORT: "5432"
+      DB__PATH: /data/price-alert-bot.sqlite3
       REDIS__HOST: redis
       REDIS__PORT: "6379"
     read_only: true
+    volumes:
+      - sqlite_data:/data
     tmpfs:
       - /tmp
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   app:
     image: price-alert-bot
     profiles: ["price-alert-bot"]
@@ -103,8 +78,7 @@ services:
     restart: unless-stopped
     env_file: ${ENV_FILE:-.env}
     environment:
-      DB__HOST: postgres
-      DB__PORT: "5432"
+      DB__PATH: /data/price-alert-bot.sqlite3
       REDIS__HOST: redis
       REDIS__PORT: "6379"
       # Security invariant of this stack, not an operator choice: the token is
@@ -120,6 +94,8 @@ services:
       XDG_CACHE_HOME: /tmp/.cache
       XDG_CONFIG_HOME: /tmp/.config
     read_only: true
+    volumes:
+      - sqlite_data:/data
     # Chromium spawns processes; without an init a crashed one stays a zombie of PID 1.
     init: true
     # tmpfs counts against mem_limit, so its size is a cap on what Chromium may take
@@ -174,7 +150,7 @@ services:
     # Recompute if the browser, batch size or body cap changes.
     mem_limit: 1216m
     memswap_limit: 1216m
-    # CPU: the target server has 2 cores shared with postgres, redis and the OS.
+    # CPU: the target server has 2 cores shared with Redis and the OS.
     # 1.5 leaves 0.5 core for them; Chromium startup is CPU-bound and gets the rest.
     cpus: 1.5
     # Shutdown budgets in app/main.py are sequential: 30 (in-flight updates)
@@ -202,8 +178,6 @@ services:
       # host or a real Telegram handshake. Failures inside it are not counted.
       start_period: 20s
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
       migrate:
@@ -211,5 +185,5 @@ services:
     logging: *default-logging
 
 volumes:
-  pgdata:
+  sqlite_data:
   redisdata:

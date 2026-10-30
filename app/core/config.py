@@ -19,34 +19,31 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 
 
 class DatabaseSettings(BaseModel):
-    """Database connection and pool configuration."""
+    """Local SQLite database and session configuration."""
 
-    DRIVER: str = "postgresql+asyncpg"
-    USER: str
-    PASSWORD: SecretStr
-    HOST: str
-    PORT: int
-    NAME: str
+    PATH: Path = Path("./data/price-alert-bot.sqlite3")
+    BUSY_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0, le=300, allow_inf_nan=False)
+    ECHO: bool = False
+    AUTOFLUSH: bool = False
+    EXPIRE_ON_COMMIT: bool = False
 
-    ECHO: bool
-    POOL_SIZE: int
-    MAX_OVERFLOW: int
-    POOL_PRE_PING: bool
-    POOL_RECYCLE: int
-
-    AUTOFLUSH: bool
-    EXPIRE_ON_COMMIT: bool
+    @field_validator("PATH", mode="before")
+    @classmethod
+    def _validate_path(cls, value: object) -> object:
+        """Require a persistent file name, not an empty or in-memory database."""
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("PATH must name a database file")
+        if isinstance(value, str | Path) and (
+            not Path(value).name or str(value) == ":memory:"
+        ):
+            raise ValueError("PATH must name a persistent database file")
+        return value
 
     @property
     def DATABASE_URL(self) -> str:
-        """Construct PostgreSQL connection URL."""
+        """Construct the SQLite connection URL without URI interpolation."""
         return URL.create(
-            drivername=self.DRIVER,
-            username=self.USER,
-            password=self.PASSWORD.get_secret_value(),
-            host=self.HOST,
-            port=self.PORT,
-            database=self.NAME,
+            drivername="sqlite+aiosqlite", database=str(self.PATH)
         ).render_as_string(hide_password=False)
 
 
@@ -233,7 +230,7 @@ class OzonSettings(BaseModel):
 class Settings(BaseSettings):
     """All settings for import."""
 
-    db: DatabaseSettings
+    db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     tg: BotSecret
     redis: RedisSettings
     app: AppSettings = Field(default_factory=AppSettings)

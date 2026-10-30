@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.sqlite import insert
 
 from app.domain.exceptions import GetOrCreateUserError
 from app.models import User
@@ -41,8 +41,23 @@ class UserRepository(SQLAlchemyRepository[User, Mapping[str, Any], Mapping[str, 
             "tg_username",
         }
 
+    async def get_by_tg_id(self, tg_user_id: int) -> User | None:
+        """Get a user by Telegram ID without creating one."""
+        stmt = select(User).where(User.tg_user_id == tg_user_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_or_create_by_tg_id(self, tg_user_id: int) -> tuple[User, bool]:
-        """Get a user by Telegram ID or create a new one if it doesn't exist."""
+        """Get a user by Telegram ID or create a new one if it doesn't exist.
+
+        Acquires the write transaction before the first read so concurrent
+        creation cannot race with a stale SQLite snapshot.
+        """
+        await self.begin_write()
+        user = await self.get_by_tg_id(tg_user_id)
+        if user is not None:
+            return user, False
+
         insert_stmt = (
             insert(User)
             .values(tg_user_id=tg_user_id)
@@ -56,9 +71,7 @@ class UserRepository(SQLAlchemyRepository[User, Mapping[str, Any], Mapping[str, 
         if user:
             return user, True
 
-        select_stmt = select(User).where(User.tg_user_id == tg_user_id)
-        result = await self._session.execute(select_stmt)
-        user = result.scalar_one_or_none()
+        user = await self.get_by_tg_id(tg_user_id)
 
         if user is None:
             raise GetOrCreateUserError(tg_user_id)

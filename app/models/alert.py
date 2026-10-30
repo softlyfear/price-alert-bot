@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean
 from sqlalchemy import CheckConstraint
-from sqlalchemy import DateTime
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
 from sqlalchemy import UniqueConstraint
@@ -16,6 +15,7 @@ from sqlalchemy.orm import relationship
 
 from app.models.base import Base
 from app.models.base import TimestampMixin
+from app.models.base import UTCDateTime
 from app.models.enums import AlertDirection
 
 if TYPE_CHECKING:
@@ -37,9 +37,14 @@ class Alert(Base, TimestampMixin):
     target_price: Mapped[int] = mapped_column(
         CheckConstraint("target_price >= 0", name="ck_alerts_target_price_non_negative")
     )
-    direction: Mapped[AlertDirection] = mapped_column(Enum(AlertDirection))
-    is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
-    triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    direction: Mapped[AlertDirection] = mapped_column(
+        Enum(AlertDirection, create_constraint=True, validate_strings=True)
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean(create_constraint=True, name="ck_alerts_is_active_boolean"),
+        server_default=text("true"),
+    )
+    triggered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     __table_args__ = (
         UniqueConstraint(
@@ -49,6 +54,7 @@ class Alert(Base, TimestampMixin):
             "target_price",
             name="uq_alerts_user_product_logic",
         ),
+        {"sqlite_autoincrement": True},
     )
 
     product: Mapped["Product"] = relationship(

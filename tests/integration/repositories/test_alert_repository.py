@@ -615,7 +615,9 @@ async def test_update_target_for_user_colliding_with_another_alert_raises_keepin
                 second.id, user.id, 5_000, AlertDirection.below
             )
 
-    assert "uq_alerts_user_product_logic" in str(excinfo.value)
+    assert "UNIQUE constraint failed: alerts.user_id, alerts.product_id" in str(
+        excinfo.value
+    )
     assert (await _stored(db_session, first.id))[:2] == (5_000, AlertDirection.below)
     assert await _stored(db_session, second.id) == (
         6_000,

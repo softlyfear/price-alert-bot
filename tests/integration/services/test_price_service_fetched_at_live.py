@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.price_service as price_service_module
+from app.models.enums import Marketplace
 from app.models.product import Product
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
@@ -58,6 +59,11 @@ class _Client:
     async def get_product_data(self, article: int) -> MarketplaceFetchResult:
         return self._result
 
+    async def get_products_data(
+        self, articles: list[int]
+    ) -> dict[int, MarketplaceFetchResult]:
+        return dict.fromkeys(articles, self._result)
+
 
 _Entry = Callable[
     [PriceService, int, AsyncSession, MarketplaceFetchResult], Awaitable[None]
@@ -79,7 +85,10 @@ async def _via_check_product(
     session: AsyncSession,
     result: MarketplaceFetchResult,
 ) -> None:
-    await service.check_product(product_id, session)
+    product = await session.get(Product, product_id)
+    assert product is not None
+    fetched = await service.fetch_prices(Marketplace.wb, [product.article])
+    await service.apply_result(product_id, fetched[product.article], session)
 
 
 _ENTRIES = [
