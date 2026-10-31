@@ -1,37 +1,23 @@
 #!/usr/bin/env bash
-# Smoke checks of the runtime image contract (PROJECT.md §8.6, PAB-086).
-#
-# Usage: scripts/smoke-image IMAGE
-#
-# Runs on a developer machine and in CI alike. No network (--network none), no
-# application settings. Every container is `--rm`; no image or volume is created.
-# `docker inspect` is queried field by field and never printed whole, the
-# container environment is never printed.
-#
-# Exit codes: 0 all checks passed, 1 at least one check failed (each failure is a
-# `FAIL` line naming the check), 2 usage error.
+# Inspect individual fields so container environment values are never printed.
 
 set -uo pipefail
 
 [ "$#" -eq 1 ] && [ -n "$1" ] || { echo "usage: smoke-image IMAGE" >&2; exit 2; }
 readonly IMAGE="$1"
 readonly START_LIMIT=60
-# Grace after the soft signal of `timeout` before SIGKILL (check 6).
 readonly KILL_GRACE=5
 
 failed=0
 pass() { echo "ok   $1"; }
 fail() { echo "FAIL $1${2:+: $2}"; failed=1; }
 
-# Throwaway container: no network, removed on exit.
 drun() { docker run --rm --network none "$@"; }
-# One inspect field, rendered by a Go template.
 field() { docker image inspect --format "$1" "$IMAGE"; }
 
 docker image inspect --format '{{.Id}}' "$IMAGE" > /dev/null 2>&1 \
     || { echo "smoke-image: image $IMAGE not found" >&2; exit 2; }
 
-# (1) /app content, no uv.
 out="$(drun "$IMAGE" ls -A /app 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$out" | LC_ALL=C sort | tr '\n' ' ')" = ".venv alembic alembic.ini app scripts " ]; then
     pass "(1) /app holds exactly .venv alembic alembic.ini app scripts"
@@ -41,8 +27,7 @@ fi
 out="$(drun "$IMAGE" sh -c 'command -v uv || echo not-found' 2>&1)"
 if [ "$out" = "not-found" ]; then pass "(1) uv is not in the image"; else fail "(1) uv lookup" "found: $out"; fi
 
-# (2) installed distributions: no dev tooling, runtime stack present. The same
-# lookup finds both lists, so the positive control proves the negative one.
+# The positive control verifies the same lookup used for absent distributions.
 # shellcheck disable=SC2016  # the program is Python, not shell
 dist_py='
 import re, sys
@@ -59,11 +44,9 @@ if bad:
 out="$(drun "$IMAGE" python -c "$dist_py" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then pass "(2) no dev distributions, runtime stack present ($out)"; else fail "(2) distributions" "rc=$rc, $(printf '%s' "$out" | tr '\n' ' ')"; fi
 
-# (3) import under a read-only root FS, cwd /, safe path, no settings.
 out="$(drun --read-only -w / -e PYTHONSAFEPATH=1 "$IMAGE" python -c 'import app.main' 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then pass "(3) import app.main under read-only root FS"; else fail "(3) import app.main" "rc=$rc, $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"; fi
 
-# (4) unprivileged user; /app is not writable (the message is checked, not only the rc).
 uid="$(drun "$IMAGE" id -u 2>&1)"
 cfg_user="$(field '{{.Config.User}}')"
 if [ "$uid" != "0" ] && [[ "$uid" =~ ^[0-9]+$ ]] && [[ "$cfg_user" =~ ^[1-9][0-9]* ]]; then
@@ -78,7 +61,6 @@ else
     fail "(4) /app write" "rc=$rc, $(printf '%s' "$out" | tr '\n' ' ')"
 fi
 
-# (5) Entrypoint empty, Cmd is the exec-form uvicorn command, one exposed port.
 ep_len="$(field '{{len .Config.Entrypoint}}')"
 cmd_len="$(field '{{len .Config.Cmd}}')"
 cmd_first="$(field '{{index .Config.Cmd 0}}' 2>/dev/null)"
@@ -97,12 +79,11 @@ done
 if [ "$cmd_ok" -eq 1 ]; then pass "(5) Entrypoint empty, Cmd is exec-form uvicorn: $cmd_all"; else fail "(5) Entrypoint/Cmd" "Entrypoint length=$ep_len, Cmd=$cmd_all"; fi
 if [ "$ports" = "8000/tcp " ]; then pass "(5) ExposedPorts is 8000/tcp"; else fail "(5) ExposedPorts" "got: $ports"; fi
 
-# (6) no settings: loud refusal, exit code 3, within the limit.
 name="smoke-image-$$"
 t0=$SECONDS
 out="$(timeout -k "$KILL_GRACE" "$START_LIMIT" docker run --rm --network none --name "$name" "$IMAGE" 2>&1)"; rc=$?
 elapsed=$((SECONDS - t0))
-# Unconditional cleanup by name, with its anonymous volumes (-v): quiet when the container is already gone.
+# Clean up even if timeout left the container running.
 docker rm -f -v "$name" > /dev/null 2>&1
 if [ "$rc" -eq 3 ] && [[ "$out" == *"validation error"* ]] && [[ "$out" == *"Settings"* ]] \
     && [[ "$out" == *"Application startup failed. Exiting."* ]]; then
@@ -111,7 +92,6 @@ else
     fail "(6) start without settings" "rc=$rc after ${elapsed}s (limit ${START_LIMIT}s), $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"
 fi
 
-# (7) Chromium: path named by the playwright package, full build, loadable libraries.
 # shellcheck disable=SC2016  # the program is Python, not shell
 path_py='
 from playwright.sync_api import sync_playwright
@@ -137,7 +117,6 @@ else
     fail "(7) browsers directory write" "rc=$rc, $(printf '%s' "$out" | tr '\n' ' ')"
 fi
 
-# (8) facts for the log, not compared.
 py_version="$(drun "$IMAGE" python --version 2>&1)"
 echo "info $py_version in the image"
 echo "info image size: $(field '{{.Size}}') bytes"

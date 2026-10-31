@@ -1,11 +1,4 @@
-"""Tests for app.scheduler (PAB-069 AC6, AC7).
-
-Boundaries replaced: the sessionmaker (a fake that records close/commit/rollback
-the way ``AsyncSession`` and ``begin()`` behave), the product-id query
-(``ProductRepository`` as seen by the scheduler) and, in most tests, the
-``PriceService``. Time is never real: the loop pause is observed through a
-wrapped ``asyncio.timeout``.
-"""
+"""Loop timing is controlled through a wrapped asyncio.timeout."""
 
 from __future__ import annotations
 
@@ -157,15 +150,6 @@ type _FetchBody = Callable[
 
 
 class _FakeService:
-    """The three methods the scheduler calls on ``PriceService``.
-
-    ``batch_size`` is a per-marketplace table (default 1: every product is its
-    own batch). ``fetch_prices`` records its calls and answers every requested
-    article with ``_price_of(article)`` unless ``fetch_body`` returns a dict of
-    its own (or raises). ``apply_result`` records the product id, the result and
-    the session, then runs the pluggable ``body``.
-    """
-
     def __init__(
         self,
         body: Callable[[int, _FakeSession], Awaitable[None]] | None = None,

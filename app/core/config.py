@@ -1,5 +1,3 @@
-"""Application configuration settings."""
-
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
@@ -54,12 +52,7 @@ class BotSecret(BaseModel):
 
 
 class RedisSettings(BaseModel):
-    """Redis connection configuration for aiogram's RedisStorage (FSM state).
-
-    HOST has no default on purpose: a storage address depends on the
-    deployment, and a silent fallback to localhost in production is worse
-    than an explicit failure on startup.
-    """
+    """Redis FSM storage settings; HOST is required for an explicit deployment."""
 
     HOST: str = Field(min_length=1)
     PORT: int = Field(default=6379, ge=1, le=65535)
@@ -69,35 +62,21 @@ class RedisSettings(BaseModel):
     @field_validator("HOST")
     @classmethod
     def _reject_blank_host(cls, value: str) -> str:
-        """Reject a host made up entirely of whitespace.
-
-        ``min_length=1`` only counts characters, so ``" "`` and ``"  \t "``
-        both satisfy it while carrying no real address. That defeats the
-        field's purpose: an explicit startup failure instead of a silent
-        fallback deep inside ``RedisStorage``.
-        """
+        """Reject whitespace, which satisfies min_length but is not an address."""
         if not value.strip():
             raise ValueError("HOST must not be blank")
         return value
 
     @property
     def REDIS_URL(self) -> str:
-        """Construct Redis connection URL.
-
-        The result may contain a password in plain text and must never be
-        logged or otherwise exposed.
-        """
+        """The returned URL may contain a plaintext password and must not be logged."""
         password = self.PASSWORD.get_secret_value() if self.PASSWORD is not None else ""
         auth = f":{quote(password, safe='')}@" if password else ""
         return f"redis://{auth}{self.HOST}:{self.PORT}/{self.DB}"
 
 
 class AppSettings(BaseModel):
-    """Application-level runtime configuration.
-
-    None of these values are secrets, so every field has a safe default and
-    the application must be able to start without any APP__* variable set.
-    """
+    """Non-secret runtime settings with safe defaults."""
 
     SCHEDULER_INTERVAL_SECONDS: int = Field(default=900, gt=0)
     ALERT_COOLDOWN_SECONDS: int = Field(default=86400, gt=0)
@@ -120,12 +99,7 @@ class AppSettings(BaseModel):
 
 
 class WbSettings(BaseModel):
-    """Wildberries antibot token acquisition through a browser (PAB-079, Р12).
-
-    None of these values are secrets; the defaults are the measured numbers.
-    BROWSER_SANDBOX is off by default: on hosts that restrict unprivileged
-    user namespaces the Chromium sandbox does not start.
-    """
+    """Browser sandbox defaults off for hosts restricting unprivileged namespaces."""
 
     TOKEN_TIMEOUT_SECONDS: float = Field(
         default=30.0, gt=0, le=120, allow_inf_nan=False
@@ -145,12 +119,7 @@ _PROXY_CREDENTIAL_MAX_BYTES = 255
 
 
 def _check_proxy_url(url: str) -> None:
-    """Raise a generic ``ValueError`` unless ``url`` is a valid SOCKS5 proxy URL.
-
-    Messages never contain a part of the URL: it holds the proxy host and
-    credentials, and a library message such as the one for a non-numeric port
-    would echo them.
-    """
+    """Validate SOCKS5 URLs without exposing the host or credentials in errors."""
     msg = "must be socks5://[login:password@]host:port or socks5h://..., no path"
     if "?" in url or "#" in url:
         raise ValueError(msg)
@@ -182,15 +151,7 @@ def _check_proxy_url(url: str) -> None:
 
 
 class OzonSettings(BaseModel):
-    """Ozon cookies acquisition through a browser (PAB-110, PROJECT.md 2.14 O8).
-
-    PROXY_URL (PAB-111, O10) is the only secret: the URL holds the proxy host
-    and credentials. Empty means no proxy. The URL rules live here and only
-    here (R1); ``SocksProxy.from_url`` just splits an already checked URL.
-    Otherwise the shape and defaults are those of ``WbSettings``.
-    BROWSER_SANDBOX is off by default for the same reason (restricted user
-    namespaces).
-    """
+    """Browser access settings; PROXY_URL contains credentials when configured."""
 
     PROXY_URL: SecretStr | None = None
 
@@ -219,7 +180,7 @@ class OzonSettings(BaseModel):
     @field_validator("PROXY_URL")
     @classmethod
     def _validate_proxy_url(cls, value: SecretStr | None) -> SecretStr | None:
-        """Check the SOCKS5 URL rules (O10); the message carries no URL part."""
+        """Validate the proxy without exposing its contents in errors."""
         if value is None:
             return None
         url = value.get_secret_value().strip()
@@ -228,8 +189,6 @@ class OzonSettings(BaseModel):
 
 
 class Settings(BaseSettings):
-    """All settings for import."""
-
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     tg: BotSecret
     redis: RedisSettings
@@ -241,17 +200,8 @@ class Settings(BaseSettings):
         env_file=BASE_DIR / ".env",
         env_nested_delimiter="__",
         extra="ignore",
-        # Pydantic's "missing field" error echoes the *entire* raw input
-        # mapping of the model that failed as validation context -- for a
-        # nested model this includes sibling fields that validated fine,
-        # secrets among them, and it does so *before* any field is coerced
-        # to SecretStr. This is not hypothetical: an unset REDIS__HOST with
-        # REDIS__PASSWORD set prints the plain-text password inside
-        # ValidationError. SecretStr alone does not close this path because
-        # the leaking value is the raw pre-validation input, not a
-        # validated field; only suppressing input echo at this outermost
-        # model (where validate_python is actually invoked) closes it --
-        # setting it on a nested model has no effect, verified empirically.
+        # Nested validation errors may echo raw secrets before SecretStr coercion;
+        # suppress input at the outer model where validation is invoked.
         hide_input_in_errors=True,
     )
 

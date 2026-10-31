@@ -1,50 +1,7 @@
-"""Get product name and price from the Wildberries `u-card/cards/v4/detail` API.
+"""WB prices are kopecks; track the minimum priced size without personal discounts.
 
-Contract established by fact, not by a live call (PAB-014, "Перепланирование
-WB по факту", 2026-09-23): the sole reference is the customer-supplied
-capture for article `860043555`, dated 2026-09-23
-(`tests/fixtures/wb/detail_860043555.json`), validated here through
-`WbDetailResponse` (`app/schemas/wb.py`, PAB-061). Price is in kopecks -
-confirmed against the customer's UI (`PROJECT.md` section 2.8, point 4:
-`1 429 руб.` corresponds to `price.product = 142900` with a divisor of 100).
-
-Price selection: the tracked price is the **minimum** `price.product` across
-sizes that carry a `price` at all - a size with no stock has no `price` key
-in the upstream response (fact, section 2.8, point 3), so the first size in
-the list is not a reliable source of price (the finding that triggered this
-rewrite: `sizes[0]` of the reference article has no price whatsoever). If no
-size has a price the product is reported as `out_of_stock`, not
-`bad_payload` (`PROJECT.md` section 2.6). Product selection: `products[].id`
-is matched against the requested article, never list position (section
-2.8) - a positional read would silently attribute a different product's
-price to the requested one.
-
-Known limitation, named explicitly per the customer's product decision
-(`PROJECT.md` section 2.9): the reported price excludes personal discounts
-(for example WB Wallet) - the site may show the user a lower price than the
-bot.
-
-The response body is read as a stream with a size cap (`MAX_BODY_BYTES`) and
-the whole request is bounded by one deadline (`TIMEOUT_SECONDS`), see
-`PROJECT.md` section 8.2.
-
-Access is by the anti-bot token (`PROJECT.md` section 2.12): every request
-carries the pair from a `WbAccessProvider` (`app/services/wb_access.py`). `498`
-means the token is spent - the pair is invalidated and the request repeated
-once with a fresh one; a second `498` is `blocked`. `403` with a pair also
-invalidates it and is `blocked` without a repeat; a provider refusal is
-`blocked` without any request to WB.
-
-Direct access (no token) remains blocked from this working environment:
-both `www.wildberries.ru/__internal/u-card/cards/v4/detail`
-(used below) and the former `card.wb.ru/cards/v4/detail` answer HTTP 403 on
-every independent check made for this project, most recently 2026-09-23
-(`PROJECT.md` section 2.6). Two request parameters remain named assumptions
-rather than verified facts: `dest` is pinned to the value already present in
-this module before this rewrite (not the customer's own delivery region,
-which is never recorded - `PROJECT.md` section 8.2), and `spp=30` is sent
-verbatim as captured, with its exact effect on the returned price
-unestablished (section 2.8).
+The response contract comes from tests/fixtures/wb/detail_860043555.json.
+`dest` is fixed and the effect of captured `spp=30` is unverified.
 """
 
 import asyncio
@@ -72,12 +29,6 @@ from app.services.wb_access import WbAccessUnavailable
 
 
 def _select_wb_product(products: list[WbProduct], article: int) -> WbProduct | None:
-    """Pick the product entry whose `id` equals the requested article.
-
-    List position carries no meaning (`PROJECT.md` section 2.8) - a product
-    list that does not contain the requested article at all (including an
-    empty list) yields `None`, the caller's cue for `bad_payload`.
-    """
     for product in products:
         if product.id == article:
             return product
@@ -85,10 +36,7 @@ def _select_wb_product(products: list[WbProduct], article: int) -> WbProduct | N
 
 
 def _select_wb_price(sizes: list[WbSize]) -> int | None:
-    """Pick the tracked price: the minimum `price.product` across sizes that
-    have a price at all (`PROJECT.md` section 2.8). `None` means no size has
-    a price, the caller's cue for `out_of_stock`. One pass, `O(S)`.
-    """
+    """Unpriced sizes may be out of stock; return the minimum priced size."""
     prices = [size.price.product for size in sizes if size.price is not None]
     if not prices:
         return None
@@ -103,11 +51,8 @@ class WbClient(BaseMarketplaceClient):
     URL = "https://www.wildberries.ru/__internal/u-card/cards/v4/detail"
     TIMEOUT_SECONDS = 10.0
     MAX_BODY_BYTES = 1_048_576
-    # Batch path only (PAB-081 AC2(i)): 100 articles weigh ~10.5 KB each, so the
-    # single-request cap would drop a whole batch on one heavy product.
+    # A single-request cap could drop a batch containing a heavy product.
     MAX_BATCH_BODY_BYTES = 4_194_304
-    # Measured weight (PROJECT.md 2.12, R13): 100 articles cost the token one
-    # request and ~347 KB. A constant, not a setting.
     batch_size: ClassVar[int] = 100
 
     def __init__(
@@ -117,14 +62,6 @@ class WbClient(BaseMarketplaceClient):
         self._access = access
 
     async def get_product_data(self, article: int) -> MarketplaceFetchResult:
-        """Fetch name and price for a single WB article.
-
-        Returns either `MarketplaceProductData` or a `MarketplaceFetchFailure`
-        marking one of `blocked`, `not_found`, `transport_error`,
-        `bad_payload` or `out_of_stock` - never `None`, never an exception
-        escaping to the caller (`BaseMarketplaceClient` contract). At most two
-        HTTP requests and two provider `get` calls per article.
-        """
 
         body = await self._fetch(
             str(article), f"article {article}", self.MAX_BODY_BYTES
@@ -136,15 +73,7 @@ class WbClient(BaseMarketplaceClient):
     async def get_products_data(
         self, articles: Sequence[int]
     ) -> dict[int, MarketplaceFetchResult]:
-        """Fetch name and price for many WB articles, one request per batch.
-
-        Distinct articles are cut into chunks of `batch_size`; each chunk is a
-        single `nm=<a>;<b>;...` request. Products are matched to articles by
-        `id`, never by position. A request-level failure marks every article
-        of the chunk alike. Every distinct input article is a key; nothing
-        escapes. At most two HTTP requests and two provider `get` calls per
-        chunk, so `2 * ceil(N / batch_size)` for `N` distinct articles.
-        """
+        """Match by ID; a request failure applies to every article in its batch."""
         results: dict[int, MarketplaceFetchResult] = {}
         for chunk in batched(dict.fromkeys(articles), self.batch_size, strict=False):
             subject = f"batch of {len(chunk)} articles"
@@ -160,10 +89,7 @@ class WbClient(BaseMarketplaceClient):
     async def _fetch(
         self, nm: str, subject: str, max_body_bytes: int
     ) -> bytes | MarketplaceFetchFailure:
-        """Request `nm` with a provider pair; on `498` invalidate and repeat once.
-
-        `subject` only labels log lines ("article N" or "batch of N articles").
-        """
+        """Renew a rejected token once; a second 498 is blocked."""
         attempt = 0
         while True:
             attempt += 1
@@ -189,10 +115,9 @@ class WbClient(BaseMarketplaceClient):
     async def _request(
         self, nm: str, subject: str, access: WbAccess, max_body_bytes: int
     ) -> bytes | MarketplaceFetchFailure | _TokenRejected:
-        """One HTTP request with `access`; a failure is returned, not raised."""
 
         # Built by hand: `httpx` percent-encodes the `;` batch separator in
-        # `params`, while WB is measured with the literal one (R13).
+        # `params`, while WB was observed with the literal one.
         query = urlencode(
             {
                 "appType": 1,
@@ -227,7 +152,6 @@ class WbClient(BaseMarketplaceClient):
                     timeout=self.TIMEOUT_SECONDS,
                 ) as r,
             ):
-                # Status is known from headers; a non-2xx body is never read.
                 r.raise_for_status()
                 body = await read_body_bounded(r, max_body_bytes)
         except httpx.HTTPStatusError as e:
@@ -252,9 +176,6 @@ class WbClient(BaseMarketplaceClient):
                     reason=FetchFailureReason.not_found,
                     detail=f"HTTP {status}",
                 )
-            # Any other status raise_for_status() can produce - 5xx and any
-            # unlisted 4xx alike - is treated as a transient transport
-            # failure, the catch-all bucket per the ticket's Description.
             return MarketplaceFetchFailure(
                 reason=FetchFailureReason.transport_error,
                 detail=f"HTTP {status}",
@@ -278,13 +199,11 @@ class WbClient(BaseMarketplaceClient):
         return body
 
     def _parse(self, article: int, body: bytes) -> MarketplaceFetchResult:
-        """Validate the payload and pick the product and its price."""
         try:
             parsed = WbDetailResponse.model_validate_json(body)
 
             if not parsed.products:
-                # Fact (`PROJECT.md` section 2.8): an unknown article is
-                # `200` with `products == []`.
+                # WB returns HTTP 200 with an empty list for an unknown article.
                 logger.warning(f"Empty products for article {article} - not found")
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.not_found,
@@ -308,13 +227,7 @@ class WbClient(BaseMarketplaceClient):
 
             return MarketplaceProductData(name=product.name, price=price)
         except ValidationError as e:
-            # A closed, named exception set: `WbDetailResponse.model_validate_json`
-            # and `MarketplaceProductData(...)` are the only two calls in this
-            # block that can raise, and both raise exactly this one class - a
-            # non-JSON body raises it too, since `pydantic.ValidationError` is
-            # a `ValueError` subclass that wraps the JSON decode failure
-            # (measured fact, TASKS.md "Перепланирование WB по факту").
-            # `str(e)` is never used - it echoes the offending input value.
+            # Validation errors may contain the upstream input.
             logger.error(f"Bad payload for article {article}: {type(e).__name__}")
             return MarketplaceFetchFailure(
                 reason=FetchFailureReason.bad_payload,
@@ -324,13 +237,7 @@ class WbClient(BaseMarketplaceClient):
     def _parse_batch(
         self, chunk: Sequence[int], body: bytes
     ) -> dict[int, MarketplaceFetchResult]:
-        """Validate a batch payload and map each requested article to a result.
-
-        Matching is by `products[].id`. An empty list is `not_found` for all;
-        an article absent from a non-empty list is `not_found` too (assumption
-        R13, not a measurement - a wrong mark is harmless, a failure never
-        overwrites a stored price). One pass over the products, `O(n)`.
-        """
+        """An absent article in a non-empty batch is assumed not found."""
         try:
             parsed = WbDetailResponse.model_validate_json(body)
         except ValidationError as e:

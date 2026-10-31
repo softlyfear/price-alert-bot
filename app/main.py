@@ -1,16 +1,4 @@
-"""FastAPI application entry point.
-
-Importing this module performs no I/O: it does not read settings, does not
-build a ``Bot`` and does not touch the network (PROJECT.md §8.3, Р9). Every
-object with a lifetime -- the bot, the dispatcher, the FSM storage, the
-polling task -- is created inside ``lifespan`` and torn down there too, so
-``uvicorn app.main:app`` stays importable with an empty environment.
-
-A background task (polling, scheduler) dying before shutdown starts makes the
-process send itself SIGTERM, so it exits through the normal ``_shutdown`` and
-the restart policy of the stack revives it. Telegram is checked with one
-``getMe`` before any task starts, so a failed check ends the startup instead.
-"""
+"""Application resources are created in lifespan; import performs no I/O."""
 
 import asyncio
 import functools
@@ -62,41 +50,18 @@ from app.services.socks_relay import SocksProxy
 from app.services.wb_access import BrowserWbAccessProvider
 from app.services.wb_browser import fetch_wb_token
 
-# Budget for handlers already running when shutdown starts to finish before
-# the bot session closes under them (PROJECT.md §8.3, Р6 (в)/(г)). No env
-# var: this ticket does not add scheduler-grade configuration, only a fixed
-# shutdown budget generous enough for one full marketplace HTTP timeout
-# (`AppSettings.HTTP_TIMEOUT_SECONDS`, default 10s) plus a database round trip.
+# Shutdown waits are bounded so stuck handlers cannot block resource cleanup.
 _INFLIGHT_UPDATES_TIMEOUT_SECONDS: Final[float] = 30.0
-
-# Budget for the scheduler to finish the products already in progress after
-# ``stop_event`` is set (new products are not started). One product costs at
-# most one marketplace deadline (`WBClient.TIMEOUT_SECONDS`, 10s) plus a
-# Telegram send (aiogram's default request timeout is 60s, but a healthy send
-# takes well under a second) plus database round trips; 45s covers the fetch,
-# a slow send and the commit. It runs concurrently with the polling stop and
-# the in-flight wait, so the worst-case shutdown is roughly
-# 30 + 45 + _SCHEDULER_CANCEL_TIMEOUT_SECONDS plus the closing steps -- the
-# figure PAB-036 must keep below ``stop_grace_period``.
+# Allow in-progress checks to finish before cancellation; the overall shutdown
+# budget must fit the deployment's stop_grace_period.
 _SCHEDULER_STOP_TIMEOUT_SECONDS: Final[float] = 45.0
-# How long to wait for a scheduler task to actually finish after ``cancel()``.
 _SCHEDULER_CANCEL_TIMEOUT_SECONDS: Final[float] = 5.0
-# Budget for the WB access provider to cancel a running token fetch and close
-# the browser (PAB-079); the browser is closed inside the fetch's own cleanup.
 _WB_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
-# Same budget for the Ozon access provider (PAB-110, O9).
 _OZON_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
 def _log_task_failure(task: "asyncio.Task[None]", label: str) -> None:
-    """Log a died background task exactly once; ignore a clean cancellation.
-
-    Registered via ``add_done_callback`` so the task's exception is retrieved
-    as soon as it happens -- whether that is while the app is otherwise idle
-    or later, when shutdown itself awaits the task. Retrieving it here also
-    keeps asyncio from ever printing "Task exception was never retrieved",
-    regardless of which of those two moments comes first.
-    """
+    """Retrieve and log the exception once, avoiding an unhandled-task warning."""
     if task.cancelled():
         return
     exc = task.exception()
@@ -107,39 +72,26 @@ def _log_task_failure(task: "asyncio.Task[None]", label: str) -> None:
 
 
 def _log_polling_task_failure(task: "asyncio.Task[None]") -> None:
-    """Log a died polling task exactly once (AC7)."""
     _log_task_failure(task, "Polling")
 
 
 def _log_scheduler_task_failure(task: "asyncio.Task[None]") -> None:
-    """Log a died scheduler task exactly once (PAB-069, Р3)."""
     _log_task_failure(task, "Scheduler")
 
 
 def _request_process_termination() -> None:
-    """Send SIGTERM to this very process; the only place in ``app`` that signals.
-
-    The signal takes the same path as an operator's stop: uvicorn leaves
-    ``lifespan`` and ``_shutdown`` runs. Tests replace this function by name.
-    """
+    """Use uvicorn’s normal shutdown path to terminate the process."""
     os.kill(os.getpid(), signal.SIGTERM)
 
 
 class _BackgroundDeathWatch:
-    """Per-``lifespan`` guard: a task dying before shutdown ends the process.
-
-    One instance lives for one ``lifespan`` pass, so two passes in one process
-    stay independent. ``stopping`` is set before the first shutdown step; a
-    task finishing after that (normal return, timeout cancel) asks for nothing.
-    At most one termination request is made, however many tasks die.
-    """
+    """Request termination once if a background task dies before shutdown."""
 
     def __init__(self) -> None:
         self.stopping = False
         self._requested = False
 
     def task_done(self, task: "asyncio.Task[None]", label: str) -> None:
-        """Done-callback: log CRITICAL and request termination, once."""
         if self.stopping or self._requested:
             return
         self._requested = True
@@ -156,19 +108,9 @@ class _BackgroundDeathWatch:
 
 
 async def _ensure_redis_available(storage: RedisStorage) -> None:
-    """Fail fast if Redis is unreachable.
-
-    PROJECT.md §8.3: a silent fallback to ``MemoryStorage`` would lose FSM
-    state without anyone noticing, so the app refuses to start instead. The
-    just-built client is closed before re-raising so a failed startup does
-    not leak the connection; the raised message names no credential, and the
-    underlying ``redis`` exception does not echo the configured password
-    either -- only host and port ever appear in it.
-    """
+    """Reject unreachable Redis rather than silently lose persistent FSM state."""
     try:
-        # redis-py's stubs type ``ping()`` as ``Awaitable[bool] | bool``
-        # because the same source backs both the sync and async clients;
-        # on ``redis.asyncio.Redis`` it is always a coroutine.
+        # The shared sync/async stub permits bool; the async client returns a coroutine.
         await cast("Awaitable[bool]", storage.redis.ping())
     except Exception as exc:
         await storage.close()
@@ -176,24 +118,7 @@ async def _ensure_redis_available(storage: RedisStorage) -> None:
 
 
 async def _ensure_telegram_available(bot: Bot) -> None:
-    """Fail fast if Telegram does not answer ``getMe`` (PROJECT.md §8.3).
-
-    Runs before the bot profile and before any background task, so a cycle of
-    restarts against an unreachable Telegram or a rejected token starts no
-    scheduler pass. ``Bot.me()`` caches its answer, so polling does not repeat
-    ``getMe``. Any ``Exception`` is logged in exactly one ``ERROR`` record and
-    replaced by ``RuntimeError`` naming only the class, raised ``from None``;
-    the cleanup of the failed startup stays in ``lifespan``.
-
-    The text of the original exception is external data: for a broken HTTP
-    answer it embeds the request URL ``.../bot<token>/getMe``. So the exception
-    object never reaches the record (neither the message nor ``extra``), its
-    text enters the record once with the secret part of ``bot.token`` (all
-    after the first ``:``) cut out, and the text is passed as a pre-built
-    message without format arguments, so braces in it are not interpreted. The
-    raised error carries neither text nor ``__cause__``, so the uvicorn
-    traceback does not print the original either.
-    """
+    """Check Telegram before starting tasks; redact the token from errors and logs."""
     try:
         await bot.me()
     except Exception as exc:
@@ -213,37 +138,19 @@ async def _ensure_telegram_available(bot: Bot) -> None:
 async def _stop_polling_if_running(
     dispatcher: Dispatcher, polling_task: "asyncio.Task[None]"
 ) -> None:
-    """Ask aiogram to stop polling, unless the task already finished on its own.
-
-    ``Dispatcher.stop_polling`` raises ``RuntimeError`` when polling is not
-    currently running (PROJECT.md §8.3, Р6 (в)); checking ``polling_task``
-    first avoids calling it at all in that case instead of relying on the
-    exception, so a dead polling task cannot masquerade as a failed shutdown
-    step.
-    """
+    """Avoid stop_polling raising when polling has already stopped."""
     if polling_task.done():
         return
     await dispatcher.stop_polling()
 
 
 async def _await_polling_task(polling_task: "asyncio.Task[None]") -> None:
-    """Wait for the polling task object to finish, without re-raising its result.
-
-    Uses ``asyncio.wait`` instead of a bare ``await`` on purpose: the task's
-    own exception, if any, was already retrieved and logged exactly once by
-    ``_log_polling_task_failure``. Awaiting the task directly here would
-    raise that same exception again and log it a second time.
-    """
+    """Wait without re-raising an exception already logged by the done callback."""
     await asyncio.wait({polling_task})
 
 
 async def _await_inflight_updates(dispatcher: Dispatcher) -> None:
-    """Wait for updates already being handled, with a bounded timeout.
-
-    A timeout is not an error on its own -- it is logged as a warning
-    (PROJECT.md §8.3, Р6 (г)) and shutdown proceeds to close the bot session
-    regardless, so a stuck handler cannot hang the whole process.
-    """
+    """Bound the wait so a stuck handler cannot block shutdown."""
     finished = await wait_for_inflight_updates(
         dispatcher, _INFLIGHT_UPDATES_TIMEOUT_SECONDS
     )
@@ -259,11 +166,7 @@ async def _signal_scheduler_stop(stop_event: asyncio.Event) -> None:
 
 
 async def _await_scheduler_task(scheduler_task: "asyncio.Task[None]") -> None:
-    """Wait for the scheduler to finish; on timeout warn, cancel and wait briefly.
-
-    Like ``_await_polling_task`` this never re-raises the task's own exception:
-    ``_log_scheduler_task_failure`` already logged it once.
-    """
+    """Bound the wait and cancellation; task exceptions were already logged."""
     done, _ = await asyncio.wait(
         {scheduler_task}, timeout=_SCHEDULER_STOP_TIMEOUT_SECONDS
     )
@@ -304,11 +207,7 @@ async def _close_ozon_session(ozon_session: OzonSession) -> None:
 def _serialized[T](
     lock: asyncio.Lock, fetch: Callable[[], Awaitable[T]]
 ) -> Callable[[], Awaitable[T]]:
-    """Wrap an access fetcher so that fetchers sharing ``lock`` never overlap.
-
-    One browser at a time in the process (PAB-110): WB and Ozon fetchers get
-    the same lock. A cancelled fetcher releases the lock on its way out.
-    """
+    """Serialize browser fetches; cancellation also releases the lock."""
 
     async def run() -> T:
         async with lock:
@@ -322,11 +221,7 @@ async def _close_storage(storage: RedisStorage) -> None:
 
 
 async def _run_steps(steps: list[tuple[str, Callable[[], Awaitable[None]]]]) -> None:
-    """Run teardown steps in order; a failing step is logged, the rest still run.
-
-    ``CancelledError`` is never caught here and propagates as usual
-    (соглашение 23).
-    """
+    """Continue after failed teardown steps, while propagating cancellation."""
     for name, action in steps:
         try:
             await action()
@@ -348,18 +243,7 @@ async def _shutdown(
     ozon_access: BrowserOzonAccessProvider,
     ozon_session: OzonSession,
 ) -> None:
-    """Tear down everything ``lifespan`` started, in the fixed order (Р6, Р3).
-
-    Order: signal the scheduler to stop -> close the WB access provider
-    (PAB-079; an in-flight check then gets an honest ``blocked``) -> close
-    the Ozon access provider (PAB-110) -> stop
-    polling if it is still running -> wait for the polling task -> wait for
-    in-flight updates -> wait for the scheduler (bounded; it uses the bot and
-    the HTTP client) -> close the bot session -> close the shared HTTP client
-    -> close the FSM storage -> dispose the engine last. A failing step is
-    logged with its name and does not cancel the remaining steps, so a partial
-    failure still releases as many resources as possible.
-    """
+    """Stop workers before closing their resources; dispose the engine last."""
     await _run_steps(
         [
             ("signal_scheduler_stop", lambda: _signal_scheduler_stop(stop_event)),
@@ -389,12 +273,7 @@ async def _cleanup_failed_startup(
     ozon_access: BrowserOzonAccessProvider | None = None,
     ozon_session: OzonSession | None = None,
 ) -> None:
-    """Release whatever startup managed to create, each step isolated.
-
-    ``bot``, ``http_client``, ``wb_access``, ``ozon_access`` and
-    ``ozon_session`` are ``None`` when their
-    constructor did not finish; such a resource is skipped rather than touched.
-    """
+    """Release successfully created resources, isolating each cleanup step."""
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = []
     if wb_access is not None:
         steps.append(("close_wb_access", lambda: _close_wb_access(wb_access)))
@@ -413,35 +292,10 @@ async def _cleanup_failed_startup(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    """Start every dependency, hand control to the app, then tear it down.
+    """Start resources and tasks; clean up on startup failure or shutdown.
 
-    Startup order: ``setup_logging()`` first -> settings -> a single
-    ``get_engine()`` call (validates ``DB__*`` without opening a connection)
-    -> FSM storage plus a live Redis check -> the shared ``httpx.AsyncClient``
-    (one per process, timeout from ``APP__HTTP_TIMEOUT_SECONDS``) -> ``Bot``
-    -> one ``getMe`` check of Telegram -> dispatcher -> services -> profile ->
-    polling task -> scheduler task (PROJECT.md §8.3, Р6 (а)/(б); PAB-069, Р1;
-    PAB-082).
-
-    A failure after the Redis check (e.g. ``create_bot`` raising
-    ``TokenValidationError``, or ``getMe`` failing: it is logged once as
-    ``ERROR`` with the token secret cut out and replaced by a
-    ``RuntimeError`` without a cause; no profile request or background task
-    ever starts) releases whatever was created -- bot session, HTTP client,
-    storage, engine -- in isolated steps before re-raising unchanged. The ping-failure
-    branch inside ``_ensure_redis_available`` already closes the storage
-    itself, so that path is left out of this cleanup to avoid closing it
-    twice.
-
-    Right after ``create_bot`` and before ``getMe``, ``setup_logging`` is
-    called again with the secret part of ``bot.token``: from then on every
-    log channel (loguru, stdlib ``logging``, ``uvicorn``) cuts it out
-    (PAB-083).
-
-    A background task (polling, scheduler) finishing for any reason before
-    shutdown begins makes ``_BackgroundDeathWatch`` log one ``CRITICAL`` record
-    and send SIGTERM to the process, so it leaves through the usual
-    ``_shutdown``; the restart policy then brings the stack back up.
+    A background task dying before shutdown triggers SIGTERM for a restart.
+    Telegram is checked before tasks start, with token redaction enabled.
     """
     setup_logging()
     settings = get_settings()
@@ -472,8 +326,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             launch_budget=settings.wb.LAUNCH_BUDGET,
             launch_window_seconds=settings.wb.LAUNCH_WINDOW_SECONDS,
         )
-        # The only place the proxy secret is exposed: one object serves both
-        # the price session and the browser access (O11: one exit).
+        # Share the proxy between browser and price session for one exit IP.
         proxy_url = settings.ozon.PROXY_URL
         ozon_proxy = (
             SocksProxy.from_url(proxy_url.get_secret_value())
@@ -586,12 +439,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 async def health(request: Request) -> JSONResponse:
-    """Liveness probe reflecting both background tasks: polling and scheduler.
-
-    Deliberately dumb: no database, Redis or network call (PROJECT.md §8.4,
-    Р4/Р5) -- a dead task must stay visible even when everything else the
-    process depends on is fine. The body names the first dead task.
-    """
+    """Report background task liveness without database or network probes."""
     for state_name, label in (
         ("polling_task", "polling stopped"),
         ("scheduler_task", "scheduler stopped"),

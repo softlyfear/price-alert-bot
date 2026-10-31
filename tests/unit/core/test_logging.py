@@ -1,14 +1,3 @@
-"""Tests for app.core.logging.setup_logging.
-
-Companion coverage ticket to PAB-006 (convention 9): after this file,
-app/core/logging.py must reach 100% line and branch coverage. The file
-also carries a regression guard for the secret-leak channel PAB-006
-closes (loguru's ``diagnose=True`` printing call-argument values into
-extended tracebacks) and a regression guard for convention 20 - both
-``logger.bind(...)`` and kwargs passed straight to ``logger.exception``
-must reach the printed line through ``{extra}``.
-"""
-
 import logging
 import os
 import re
@@ -29,28 +18,8 @@ from tests.integration.database_source import SubprocessEnvironment
 
 @pytest.fixture(autouse=True)
 def _restore_loguru_state() -> Iterator[None]:
-    """Restore loguru to its pre-test handler state after each test.
-
-    ``setup_logging()`` mutates process-global state: it removes every
-    handler, including the stock stderr handler loguru installs on
-    import (id 0). Left mutated, this silently changes the output of
-    unrelated tests running later in the same process.
-
-    Restoration is conditional on what was actually there before this
-    test, not unconditional (PAB-054 review finding 3): under
-    ``LOGURU_AUTOINIT=0`` loguru installs no stock handler at import
-    time at all, and unconditionally adding a stderr handler back in
-    teardown would hand every later test in the process a handler that
-    never existed originally.
-
-    Handler presence is read from loguru's internal handler registry,
-    not by logging a probe message and reading it back through output
-    capture: the stock handler holds a reference to the ``sys.stderr``
-    object that existed at loguru's *import* time, which predates any
-    pytest capture fixture swapping ``sys.stderr`` for a given test -
-    exactly the mechanism that made ``capsys``/``capfd`` unreliable for
-    the guard in PAB-054 review finding 1. Reading handler presence
-    through capture would carry the identical blind spot here.
+    """Restore handler presence; capture cannot see a handler bound to stderr before
+    pytest capture.
     """
     # loguru exposes no public API to count handlers without removing
     # them; `_core.handlers` is the internal handler registry.
@@ -62,37 +31,8 @@ def _restore_loguru_state() -> Iterator[None]:
 
 
 def test_restore_loguru_state_fixture_rebuilds_handler_on_ordinary_run() -> None:
-    """Witness for ``_restore_loguru_state``'s ordinary branch (convention 22).
-
-    ``test_fixture_restores_no_handler_when_loguru_autoinit_disabled``
-    below only exercises the fixture's *rare* branch, where
-    ``LOGURU_AUTOINIT=0`` and ``had_handlers`` is ``False`` -- the branch
-    that never re-adds a handler. Nothing in this file previously checked
-    the branch every ordinary test run actually takes: ``had_handlers``
-    is ``True`` under the process' real (enabled) ``LOGURU_AUTOINIT``,
-    the one this whole suite runs under by default, so this is the
-    direction that matters for every other test in this file.
-
-    Drives the fixture directly through ``__wrapped__`` -- the plain
-    generator function ``pytest.fixture`` preserves there for
-    introspection; calling the fixture object itself is rejected
-    ("Fixture ... called directly"). No nested ``pytest.main()``
-    subprocess is needed here, unlike the ``LOGURU_AUTOINIT=0`` guard
-    below: this process already runs under the ordinary, enabled
-    ``LOGURU_AUTOINIT``, so the handler count read directly below is
-    already the value of interest.
-
-    The assertion is ``after == before`` rather than a hard-coded
-    ``before == 1``, because this test is also collected (and run) by
-    the nested ``pytest.main()`` inside
-    ``test_fixture_restores_no_handler_when_loguru_autoinit_disabled``
-    below, where the environment starts with zero handlers instead; the
-    invariant checked here holds identically in both regimes. On an
-    ordinary top-level run, measured directly: ``before=1``, ``after=1``.
-
-    Mutation ``if had_handlers:`` -> ``if False:`` is caught here: on an
-    ordinary run this discards the re-add step, so ``after`` becomes 0
-    while ``before`` stays 1.
+    """Compare with the initial count: the nested autoinit-disabled run starts with
+    zero handlers.
     """
     before = len(logger._core.handlers)  # type: ignore[attr-defined]
 
@@ -106,36 +46,7 @@ def test_restore_loguru_state_fixture_rebuilds_handler_on_ordinary_run() -> None
 
 
 def test_setup_logging_removes_preexisting_handlers() -> None:
-    """setup_logging() must remove every handler already registered.
-
-    Regression guard for mutating ``logger.remove()`` inside
-    setup_logging into a no-op. Unlike a capsys-based check on
-    setup_logging's own stderr handler (PAB-054 review finding 1), the
-    probe sink registered here is added and owned entirely by this
-    test, so its receipt of the marker cannot be masked by pytest's
-    output capture swapping ``sys.stderr`` mid-test: under the mutation
-    the probe sink stays registered alongside setup_logging's new
-    handler and receives the marker; on correct code it does not,
-    because setup_logging removed it before adding its own handler.
-
-    Positive control (convention 22): before setup_logging() ever runs,
-    a log call must actually reach the probe sink -- proving the sink is
-    registered and this logger is not, some other way, already muted.
-    Without this, a combined mutation that both turns ``logger.remove()``
-    into a no-op *and* silences this test's own logger (e.g. a stray
-    ``logger.disable(__name__)``) would leave ``records`` empty for the
-    wrong reason and pass regardless of what setup_logging() does --
-    measured on a copy: that exact combination gives ``1 passed`` against
-    the pre-fix version of this test, a false green on a fully broken
-    guard.
-
-    This guard's limit: it only proves setup_logging removes handlers
-    that existed *before* it runs. It does not, by itself, prove two
-    consecutive calls to setup_logging() leave exactly one handler -
-    that is the narrower guarantee ``test_setup_logging_called_twice_...``
-    below covers. Mutating away ``logger.remove()`` inside setup_logging
-    now turns *both* tests red, not just that one -- see its docstring.
-    """
+    """A positive control proves the test-owned sink receives records before removal."""
     records: list[str] = []
     logger.add(records.append, format="{message}")
     logger.info("probe alive marker")
@@ -150,18 +61,6 @@ def test_setup_logging_removes_preexisting_handlers() -> None:
 def test_setup_logging_called_twice_still_produces_a_single_handler(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Idempotency: calling setup_logging() twice must not double output
-    and must not leave the process without a working handler.
-
-    Mutating away the ``logger.remove()`` call inside setup_logging
-    (PAB-054 review finding 1) turns this test red too, not only this
-    one: both handlers added across the two calls are attached to the
-    same capsys-visible ``sys.stderr``, so a duplicate handler surviving
-    the second call doubles the captured line here. What this test
-    exercises and ``test_setup_logging_removes_preexisting_handlers``
-    above does not is specifically duplication *across two calls* - the
-    other test only ever calls setup_logging() once.
-    """
     setup_logging()
     setup_logging()
     logger.info("idempotent marker")
@@ -195,12 +94,6 @@ def test_context_via_bind_reaches_output(capsys: pytest.CaptureFixture[str]) -> 
 def test_context_via_exception_kwargs_reaches_output(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Regression guard for convention 20: kwargs passed directly to
-    logger.exception(...) - the form used in
-    app/services/notification.py:50 - must reach {extra} too. Removing
-    {extra} as apparently-dead formatting would silently strip context
-    from every live logger.exception call in the codebase.
-    """
     setup_logging()
     try:
         raise RuntimeError("delivery failed")
@@ -224,13 +117,7 @@ def _inner_raises(secret: str) -> None:
 
 
 def _trigger_leak_prone_log() -> str:
-    """Zero-argument entry point.
-
-    Called by the test with no arguments, so the marker's name never
-    appears on the test function's own active source line - only on
-    ``_inner_raises``'s call-argument line below. This keeps the marker
-    unreachable through the caller's (test's) own frame, per AC2.
-    """
+    """Keep the marker off the calling test frame so diagnose cannot expose it there."""
     secret = uuid.uuid4().hex
     try:
         _inner_raises(secret)
@@ -242,20 +129,8 @@ def _trigger_leak_prone_log() -> str:
 def test_setup_logging_does_not_leak_call_argument_via_diagnose(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Regression guard for the secret-leak channel PAB-006 closes.
-
-    A marker that lives only in a local variable never mentioned on a
-    rendered line gives ``absent`` even with the protection fully
-    disabled, proving nothing (Ловушка 1 of PAB-054). This guard instead
-    passes the marker as a call argument on a traceback line
-    (``_inner_raises(secret)``), the shape diagnose actually renders.
-
-    Positive control (PAB-054 review finding 2): assert the log line
-    itself reached the output before asserting the marker's absence.
-    Without this, a mutation that silences logger.exception entirely
-    (e.g. dropping the level below the message's level) makes the
-    "marker not in captured.err" assertion pass on an empty string,
-    turning the guard into a tautology.
+    """The marker must occur on a traceback line; a positive control proves the log
+    reached stderr.
     """
     setup_logging()
     marker = _trigger_leak_prone_log()
@@ -290,35 +165,8 @@ print(f"RESULT before={before} after={after} exit_code={int(exit_code)}")
 
 
 def test_fixture_restores_no_handler_when_loguru_autoinit_disabled() -> None:
-    """Regression guard for PAB-054 review finding 3.
-
-    Under ``LOGURU_AUTOINIT=0`` loguru installs no stock stderr handler
-    at import time. ``_restore_loguru_state`` must not hand a later
-    test a handler the process never had. This runs the rest of this
-    file's suite (every other test here, each exercised through the
-    real ``_restore_loguru_state`` fixture) as a nested, in-process
-    ``pytest.main()`` call inside a subprocess started with
-    ``LOGURU_AUTOINIT=0``, then compares the handler count read
-    immediately after importing loguru to the handler count read after
-    that whole nested run completes: they must be equal, and both zero -
-    the assertions below check both directly, on the values parsed out
-    of the nested run's own output.
-
-    Run as a subprocess, not called in-process from this test:
-    ``LOGURU_AUTOINIT`` is read once at loguru's import time, so it has
-    to be set before the interpreter that imports loguru starts, and it
-    must not touch the already-initialised loguru state of the outer
-    pytest run executing this guard itself.
-
-    ``-k "not test_fixture_restores_no_handler"`` excludes this test
-    itself from the nested run - without it, the nested ``pytest.main()`` would
-    collect and re-run this same test, which would spawn another
-    subprocess, recursively without bound. The reentry-guard env var
-    checked first is a second, unconditional line of defence against
-    that exact runaway recursion in case the ``-k`` expression above
-    ever stops matching this test's name (e.g. after a rename): a
-    process that inherits the guard env var returns immediately instead
-    of spawning a child.
+    """Use a subprocess: loguru reads LOGURU_AUTOINIT at import. The filter and guard
+    prevent recursion.
     """
     if os.environ.get(_LOGURU_AUTOINIT_REENTRY_GUARD_ENV) == "1":
         pytest.skip(
@@ -657,12 +505,8 @@ _FALLBACK_TEXT = "Unformattable stdlib log record from"
 
 @pytest.fixture
 def _bare_root_logger() -> Iterator[Callable[[], None]]:
-    """Give tests a callable that detaches pytest's own root handlers.
-
-    pytest attaches its capture handlers at the start of the call phase, after
-    fixtures ran, so the detaching has to happen inside the test body. Those
-    handlers format records too and would themselves raise on a malformed one,
-    hiding what the interceptor does. Teardown restores the root handler list.
+    """Detach pytest handlers inside the test: they would also format malformed
+    records.
     """
     root = logging.getLogger()
     saved = list(root.handlers)

@@ -60,8 +60,7 @@ update:
 	uv lock --upgrade
 	uv sync
 
-# Full Chromium (not the headless shell): measured as the only variant WB accepts.
-# System libraries (--with-deps) are the image's concern (PAB-080), not this target.
+# WB accepts full Chromium, not the headless shell.
 install-browser:
 	@echo "$(GREEN)==> Installing Chromium for Playwright...$(NC)"
 	uv run playwright install --no-shell chromium
@@ -94,11 +93,7 @@ check: fmt type
 pre-commit:
 	uv run pre-commit run --all-files
 
-# Installs a thin wrapper into the hooks dir (found via `git rev-parse
-# --git-path hooks`, so this also works for `core.hooksPath` and linked
-# worktrees) that `exec`s the versioned scripts/pre-push of whichever
-# worktree triggers the push — editing the script takes effect without
-# re-running this target.
+# The wrapper resolves pre-push from the worktree that triggers the push.
 hooks:
 	@echo "$(GREEN)==> Installing git hooks...$(NC)"
 	uv run pre-commit install -f --hook-type pre-commit --hook-type commit-msg
@@ -139,8 +134,7 @@ db-upgrade:
 db-downgrade:
 	uv run python -m alembic downgrade -1
 
-# The env file (default .env) is used for interpolation and as env_file of app and migrate:
-#   make docker-up ENV_FILE=/path/to/file
+# Compose uses this file for interpolation and for app and migrate.
 ENV_FILE ?= .env
 export ENV_FILE
 BACKUP ?=
@@ -149,14 +143,12 @@ export BACKUP OVERWRITE
 # The stack profile: every service is skipped by compose without it.
 COMPOSE := docker compose --env-file "$(ENV_FILE)" --profile price-alert-bot
 
-# The single build path of operator and CI (PAB-086): compose, BuildKit when available.
-# Default build attestations are off: they make the image ID differ between two
-# builds of identical content.
+# Default attestations would change the image ID across identical builds.
 docker-build:
 	@echo "$(GREEN)==> Building image...$(NC)"
 	BUILDX_NO_DEFAULT_ATTESTATIONS=1 $(COMPOSE) build
 
-# build -> stop app -> up -d: a bare `up -d` would re-run migrate while app is alive.
+# A bare `up -d` would re-run migrate while app is alive.
 docker-up: docker-build
 	$(COMPOSE) stop app
 	$(COMPOSE) up -d

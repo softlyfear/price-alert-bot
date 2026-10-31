@@ -1,63 +1,5 @@
-"""Tests for app.core.config.
-
-PAB-079 added ``WbSettings`` (``WB__*``): defaults, boundaries and the
-whole-prefix environment clearing are covered at the end of this file.
-
-Pairs with PAB-004 (RedisSettings, AppSettings), PAB-052 (SecretStr fields,
-hide_input_in_errors) and, for DatabaseSettings.DATABASE_URL, code that has
-existed unchanged and uncovered since the start of the project.
-
-Isolation. Every ``Settings`` built here passes already-constructed nested
-model *instances* (``DatabaseSettings``, ``BotSecret``, ``RedisSettings``,
-``AppSettings``) as keyword arguments, plus ``_env_file=None``.
-``pydantic_settings`` merges its sources with ``deep_update``
-(``pydantic._internal._utils.deep_update``), which only recurses into a
-value when it is a ``dict`` on *both* sides; a model instance is never a
-``dict``, so an instance passed via kwargs always wins wholesale over
-whatever ``os.environ`` or a dotenv file would have produced for that key.
-That makes construction deterministic regardless of the host machine's
-environment, without touching ``os.environ`` or the filesystem. Verified
-empirically before writing these tests (env var set to a throwaway value,
-instance-based construction ignored it; ``_env_file=None`` skips dotenv
-entirely).
-
-Two tests deliberately break this pattern by passing a raw, partial ``dict``
-instead of an instance, to reach validation states that only exist before a
-value is coerced into a model (a missing key, a field of the wrong type).
-Because a raw dict *can* legitimately merge with whatever ``os.environ``
-supplies for the same section, those two tests explicitly clear the one
-environment variable that could interfere via ``monkeypatch.delenv(...,
-raising=False)`` -- restored automatically by pytest, never written back.
-
-Two tests exercise ``get_settings()`` itself (and, for one of them,
-``get_settings()``'s own caching), which calls ``Settings()`` with no
-overrides at all and therefore must read from the environment by
-construction -- there is no instance-passing alternative for that call.
-Both supply every required variable via ``monkeypatch.setenv`` (restored
-automatically) and, because they cannot pass ``_env_file=None`` the way
-every other test in this file does, both disable dotenv lookup for their
-own duration via ``monkeypatch.setitem(Settings.model_config, "env_file",
-None)`` -- also restored automatically once the test ends. Without this,
-whatever real ``.env`` file happens to exist on the machine running the
-suite would participate in the merge alongside the monkeypatched
-variables, and the test's outcome would depend on machine state instead of
-on the code; this is not hypothetical, since ``pydantic-settings`` treats
-an explicitly-set environment variable and a value from ``.env`` as two
-independent sources that get merged, the environment variable winning only
-per-key. The first of the two calls ``get_settings.__wrapped__()`` to
-bypass ``@lru_cache`` entirely, so the cached instance does not leak into
-any other test sharing this process; the second calls ``get_settings()``
-itself specifically to observe that caching, and clears the cache both
-before and after via ``get_settings.cache_clear()`` so it neither reads a
-stale instance left by another test nor leaves one behind for the next.
-
-No test in this file writes to ``os.environ`` outside of ``monkeypatch``,
-touches the filesystem, or reads an actual ``.env`` file: this holds
-regardless of whether a ``.env`` exists on the machine running the suite,
-because every ``Settings()`` construction in this file either passes
-``_env_file=None`` directly or, for the two calls into ``get_settings()``,
-neutralises the same dotenv source through ``Settings.model_config`` for
-the duration of the test.
+"""Construct nested settings explicitly and disable dotenv to isolate host
+configuration.
 """
 
 from pathlib import Path
@@ -170,12 +112,7 @@ def test_redis_settings_whitespace_only_host_rejected_by_custom_validator(
 
 
 def test_redis_settings_host_with_surrounding_whitespace_is_accepted_verbatim() -> None:
-    """Measured, frozen behaviour (agreement 15): the validator rejects only
-    a host whose ``strip()`` is empty. ``' host '`` has real content once
-    stripped, so it is accepted, and the value is kept exactly as given --
-    no normalisation happens. This is not a requirement to preserve future
-    behaviour, only a record of what the code does today.
-    """
+    """Nonblank host values are retained verbatim rather than normalized."""
     redis = RedisSettings(HOST=" host ")
 
     assert redis.HOST == " host "
@@ -328,13 +265,7 @@ def test_redis_url_with_empty_password_has_no_auth_section() -> None:
 
 
 def test_redis_url_with_special_character_password_roundtrips() -> None:
-    """Catches a downgrade from ``quote(password, safe="")`` to
-    ``quote(password)`` (default ``safe="/"``): with the default, the ``/``
-    in the password would end up unescaped in the URL, which breaks netloc
-    parsing (the password would no longer round-trip through a standard URL
-    parser), not just "look different" the way it would on a plain
-    ``pass123``.
-    """
+    """An unescaped slash in a password breaks URL netloc parsing."""
     redis = RedisSettings(
         HOST="cache-host", PORT=6380, DB=2, PASSWORD=SecretStr(_SPECIAL_CHARS_PASSWORD)
     )
@@ -389,25 +320,8 @@ def test_redis_password_secret_not_leaked_in_repr_str_and_dumps() -> None:
 def test_missing_redis_host_validation_error_hides_raw_password_via_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Point 1b: built through ``Settings``, not ``RedisSettings`` directly.
-
-    ``hide_input_in_errors`` only takes effect on the model whose
-    ``validate_python`` is actually invoked -- measured at PAB-052
-    acceptance (agreement 14): set on ``Settings`` it hides the raw input,
-    set on ``RedisSettings`` directly it does nothing.
-    ``RedisSettings(HOST=...)`` constructed directly still prints
-    ``input_value=...`` in its ``ValidationError``. A guard built that way
-    would be red even with the protection fully working, and the obvious
-    "fix" would be to weaken the protection instead of the test -- which is
-    exactly what this ticket exists to prevent.
-
-    The raw ``dict`` passed for ``redis`` (instead of a ``RedisSettings``
-    instance) is what lets pydantic hit the pre-coercion ``type=missing``
-    path where the leak actually happens; a fully-built instance never
-    reaches that path. Because a raw dict can still be deep-merged with
-    ``os.environ`` for keys it does not supply, ``REDIS__HOST`` is cleared
-    defensively so the test's premise (HOST absent) holds regardless of the
-    host machine's environment.
+    """Validate through Settings: a raw nested dict reaches the pre-coercion missing-
+    field path.
     """
     monkeypatch.delenv("REDIS__HOST", raising=False)
     marker = "redis-marker-secret-do-not-leak"
@@ -435,14 +349,7 @@ def test_missing_redis_host_validation_error_hides_raw_password_via_settings(
 def test_hide_input_in_errors_also_hides_raw_value_for_non_secret_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Point 1c: documents the accepted side effect of ``hide_input_in_errors``
-    -- it hides the raw input for *any* field on ``Settings``, not only
-    secrets. ``DB__PORT`` is not a secret, but a bad value for it (a string
-    that cannot parse as an integer) still must not echo the raw string in
-    the error text. This locks in the documented cost (agreement 14) as an
-    independent guard: removing ``hide_input_in_errors`` breaks this test
-    too, not only the password-specific one above.
-    """
+    """Hiding validation input also applies to non-secret fields."""
     monkeypatch.delenv("DB__BUSY_TIMEOUT_SECONDS", raising=False)
     bad_port_marker = "not-a-number-marker"
     malformed_db = {"BUSY_TIMEOUT_SECONDS": bad_port_marker}
@@ -476,16 +383,8 @@ def test_hide_input_in_errors_also_hides_raw_value_for_non_secret_field(
 def test_app_settings_env_var_partial_override_keeps_other_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sets exactly one ``APP__*`` variable and expects the other four to
-    fall back to ``AppSettings``' own field defaults. The value (7) is
-    deliberately different from both the field default (50) and the value
-    in ``.env.example`` (also 50) -- if ``app: AppSettings =
-    Field(default_factory=AppSettings)`` ever stopped reading the merged
-    environment dict at all (e.g. because ``default_factory`` fired instead
-    of validating the partial section), a test using a value equal to the
-    default would stay green while the section became inert. The other four
-    ``APP__*`` variables are cleared defensively so ambient shell state
-    cannot leak in.
+    """Use a non-default override and clear other variables to isolate host
+    configuration.
     """
     monkeypatch.setenv("APP__MAX_PRODUCTS_PER_USER", "7")
     for var in (
@@ -530,21 +429,7 @@ _SETTINGS_PREFIX_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
 
 
 def _delenv_settings_prefix_space(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear every ``DB__``/``TG__``/``REDIS__``/``APP__`` variable
-    get_settings() could read (convention 19), not just the ones a test
-    sets itself.
-
-    Without this, a stray value already present in the calling shell --
-    e.g. ``APP__HTTP_TIMEOUT_SECONDS=not-a-number`` -- merges in underneath
-    the variables a test sets explicitly and fails validation on a
-    developer's machine while the same test passes in CI, or vice versa.
-    Measured before this fix: with ``APP__HTTP_TIMEOUT_SECONDS=not-a-number``
-    or ``REDIS__PORT=not-a-port`` set in the shell, the two get_settings()
-    tests below turned red (``2 failed, 36 passed`` out of the file's 38
-    tests at the time); a variable already covered by the explicit
-    ``monkeypatch.setenv`` calls below, such as ``DB__PORT=abc``, stayed
-    green either way and served as the control.
-    """
+    """Clear entire prefixes so ambient variables cannot merge into test settings."""
     for prefix, model in _SETTINGS_PREFIX_MODELS:
         for field_name in model.model_fields:
             monkeypatch.delenv(f"{prefix}{field_name}", raising=False)

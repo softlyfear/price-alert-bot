@@ -1,33 +1,7 @@
-"""Get the Ozon anti-bot cookies with a browser (`PROJECT.md` section 2.14).
+"""Acquire Ozon access in Chromium; the caller sets the deadline.
 
-A full Chromium (`channel="chromium"`) opens the Ozon home page, the anti-bot
-check passes by itself and sets the cookie `__Secure-access-token`; the
-cookies of `ozon.ru` and its subdomains are returned together with the UA of
-the browser. The browser lives for one acquisition and is closed on every
-exit, cancellation included. The deadline is held by the caller
-(`BrowserOzonAccessProvider`), not here.
-
-`--window-position=10,42` is what makes the check pass (measured, O5, fact
-F2): with the default position (`screenX/screenY` = 10/10) `/abt/result` is
-answered with 403 in every configuration tried. It is a heuristic of the
-anti-bot and brittle: a growth of `challenge_timeout` in the journal is the
-trigger to repeat the spike.
-
-The readiness mark is `__Secure-access-token`, not `__Secure-ETC` or
-`abt_data`: those exist before the check is passed, so waiting for them would
-return unusable cookies.
-
-The environment of the browser process is the allow-list of `browser_launch`.
-
-With a proxy (`PROJECT.md` section 2.14, O10, R2/R3) the proxy is first
-pre-checked (handshake, authorisation, `CONNECT` to the host of `home_url`
-through it): a refusal is `proxy_failed` and Chromium is not started. Then the
-browser goes through a local `SocksRelay` that lives exactly as long as the
-browser. A Playwright failure while the relay has seen an upstream refusal is
-`proxy_failed` with the relay's detail (the proxy dropped the browser, not
-Ozon); a refusal that does not break the browser still ends as
-`challenge_timeout`. Without a proxy the path is unchanged: no relay, no
-pre-check.
+Only __Secure-access-token signals a passed challenge: other cookies appear
+earlier. The window position is an anti-bot heuristic observed to work.
 """
 
 import asyncio
@@ -61,7 +35,6 @@ _CHROMIUM_ARGS = [
 
 
 def _in_domain(cookie_domain: str, domain: str) -> bool:
-    """True for `domain` itself and its subdomains (a leading dot ignored)."""
     host = cookie_domain.lstrip(".").lower()
     return host == domain or host.endswith("." + domain)
 
@@ -73,16 +46,10 @@ async def fetch_ozon_access(
     cookie_domain: str = OZON_COOKIE_DOMAIN,
     proxy: SocksProxy | None = None,
 ) -> OzonAccess:
-    """Return the cookies of `cookie_domain` set by the Ozon check, and the UA.
+    """Close the browser on cancellation and classify proxy failures separately.
 
-    Waits until `__Secure-access-token` appears (non-empty, in the domain) and
-    has no deadline of its own: the caller bounds it (cancellation closes the
-    browser). A Playwright failure becomes
-    `OzonAccessFetchError(launch_failed, <detail constant or class name>)`,
-    chained to the original; the exception text is never copied. With a
-    `proxy`, a refusal of the pre-check, or a Playwright failure after the
-    relay saw an upstream refusal, is
-    `OzonAccessFetchError(proxy_failed, <DETAIL_PROXY_* constant>)`.
+    A proxy is pre-checked before launch; a relay refusal that breaks Playwright
+    is reported as proxy_failed. Exception text is never copied into the detail.
     """
     try:
         if proxy is None:

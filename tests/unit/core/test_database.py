@@ -1,26 +1,3 @@
-"""Tests for app.core.database: get_engine, get_sessionmaker, dispose_engine,
-and get_async_session.
-
-Companion coverage ticket (convention 9) to PAB-005, which built this
-module, and to PAB-055, which fixed the ``dispose_engine()`` ordering the
-AC6/AC7-shaped tests below exercise directly. After this file,
-``app/core/database.py`` must reach 100% line and branch coverage.
-
-No PostgreSQL container is needed anywhere in this file. ``create_async_engine()``
-never opens a network connection by itself, and ``AsyncSession.rollback()`` on
-a session that never checked out a connection is a safe no-op -- both
-verified independently on a throwaway engine pointed at a host that does not
-exist, outside the working tree, before this file was written.
-
-Isolation is the main hazard here, not correctness: ``get_settings``,
-``get_engine`` and ``get_sessionmaker`` are three ``functools.lru_cache``
-instances, i.e. process-global state. The autouse fixture below resets all
-three around every test and asserts, before each test runs, that the two
-caches this file is about are already empty -- turning "a previous test
-leaked a cached engine" into a loud, immediate failure on the very next
-test instead of a silent cross-test contamination.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -320,22 +297,8 @@ async def test_dispose_engine_resets_caches_to_fresh_objects(
 async def test_dispose_engine_on_empty_cache_is_a_noop_and_does_not_read_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC5: two consecutive ``dispose_engine()`` calls with nothing built
-    yet neither raise nor read settings.
-
-    A spy on ``get_settings`` is used rather than "no exception was
-    raised", per the ticket's own warning: with valid settings available,
-    an implementation that dropped the ``if get_engine.cache_info().currsize``
-    guard entirely would still build, cache and successfully dispose an
-    engine on both calls without raising -- "did not raise" would stay
-    green on that broken implementation. Call-count is the assertion that
-    actually distinguishes the two.
-
-    Mutation demonstrated on a copy outside the working tree (AC14):
-    removing the ``if get_engine.cache_info().currsize:`` guard from
-    ``dispose_engine`` (so it always calls ``get_engine()``) turns
-    ``spy.call_count == 0`` into ``spy.call_count == 2`` (see the ticket
-    report for the exact command and output).
+    """A settings spy detects unnecessary engine construction even when valid settings
+    exist.
     """
     settings = _make_settings()
     spy = Mock(wraps=lambda: settings)
@@ -353,41 +316,8 @@ async def test_dispose_engine_on_empty_cache_is_a_noop_and_does_not_read_setting
 async def test_dispose_engine_gives_concurrent_callers_fresh_objects_in_the_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC6: the key PAB-055 scenario. While ``dispose()`` is suspended, a
-    concurrent caller must already see a *new* engine and a *new*
-    sessionmaker -- not the ones about to be disposed.
-
-    Deterministic interleaving via ``asyncio.Event``, no ``sleep``:
-    ``AsyncEngine.dispose`` is replaced with a coroutine that signals
-    ``entered`` the instant it starts and then waits on ``release`` before
-    calling through to the real implementation. ``dispose_engine()`` is
-    started as a task; once ``entered`` fires, this test is guaranteed to
-    observe exactly the state ``dispose_engine()`` leaves behind *before*
-    the awaited ``dispose()`` call resumes.
-
-    Checking *both* identities is required, not optional: measured on
-    three copies of ``dispose_engine`` outside the working tree (AC14), each
-    swapping the order of one clear relative to the ``await`` --
-
-    - (a) both ``cache_clear()`` calls moved after the ``await`` (the
-      pre-PAB-055 ordering): engine new = False, sessionmaker new = False.
-    - (b) only the engine cache cleared before the ``await``:
-      engine new = True, sessionmaker new = False.
-    - (c) only the sessionmaker cache cleared before the ``await``:
-      engine new = False, sessionmaker new = True.
-
-    (b) and (c) give *opposite* results on the two identities. A test
-    asserting only one of the two identities would pass on whichever
-    mutation happens to leave that one identity fresh -- see the ticket
-    report for the exact commands and output.
-
-    ``await entered.wait()`` is bounded by ``asyncio.timeout(1)``: a
-    mutation that replaces ``await engine.dispose()`` with the synchronous
-    ``engine.sync_engine.dispose()`` never goes through the patched
-    ``AsyncEngine.dispose`` at all, so ``entered`` is never set and an
-    unbounded wait would hang this test (and the whole suite run behind
-    it) instead of failing it -- measured on a copy outside the working
-    tree (AC14; see the ticket report for the exact command and output).
+    """Events expose the suspension window deterministically; both cached identities
+    must be fresh.
     """
     monkeypatch.setattr(database, "get_settings", lambda: _make_settings())
 
@@ -463,12 +393,8 @@ async def test_dispose_engine_propagates_exception_from_dispose_with_caches_clea
 async def test_session_issued_before_dispose_engine_stays_bound_to_the_old_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC8: a session obtained before ``dispose_engine()`` keeps its
-    original engine binding; that engine is unreachable from the caches
-    afterwards. Documented as a *limit* of the guarantee, per the ticket:
-    this is the reason PAB-033's shutdown order requires draining
-    in-flight session consumers *before* calling ``dispose_engine()``, not
-    a claim that in-flight sessions get migrated onto the new engine.
+    """Existing sessions retain their old binding, so shutdown must drain consumers
+    first.
     """
     monkeypatch.setattr(database, "get_settings", lambda: _make_settings())
     old_engine = database.get_engine()
@@ -514,16 +440,6 @@ async def test_get_async_session_yields_session_without_rollback_on_clean_close(
 async def test_get_async_session_rolls_back_once_and_reraises_same_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC9(b): on an exception raised by the consumer, ``rollback`` is
-    called exactly once and the *same* exception object propagates out.
-
-    Mutations demonstrated on copies outside the working tree (AC14):
-    dropping ``await session.rollback()`` turns ``rollback_spy.assert_awaited_once()``
-    red; dropping the trailing ``raise`` turns the exception into a silent
-    ``StopAsyncIteration`` instead of propagating ``RuntimeError``, turning
-    ``pytest.raises(RuntimeError)`` red (see the ticket report for the
-    exact commands and output).
-    """
     monkeypatch.setattr(database, "get_settings", lambda: _make_settings())
 
     gen = database.get_async_session()
@@ -543,35 +459,8 @@ async def test_get_async_session_rolls_back_once_and_reraises_same_exception(
 async def test_get_async_session_error_path_logs_without_leaking_password_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC9(b)/(c): the error path logs one ``ERROR`` record with the exact
-    message and ``extra`` fields the ticket names, and the database
-    password never reaches that record -- in the message or in ``extra``.
-
-    Positive controls (convention 22), both in this same test: (1) the
-    marker is asserted to actually be present in the settings' own
-    ``DATABASE_URL`` before the assertion that it is absent from the log
-    record, proving this test scenario is genuinely leak-prone and not
-    accidentally leak-free; (2) the receiver's own record count is
-    asserted to be exactly one before inspecting its fields, proving the
-    sink is alive and not structurally incapable of receiving anything
-    (the failure mode from PAB-054 review finding 2).
-
-    A custom loguru sink is used instead of ``capsys``/stderr: no
-    ``setup_logging()`` runs in this test process, so the stock handler
-    would render the extended traceback with ``diagnose=True`` -- not what
-    this test is about, and the exact channel Ловушка 2 of PAB-054 warns
-    against relying on.
-
-    Mutations demonstrated on copies outside the working tree (AC14):
-    changing ``operation="db_session"`` to a different literal turns the
-    ``extra["operation"] == "db_session"`` assertion red; replacing
-    ``logger.bind(...).exception(...)`` with
-    ``logger.bind(...).opt(exception=True).critical(...)`` keeps the
-    message and ``extra`` unchanged and would still pass this sink's
-    ``level="ERROR"`` filter (which admits ``CRITICAL`` too, since loguru
-    filters by minimum severity) -- the explicit level-name assertion
-    below is what actually turns that one red (see the ticket report for
-    the exact commands and output).
+    """Positive controls establish that the marker is present in settings and the log
+    sink receives records.
     """
     from loguru import logger
 

@@ -1,37 +1,15 @@
 #!/usr/bin/env bash
-# Forbidden AI-assistant email addresses in git history (PAB-065, PAB-037).
-#
-# The single source of the pattern: the local `commit-msg` hook and the CI job
-# both call this script, so the two cannot drift apart.
-#
-# Usage:
-#   check-ai-email message [--honor-cut-marker] FILE
-#       Check one commit message file. With --honor-cut-marker (the local hook)
-#       the text from the `git commit -v` scissors line onwards is ignored: git
-#       appends the diff there and strips it only AFTER the hook has run, so the
-#       literal in a diff must not turn the hook red. CI never passes the flag:
-#       a forged marker in `-m`/`-F` text must not hide an address.
-#   check-ai-email range BEFORE AFTER
-#       Check author, committer and message of every commit in BEFORE..AFTER.
-#       An empty BEFORE, all zeros, or an object missing from the clone (new
-#       branch, force-push) means: every commit reachable from AFTER.
-#
-# Exit codes: 0 clean, 1 forbidden address found (commit and field are named on
-# stderr), 2 usage or tooling error. Never silent on a non-zero exit.
+# Both the local hook and CI use this pattern to avoid drift.
+# The local hook ignores the git scissors diff; CI must check forged markers.
 
 set -euo pipefail
 
-# Closed list of AI-assistant mail domains, case-insensitive, email-shaped
-# occurrences only (`@domain`), so a customer's own address is not affected.
-# The Copilot local part is a negative character class (anything but `@`,
-# whitespace, `<`/`>`), not an allow-list: a positive class missing `[`/`]`
-# let a GitHub bot address with a numeric user-ID prefix through.
+# Match email-shaped domains and Copilot local parts including numeric ID prefixes.
 readonly PATTERN='@([a-z0-9-]+\.)*(anthropic\.com|claude\.ai|openai\.com|cursor\.com|cursor\.sh|codeium\.com)\b|[^@[:space:]<>]*copilot[^@[:space:]<>]*@users\.noreply\.github\.com'
 readonly CUT_MARKER='------------------------ >8 ------------------------'
 readonly ZERO_SHA='0000000000000000000000000000000000000000'
 
-# Temporary path of the running mode. Global, not `local`: the EXIT trap fires
-# after the mode function has returned, when a local would already be unset.
+# EXIT runs after the mode function returns, so its temporary path must be global.
 TMP_PATH=""
 cleanup() {
     if [ -n "$TMP_PATH" ]; then
@@ -45,10 +23,8 @@ die() {
     exit 2
 }
 
-# True (0) if the file holds a forbidden address. Reads the file directly, no
-# `grep | grep -q` pipe: an early match would make the reader exit before the
-# writer finished, and under `pipefail` that SIGPIPE let a ~240 KB message with
-# an address through. `-a`: treat NUL bytes as text instead of "binary file".
+# Avoid a grep pipeline: early exit and SIGPIPE can hide a match under pipefail.
+# Treat NUL bytes as text so binary detection cannot hide an address.
 has_ai_email() {
     local rc=0
     grep -Eiqa -- "$PATTERN" "$1" || rc=$?
@@ -76,8 +52,7 @@ check_message() {
         [ "$found_rc" -le 1 ] || die "grep failed on $msg_file (rc=$found_rc)"
         cut_line="${found%%:*}"
         if [ -n "$cut_line" ]; then
-            # `|| die`: under `set -e` a failed `$(…)` assignment would exit with
-            # the rc of the utility (1 = "address found"), not the promised 2.
+            # Report tooling failures as 2, not 1 (address found).
             TMP_PATH="$(mktemp)" || die "mktemp failed (is TMPDIR writable?)"
             head -n "$((cut_line - 1))" "$msg_file" > "$TMP_PATH" \
                 || die "cannot write the truncated copy of $msg_file"
@@ -107,8 +82,7 @@ check_range() {
 
     local sha total=0 bad=0
     local -a shas
-    # Through a file, not `< <(git rev-list)`: a process substitution hides the
-    # exit code of git, and a broken object would read as "0 commits checked".
+    # Process substitution would hide a failing git rev-list exit code.
     git rev-list --reverse "${revs[@]}" > "$TMP_PATH/revs" \
         || die "git rev-list ${revs[*]} failed"
     mapfile -t shas < "$TMP_PATH/revs"
