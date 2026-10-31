@@ -55,7 +55,7 @@ Cover the areas that apply to the supplied code:
 9. Concurrency — races, shared mutable state, synchronization, deadlocks, cancellation, `asyncio` misuse.
 10. Observability — actionable logs, metrics, tracing, correlation context, crash diagnostics. Секреты и токены в логах — находка уровня `Critical`.
 11. Quality gate — по актуальному отчёту последнего исполнителя согласно <tool_capabilities>. Строгая типизация в этом проекте — `mypy` со `strict = true` в `[tool.mypy]`; линтер — `ruff`; покрытие — 100% на коде тикета. Любое ослабление — `Major` по умолчанию.
-12. Scope discipline — объём diff против объёма тикета. Переписанный без необходимости соседний код — находка, даже если он стал лучше: проект требует минимальных точечных правок.
+12. Scope discipline — объём diff против объёма тикета. Переписанный без необходимости соседний код — находка, даже если он стал лучше: проект требует минимальных точечных правок. Комментарии и docstrings сверяй с разделом «Комментарии и docstrings» в `AGENTS.md`: минимум текста, без потери важных контрактов и директив.
 
 Report each distinct defect once, at its root cause. Include a style-level point only when it carries a production consequence.
 </review_scope>

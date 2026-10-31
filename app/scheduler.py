@@ -1,10 +1,3 @@
-"""Background price-check loop (PROJECT.md §7.2).
-
-Everything the loop needs -- the service, the sessionmaker, the interval and the
-concurrency ceiling -- is passed in by ``app.main.lifespan``; this module reads
-no settings and builds no services.
-"""
-
 import asyncio
 from collections.abc import Iterator
 from itertools import batched
@@ -25,13 +18,7 @@ type _Batch = tuple[Marketplace, list[tuple[int, list[int]]]]
 async def _load_products(
     sessionmaker: async_sessionmaker[AsyncSession],
 ) -> list[tuple[int, Marketplace, int]] | None:
-    """Select ``(id, marketplace, article)`` of products with active alerts.
-
-    ``None`` if the query failed. The session is closed on return, i.e. before
-    the first marketplace HTTP request, so a pass never holds a pooled
-    connection while waiting on the network. Only scalars leave this function
-    (O(P) memory).
-    """
+    """Return product scalars, or None on failure, releasing the session before HTTP."""
     try:
         async with sessionmaker() as session:
             products = await ProductRepository(session).get_all_with_active_alerts()
@@ -45,12 +32,7 @@ async def _load_products(
 
 
 def _requested_cancel() -> bool:
-    """Tell whether the current task was asked to cancel (``cancelling() >= 1``).
-
-    A ``CancelledError`` nobody asked for came from code below and, left alone,
-    would silently kill the worker, because ``TaskGroup`` does not treat a
-    cancelled child as an error.
-    """
+    """Distinguish requested cancellation from a child error ignored by TaskGroup."""
     task = asyncio.current_task()
     return task is None or task.cancelling() > 0
 
@@ -62,15 +44,9 @@ async def _apply_one(
     results: dict[int, MarketplaceFetchResult],
     article: int,
 ) -> bool:
-    """Apply a fetched result in its own session and transaction; ``True`` on success.
+    """Apply in a separate transaction; propagate requested cancellation.
 
-    The service starts its write transaction before reading. A successful apply
-    is committed; closing the session rolls back on failure or cancellation.
-    Any ``Exception`` is a product failure. A ``CancelledError`` is a product
-    failure too unless cancellation was requested (see ``_requested_cancel``),
-    in which case it propagates.
-    The lookup sits inside the ``try``: a missing batch entry fails only this
-    product.
+    A failed lookup or unrequested cancellation affects only this product.
     """
     try:
         async with sessionmaker() as session:
@@ -91,11 +67,7 @@ def _build_batches(
     price_service: PriceService,
     products: list[tuple[int, Marketplace, int]],
 ) -> tuple[list[_Batch], int]:
-    """Group products by marketplace and article, cut into client-sized batches.
-
-    Returns the batches and the number of products whose marketplace has no
-    usable client (``batch_size`` raised): those are failures of the pass.
-    """
+    """Return batches and the number of products without a usable client."""
     grouped: dict[Marketplace, dict[int, list[int]]] = {}
     for product_id, marketplace, article in products:
         grouped.setdefault(marketplace, {}).setdefault(article, []).append(product_id)
@@ -125,28 +97,11 @@ async def run_price_check_pass(
     concurrency: int,
     stop_event: asyncio.Event,
 ) -> None:
-    """Run one pass over every product with an active alert.
+    """Fetch batches concurrently and apply each product in its own session.
 
-    Products are grouped by marketplace, equal articles are merged, and the
-    articles are cut into batches of ``PriceService.batch_size``. A batch is a
-    unit of work: one ``fetch_prices`` outside any session, then
-    ``apply_result`` for each product in its own session and transaction.
-    ``concurrency`` workers pull batches from one shared iterator, so at most
-    that many fetches run at once and the pass creates O(concurrency) tasks.
-    Taking the next batch involves no ``await``, so the iterator needs no lock.
-    Once ``stop_event`` is set no new batch and no new product is started.
-
-    Writes exactly one summary record per completed pass (none when the pass is
-    cancelled or the product query fails) with three fields: ``products`` --
-    products loaded (not articles); ``checked`` -- products that ended with an
-    outcome, success or a failure counted in ``failures``; ``failures`` --
-    products whose apply failed, whose batch fetch failed, or whose marketplace
-    has no client, with an ``Exception`` or an unrequested ``CancelledError``.
-    Always ``failures <= checked <= products``. The level is ``INFO`` when
-    ``checked == products`` or ``stop_event`` is set at summary time, otherwise
-    ``ERROR``: a worker vanished (for example a cancellation requested from
-    inside a call, which is propagated and not counted) and the pass is
-    incomplete.
+    The shared iterator needs no lock: taking a batch does not await.
+    Stop prevents starting new batches and products. Summary counts products,
+    with failures <= checked <= products; an incomplete pass is an error.
     """
     products = await _load_products(sessionmaker)
     if products is None:
@@ -213,12 +168,7 @@ async def price_check_loop(
     concurrency: int,
     stop_event: asyncio.Event,
 ) -> None:
-    """Run passes until ``stop_event`` is set; the first pass starts at once.
-
-    The pause is measured from the end of a pass, so passes never overlap and a
-    long pass cannot trigger an immediate re-run. ``stop_event`` interrupts the
-    pause, and the function then returns normally.
-    """
+    """Run immediately, then pause after each pass to avoid overlap or a tight loop."""
     while not stop_event.is_set():
         await run_price_check_pass(
             price_service,

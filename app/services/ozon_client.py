@@ -1,50 +1,7 @@
-"""Get product name and price from the Ozon `entrypoint-api`.
+"""Ozon widget states are JSON strings inside the entrypoint JSON response.
 
-Contract established by fact, not by a live call (`PROJECT.md` section 2.11):
-the sole reference is the customer-supplied capture for article `3593896354`
-(`tests/fixtures/ozon/entrypoint_3593896354.json`, a minimal slice), validated
-through `app/schemas/ozon.py`. The response is double-encoded: `widgetStates`
-maps `<component>-<id>-<container>-<page>` to a *string* of JSON, parsed a
-second time per widget.
-
-Policy decisions that live here, not in the schema:
-
-- Widget selection is by the key segment before the first `-` (`str.partition`,
-  never `startswith`: `webPrice` and `webPriceDecreasedCompact` are different
-  components) and requires exactly one entry. Zero or several is
-  `bad_payload`; "first match" would depend on key order.
-- Product identity: `webDetailSKU.copyText` must equal the requested article,
-  otherwise the price could belong to another SKU (`bad_payload`).
-- `isAvailable: false` was never observed, so it is `bad_payload`, not
-  `out_of_stock` (follow-up: PAB-075). `not_found` only for HTTP 404.
-- The tracked price is `webPrice.cardPrice`, the price with the Ozon card
-  (customer decision 2026-10-28); `webPrice.price` only when the card price
-  is absent or unparsable.
-
-Access (`PROJECT.md` section 2.14): Ozon answers only a request that carries
-the cookies of a passed anti-bot check and the UA of the browser that passed
-it. They come from an `OzonAccessProvider` (a browser, once per process); the
-price request itself is made by `curl_cffi` with the Chrome TLS fingerprint
-(`httpx` is answered `307`/`403` - measured). Status map (O4):
-
-- provider refusal: `blocked`, no request; `429`: `blocked`, access kept;
-  the stage `proxy_failed` (the proxy refused, not Ozon) is `transport_error`;
-- `3xx` or `403`: the access is invalidated and the request repeated once
-  with a fresh one; a second `3xx`/`403` is `blocked` and does not
-  invalidate the renewed access (a repeated refusal says nothing against it,
-  and dropping it would start a browser on every article);
-- `404`: `not_found`; other statuses and `curl_cffi` errors:
-  `transport_error` (`detail` is `HTTP <status>` or the class name).
-
-Anti-bot is an expected mode, reported as `blocked`, never as `not_found`.
-Redirects are not followed (a `3xx` is the refusal signal, so no request goes
-to a foreign address), the body of a non-2xx response is never read, the body
-of a 2xx one is read with a size cap, cookies set by a response are
-discarded (the request is a function of access and article, no hidden state),
-and proxy environment variables are not read (the only proxy is the
-configured SOCKS5 one, `socks5h`: DNS on the proxy side). Each attempt is bounded by one
-deadline. Access cookies are a secret: they are masked in `repr`, never
-logged and never put into `detail`.
+The contract comes from tests/fixtures/ozon/entrypoint_3593896354.json.
+Track cardPrice when available, otherwise price; values are in kopecks.
 """
 
 import asyncio
@@ -88,12 +45,7 @@ class _WidgetProblem(Enum):
 def _select_widget_state(
     widget_states: dict[str, str], component: str
 ) -> str | _WidgetProblem:
-    """Return the state string of the single widget of `component`.
-
-    The component is the key segment before the first `-`. Zero entries is
-    `_WidgetProblem.missing`, more than one `_WidgetProblem.ambiguous`: the
-    caller's cue for `bad_payload`. One pass, `O(W)`.
-    """
+    """Require one exact component; prefixes may name different widgets."""
     found: str | None = None
     for key, state in widget_states.items():
         if key.partition("-")[0] != component:
@@ -125,16 +77,10 @@ class OzonRedirect:
 
 
 class OzonSession:
-    """One `curl_cffi` `AsyncSession` per process (O7), owned by `lifespan`.
+    """Reuse a Chrome TLS fingerprint; Ozon rejects ordinary HTTP clients.
 
-    No cookie jar (`discard_cookies`), no redirects, no proxy from the
-    environment (`proxies={"all": ""}` makes libcurl ignore `ALL_PROXY`,
-    `HTTPS_PROXY`, ...; `trust_env` alone does not), Chrome fingerprint,
-    TLS verification on. With a `proxy` the whole traffic goes through it by
-    `socks5h` (O10); the credentials are held in the libcurl session.
-    A connection dropped before the response (`ConnectionError`,
-    `ProxyError`: the proxy drops a share of tunnels) is sent once more; a
-    timeout is not.
+    Disable redirects and cookie persistence. Explicit proxies override libcurl
+    environment proxies; socks5h resolves DNS through the configured proxy.
     """
 
     def __init__(self, proxy: SocksProxy | None = None) -> None:
@@ -147,7 +93,7 @@ class OzonSession:
         )
 
     async def _send(self, url: str, **kwargs: Any) -> Response:
-        """`request("GET", ...)`, repeated once if the connection was dropped."""
+        """Retry a dropped connection once, but not a timeout."""
         try:
             return await self._session.request("GET", url, **kwargs)
         except curl_errors.ConnectionError, curl_errors.ProxyError:
@@ -162,14 +108,7 @@ class OzonSession:
         timeout_seconds: float,
         max_body_bytes: int,
     ) -> OzonReply:
-        """GET with the cookies and UA of `access`; a 2xx body is read, bounded.
-
-        Raises `RequestException` (any `curl_cffi` failure) or
-        `_BodyTooLarge`; `CancelledError` passes through. The stream is
-        aborted on every exit: after the status of a non-2xx response is
-        known, its body is not read (aborting stops the download at the next
-        chunk; closing without the abort would drain it).
-        """
+        """Abort streams on exit: closing alone would drain even non-2xx bodies."""
         response = await self._send(
             url,
             params=params,
@@ -196,12 +135,7 @@ class OzonSession:
             await response.aclose()  # type: ignore[no-untyped-call]
 
     async def get_redirect(self, url: str, *, timeout_seconds: float) -> OzonRedirect:
-        """GET `url` without access cookies; report status and `Location`.
-
-        No redirect is followed (the session forbids it) and the body is never
-        read: the stream is aborted on every exit. Raises `RequestException`;
-        `CancelledError` passes through.
-        """
+        """Return Location without following redirects or reading the body."""
         response = await self._send(url, timeout=timeout_seconds, stream=True)
         try:
             status = int(response.status_code)
@@ -231,11 +165,7 @@ class OzonClient(BaseMarketplaceClient):
         self._access = access
 
     async def _fetch_body(self, article: int) -> bytes | MarketplaceFetchFailure:
-        """Request `article` with a provider access; on `3xx`/`403` renew once.
-
-        Returns the 2xx body or a marked failure; never raises (apart from
-        the caller's `CancelledError`).
-        """
+        """Renew access once on 3xx/403; keep renewed access after a second refusal."""
         attempt = 0
         while True:
             attempt += 1
@@ -297,7 +227,6 @@ class OzonClient(BaseMarketplaceClient):
     async def _request(
         self, article: int, access: OzonAccess
     ) -> OzonReply | MarketplaceFetchFailure:
-        """One HTTP attempt under one deadline; a failure is returned, not raised."""
         try:
             async with asyncio.timeout(self.TIMEOUT_SECONDS):
                 return await self._session.get(
@@ -327,17 +256,10 @@ class OzonClient(BaseMarketplaceClient):
             )
 
     async def resolve_short_link(self, code: str) -> str | MarketplaceFetchFailure:
-        """Expand `ozon.ru/t/<code>` with one request; return its `Location`.
+        """Return Location without following it; the domain layer validates the target.
 
-        The URL is built from the constant host and the validated `code` only
-        (no SSRF); no access cookies, no browser, no redirect followed, the
-        access provider is never called (PROJECT.md section 2.15, R22). The
-        `Location` is returned as is: checking it is the domain's job. Neither
-        the code nor the `Location` is logged (derived from user input).
-        Status map: `3xx` with `Location` -> the string; `3xx` without it and
-        `2xx` -> `bad_payload`; `403`/`429` -> `blocked`; `404` -> `not_found`;
-        other statuses, `curl_cffi` errors and a missed deadline ->
-        `transport_error`. Never raises (apart from `CancelledError`).
+        The fixed host and validated code prevent SSRF; neither code nor
+        Location is logged.
         """
         if not (code.isascii() and code.isalnum() and 1 <= len(code) <= 32):
             logger.error("Ozon short link code rejected before the request")
@@ -381,13 +303,6 @@ class OzonClient(BaseMarketplaceClient):
         )
 
     async def get_product_data(self, article: int) -> MarketplaceFetchResult:
-        """Fetch name and price for a single Ozon article.
-
-        Returns either `MarketplaceProductData` or a `MarketplaceFetchFailure`
-        marking one of `blocked`, `not_found`, `transport_error` or
-        `bad_payload` - never `None`, never an exception escaping to the
-        caller (`BaseMarketplaceClient` contract).
-        """
         body = await self._fetch_body(article)
 
         if isinstance(body, MarketplaceFetchFailure):
@@ -434,10 +349,7 @@ class OzonClient(BaseMarketplaceClient):
             tracked = price.card_price if price.card_price is not None else price.price
             return MarketplaceProductData(name=heading.title, price=tracked)
         except ValidationError as e:
-            # A closed, named exception set: the `model_validate_json` calls
-            # and `MarketplaceProductData(...)` are the only calls here that
-            # can raise, and all raise `pydantic.ValidationError` (a non-JSON
-            # body too). `str(e)` is never used - it echoes the input value.
+            # Validation errors may contain the upstream input.
             logger.error(f"Bad payload for Ozon article {article}: {type(e).__name__}")
             return MarketplaceFetchFailure(
                 reason=FetchFailureReason.bad_payload,

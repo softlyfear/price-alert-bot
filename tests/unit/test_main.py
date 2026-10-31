@@ -1,28 +1,3 @@
-"""Tests for app.main: lifespan, /health, shutdown ordering (PAB-067).
-
-Covers AC5 (honest startup failure), AC6 (/health), AC7 (polling failure
-visibility), AC8 (shutdown order) and AC9 (import isolation).
-
-Two different levels of control are used on purpose:
-
-- The AC8 step-ordering/failure-injection tests call ``main._shutdown()``
-  directly, against small hand-built doubles for ``Dispatcher``/``Bot``/
-  ``RedisStorage`` -- the six steps it orchestrates are already fully
-  determined by its own four parameters, so going through the whole
-  ``lifespan()`` startup sequence to reach them would only add timing noise
-  without exercising anything ``_shutdown`` itself does not already own.
-- Tests that need genuine startup behaviour (AC5, AC6, AC7, the AC4(c) 401
-  scenario, AC8(c)/(d)) drive the real ``lifespan(app)`` async context
-  manager directly (not the ASGI protocol -- see the note on
-  ``test_health_...`` below) with every I/O-touching factory
-  (``get_settings``, ``get_engine``, ``create_storage``, ``create_bot``,
-  ``create_dispatcher``) monkeypatched to fakes from this file and
-  ``tests/unit/conftest.py``; the real routing tree
-  (``create_root_router()``) is deliberately not involved, since
-  ``app.main`` does not own routing correctness (covered by
-  ``tests/unit/bot/test_setup.py`` and ``tests/unit/handlers/test_common.py``).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -336,14 +311,7 @@ StartPolling = (
 
 
 def _controlled_polling() -> tuple[StartPolling, StartPolling]:
-    """Build a matched ``(start_polling, stop_polling)`` pair: the former
-    blocks until the latter is called, mirroring how the real polling task
-    only finishes in response to ``stop_polling`` actually being invoked
-    (PROJECT.md §8.3, Р6). Without this pairing, a ``start_polling`` double
-    that just hangs forever would deadlock ``_shutdown``'s
-    ``asyncio.wait({polling_task})`` step, since nothing would ever make
-    the task finish.
-    """
+    """The polling double stops only when requested, avoiding a shutdown deadlock."""
     stop_event = asyncio.Event()
 
     async def start_polling(*args: Any, **kwargs: Any) -> None:
@@ -361,20 +329,7 @@ def _build_bare_dispatcher(
     start_polling: StartPolling | None = None,
     stop_polling: StartPolling | None = None,
 ) -> Dispatcher:
-    """Replicate ``create_dispatcher()``'s in-flight-tracker wiring without
-    ``create_root_router()`` -- routing correctness is out of scope for the
-    orchestration-level tests in this file (see the module docstring). The
-    real ``create_dispatcher()`` output, including ``create_root_router()``
-    and its middleware wiring, is exercised directly by
-    ``test_in_flight_handler_through_the_real_create_dispatcher_is_tracked``
-    below and by ``tests/unit/handlers/test_common.py``.
-
-    ``start_polling``, when given, replaces the instance's own
-    ``start_polling`` so a test controls exactly when/how the polling task
-    finishes, instead of letting the real polling loop spin against the
-    fake bot session (which would otherwise busy-loop on ``GetUpdates``
-    with no server-side delay to wait on).
-    """
+    """Use controlled polling to avoid a busy loop against the fake session."""
     dispatcher = Dispatcher(storage=storage)
     tracker = InFlightUpdatesTracker()
     dispatcher.update.outer_middleware(tracker)
@@ -399,12 +354,7 @@ def _patch_orchestration_factories(
     scheduler_loop: StartPolling | None = None,
     loop_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] | None = None,
 ) -> RedisStorage:
-    """Patch every I/O-touching factory of ``lifespan``.
-
-    The scheduler loop is replaced by ``scheduler_loop`` or, by default, by an
-    idle loop that only waits for its ``stop_event`` -- so a test that is not
-    about the scheduler never races a real pass against its own log sink.
-    """
+    """Keep unrelated tests from racing a real scheduler pass."""
     settings = settings or _make_orchestration_settings()
     created = dispatcher_calls if dispatcher_calls is not None else []
     storage = RedisStorage(redis=cast(Any, redis_client or _FakeRedisClient()))
@@ -448,12 +398,7 @@ async def _finish_immediately(*args: Any, **kwargs: Any) -> None:
 async def test_health_returns_200_while_polling_task_is_alive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``/health`` reached through the real ASGI route (``httpx.AsyncClient``
-    over ``httpx.ASGITransport``), while ``lifespan()`` itself is driven
-    directly for deterministic async control over startup/shutdown timing
-    (``fastapi.testclient.TestClient`` runs the event loop on a separate
-    thread, which would make "is the polling task alive yet" a race).
-    """
+    """Drive lifespan directly to keep startup and shutdown on the same event loop."""
     get_engine_calls: list[None] = []
     bot = build_fake_bot()
     start_polling, stop_polling = _controlled_polling()
@@ -517,23 +462,8 @@ async def test_startup_against_a_401_bot_session_does_not_leak_the_token_to_stde
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """AC4(c) / PAB-082 AC4: every Bot API call fails with 401, so startup now
-    fails at the ``getMe`` check (the failed-startup path), not later in the
-    polling loop. ``preset_me=False`` is required for ``getMe`` to actually go
-    through the session -- the default ``preset_me=True`` would skip it.
-
-    Checked on two independent channels (AC4(c) names both): ``loguru``'s
-    own handler via ``capsys`` (``setup_logging()`` writes to ``stderr``)
-    and the standard-library ``logging`` channel via ``caplog`` --
-    pytest's log-capture plugin intercepts standard ``logging`` records
-    before they would otherwise reach ``stderr``, so a leak written through
-    ``logging.getLogger(...).error(...)`` instead of ``loguru`` stays
-    invisible to ``capsys`` alone. Mutation target: adding
-    ``logging.getLogger("aiogram").error("t=%s", token)`` anywhere on this
-    path. The positive controls prove each channel genuinely captures what
-    it should in this environment, so the negative assertions are not
-    vacuous (convention 22): the startup ERROR record reaches ``stderr``,
-    and a canary record reaches ``caplog``.
+    """Capture both loguru and stdlib logging; pytest intercepts the latter before
+    stderr.
     """
     import logging
 
@@ -618,20 +548,7 @@ async def test_polling_task_failure_logs_exactly_one_error_naming_exception_type
 async def test_polling_task_failure_callback_leaves_no_unretrieved_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``add_done_callback(_log_polling_task_failure)`` retrieves the
-    exception via ``task.exception()`` the moment the task finishes, so
-    asyncio's own "Task exception was never retrieved" warning (emitted by
-    the default exception handler, through the standard ``logging``
-    module's ``asyncio`` logger, on garbage collection of a task whose
-    exception nobody ever read) must never fire. Observed via ``caplog``,
-    not ``capsys``: this warning goes through ``logging``, which pytest's
-    log capture intercepts before it would otherwise reach ``stderr``.
-
-    Positive control first: a task whose exception genuinely nobody reads
-    at all really does emit that warning in this environment -- without
-    it, the assertion below would be vacuously green even if the mechanism
-    this test relies on were dead (convention 22).
-    """
+    """The positive control proves asyncio warnings reach the stdlib logging capture."""
     import gc
     import logging
 
@@ -708,18 +625,7 @@ async def test_log_polling_task_failure_does_not_log_a_cancelled_task() -> None:
 async def test_lifespan_registers_the_failure_callback_on_the_real_polling_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC7 through the whole ``lifespan``, not just ``_log_polling_task_failure``
-    invoked by hand. Mutation target: deleting
-    ``polling_task.add_done_callback(_log_polling_task_failure)`` in
-    ``lifespan`` -- nothing else in ``lifespan`` retrieves or logs the
-    polling task's exception, so this test goes red without that line.
-
-    The sink is added only *after* ``lifespan``'s ``__aenter__()`` runs
-    (mirroring ``test_shutdown_does_not_hang_on_a_handler_slower_than_the_timeout``
-    below): ``setup_logging()``, the first statement inside ``lifespan``,
-    unconditionally removes every existing loguru handler, so a sink added
-    beforehand would be silently gone by the time anything is logged.
-    """
+    """Install the sink after startup because setup_logging removes earlier handlers."""
     from loguru import logger
 
     async def failing_start_polling(*args: Any, **kwargs: Any) -> None:
@@ -756,12 +662,8 @@ async def test_lifespan_registers_the_failure_callback_on_the_real_polling_task(
 async def test_lifespan_starts_polling_with_no_signals_and_bot_session_stays_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutation target: flipping ``close_bot_session=False`` to ``True`` in
-    ``lifespan`` (Р6 (б)) would let aiogram close the ``Bot`` session in
-    ``start_polling``'s own ``finally``, out from under handlers still
-    running and before ``_shutdown`` gets a chance to; flipping
-    ``handle_signals=False`` to aiogram's default would install signal
-    handlers that steal SIGINT/SIGTERM from the host process (Р6 (а)).
+    """Polling must leave signals to the host and the session open for in-flight
+    handlers.
     """
     calls: list[dict[str, Any]] = []
     stop_event = asyncio.Event()
@@ -841,18 +743,7 @@ async def test_lifespan_starts_polling_after_a_single_profile_call_fails_with_wa
     capsys: pytest.CaptureFixture[str],
     failing_method: type[TelegramMethod[Any]],
 ) -> None:
-    """AC3's per-call failure tolerance, exercised through the whole
-    ``lifespan`` (``configure_bot_profile`` in isolation is already covered
-    by ``tests/unit/bot/test_setup.py``): one failing profile call must
-    still leave a live polling task behind instead of stopping startup.
-
-    Observed via ``capsys`` (``setup_logging()``'s own ``stderr`` handler),
-    not a temporary sink: the warning is logged from inside
-    ``configure_bot_profile``, called before ``lifespan`` ever yields
-    control back to the caller, so there is no point at which a test-added
-    sink could be installed after ``setup_logging()`` resets the handlers
-    and before that warning fires.
-    """
+    """Capture stderr because the warning precedes lifespan yielding control."""
 
     async def responder(method: TelegramMethod[Any]) -> Any:
         if isinstance(method, failing_method):
@@ -1100,16 +991,7 @@ def _patch_generic_shutdown_steps(
     wait_inflight_raises: Exception | None = None,
     dispose_engine_raises: Exception | None = None,
 ) -> None:
-    """Give the waiting steps and ``dispose_engine`` the same "record an event,
-    optionally fail" shape the object-backed steps get from
-    ``_build_shutdown_doubles`` -- these have no object of their own to hang a
-    double off, since they call a bare ``asyncio`` function or a module-level
-    name directly. The two ``asyncio.wait`` steps are told apart by the task
-    they wait for; only the first wait of each is recorded (a timed-out
-    scheduler wait is followed by a second one after ``cancel()``).
-    The scheduler stop budget is shortened so a scheduler that never stops
-    cannot stall a test for 45 seconds.
-    """
+    """Shorten the scheduler budget and record only the first wait for each task."""
     real_wait = asyncio.wait
 
     async def recording_wait(tasks: Any, **kwargs: Any) -> Any:
@@ -1169,15 +1051,6 @@ _EXPECTED_ORDER = [
 async def test_shutdown_runs_all_twelve_steps_in_the_exact_documented_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutation targets: swapping ``close_bot_session``/``dispose_engine``
-    (PAB-067); moving ``wait_scheduler_task`` after ``close_bot_session`` or
-    before ``wait_inflight_updates``; moving ``signal_scheduler_stop`` off the
-    first place (PAB-069, Р3); moving ``close_wb_access`` off the second place
-    (PAB-079: right after ``signal_scheduler_stop``, before polling stops);
-    moving ``close_ozon_access`` off the third place or ``close_ozon_session``
-    off the place right after ``close_http_client`` (PAB-110) --
-    each turns this exact comparison red.
-    """
     recorder = _Recorder()
     doubles = _build_shutdown_doubles(recorder)
     _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
@@ -1270,11 +1143,8 @@ async def test_shutdown_continues_after_one_step_fails_and_logs_exactly_that_ste
 
 @pytest.mark.asyncio
 async def test_shutdown_does_not_swallow_an_external_cancelled_error() -> None:
-    """``_shutdown``'s per-step ``try/except Exception`` must not catch
-    ``asyncio.CancelledError`` (a ``BaseException`` subclass since Python
-    3.8, not caught by ``except Exception``) -- convention 23. Simulated by
-    making one step raise ``CancelledError`` directly and asserting it
-    propagates out of ``_shutdown`` instead of being logged and absorbed.
+    """Cancellation must propagate through cleanup instead of being logged and
+    absorbed.
     """
     recorder = _Recorder()
     doubles = _build_shutdown_doubles(recorder, already_done=True)
@@ -1519,16 +1389,7 @@ async def test_shutdown_waits_for_an_in_flight_handler_before_closing_bot_sessio
 async def test_in_flight_handler_through_the_real_create_dispatcher_is_tracked() -> (
     None
 ):
-    """AC8(в) through the real ``app.bot.setup.create_dispatcher`` output,
-    not ``_build_bare_dispatcher``. Mutation target: deleting
-    ``dispatcher.update.outer_middleware(tracker)`` inside
-    ``create_dispatcher`` -- every AC8(в)/(г) test above invokes
-    ``InFlightUpdatesTracker`` directly, bypassing the actual middleware
-    registration entirely, so that mutation would stay unnoticed by them.
-    This test instead routes an update through ``Dispatcher.feed_update``
-    on the real factory output, so only a genuinely registered outer
-    middleware makes the handler count as in-flight.
-    """
+    """Feed an update through the real dispatcher to test middleware registration."""
     from aiogram.fsm.storage.memory import MemoryStorage
 
     # ``MemoryStorage``, not ``RedisStorage(redis=_FakeRedisClient())``:
@@ -1746,12 +1607,7 @@ async def test_lifespan_closes_client_storage_and_engine_when_startup_fails(
 async def test_lifespan_builds_services_then_polling_then_scheduler_with_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutations: pass a literal instead of ``ALERT_COOLDOWN_SECONDS`` /
-    ``SCHEDULER_INTERVAL_SECONDS`` / ``MARKETPLACE_CONCURRENCY``; start the
-    scheduler task before the polling task; build the services after the tasks;
-    wire ``NotificationService`` with another bot or a different ``http_client``.
-    Settings carry 4321 / 777 / 3 (not the defaults), so a default is visible.
-    """
+    """Non-default settings expose accidental use of defaults."""
     events: list[str] = []
     price_service_kwargs: list[dict[str, Any]] = []
     notification_bots: list[Bot] = []
@@ -2140,12 +1996,7 @@ def termination_spy(monkeypatch: pytest.MonkeyPatch) -> _TerminationSpy:
 
 @contextlib.asynccontextmanager
 async def _lifespan_watched(spy: _TerminationSpy) -> AsyncIterator[list[Record]]:
-    """Drive the real ``lifespan`` with a sink for ERROR and above.
-
-    The sink is added after startup because ``setup_logging()`` removes every
-    handler; the tasks have not run yet at that point (no suspension since
-    their creation), so no record can be missed.
-    """
+    """Install the sink after setup_logging removes handlers, before the tasks run."""
     from loguru import logger
 
     cm = main.lifespan(main.app)
@@ -2553,12 +2404,7 @@ async def _fail_startup_at_get_me(
     failure: Callable[[], Exception],
     token: str = "1:test-token",
 ) -> _FailedTelegramStartup:
-    """Run the real ``lifespan`` against a bot whose ``getMe`` raises.
-
-    ``setup_logging`` is replaced by a no-op: the real one removes every loguru
-    handler, including the ERROR sink that must already exist when startup
-    fails (the record is written before ``lifespan`` ever yields).
-    """
+    """Keep the sink installed: startup fails before lifespan yields."""
     from loguru import logger
 
     injected = failure()
