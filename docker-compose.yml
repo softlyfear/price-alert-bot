@@ -39,9 +39,13 @@ services:
     image: redis:7.4.11-alpine
     profiles: ["price-alert-bot"]
     restart: unless-stopped
+    user: "999:1000"
     volumes:
-      # Default RDB snapshots land in /data: FSM states survive down/up.
-      - redisdata:/data
+      - type: bind
+        source: ./data/redis
+        target: /data
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -63,7 +67,11 @@ services:
       REDIS__PORT: "6379"
     read_only: true
     volumes:
-      - sqlite_data:/data
+      - type: bind
+        source: ./data/docker
+        target: /data
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp
     cap_drop:
@@ -95,7 +103,11 @@ services:
       XDG_CONFIG_HOME: /tmp/.config
     read_only: true
     volumes:
-      - sqlite_data:/data
+      - type: bind
+        source: ./data/docker
+        target: /data
+        bind:
+          create_host_path: false
     # Chromium spawns processes; without an init a crashed one stays a zombie of PID 1.
     init: true
     # tmpfs counts against mem_limit, so its size is a cap on what Chromium may take
@@ -183,7 +195,3 @@ services:
       migrate:
         condition: service_completed_successfully
     logging: *default-logging
-
-volumes:
-  sqlite_data:
-  redisdata:
