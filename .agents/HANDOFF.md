@@ -24,3 +24,28 @@ verification history are in Git. Uncommitted work in another checkout is not
 published by this synchronization task. Add the verified outcome and remaining
 questions here when that work is completed, without copying private deployment
 details or the full local ticket ledger.
+
+## Selected Wildberries size release
+
+Commit `e16a521` was accepted and pushed, then deployed with explicit user
+approval. The running source was verified against all 63 application/migration
+Python files from that commit; SQLite revision is `5d2df2075e03`.
+
+WB links retain their selected option through preview, storage, refreshes and
+alerts. Missing/unpriced selected options report out_of_stock without another
+size's price. Legacy rows retain size 0 and minimum-price behavior; users must
+add a new size-bearing link to select a specific option.
+
+Verification: 3325 tests passed, strict typing/lint/import checks passed, and
+changed application code plus the migration reached 100% line/branch coverage.
+Independent review and architecture acceptance completed. One Ozon browser
+navigation test failed once and passed targeted/full repeats; its cause remains
+unknown, and Ozon short-link investigation remains separate.
+
+Deployment preserved every pre-existing user/product/alert field before app
+startup (2 users, 4 products, 4 alerts), verified a frozen project-local backup,
+and retained a checked rollback image. The original Redis container remained
+healthy. Runtime checks: HTTP 200, one app instance, live polling/scheduler tasks,
+4 products checked with 0 failures, source hashes and synthetic size-selection
+probe passed. No Telegram test messages were sent. Next user check: submit the
+WB link with the intended size again and verify the displayed size and price.
