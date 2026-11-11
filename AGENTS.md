@@ -5,8 +5,9 @@ notification thresholds. User-facing Telegram text is Russian; preserve exact
 workflow verdict strings.
 
 Codex configuration/roles live in `.codex/`, skills in `.agents/skills/`.
-Architecture and ticket state have one shared source in `docs/PROJECT.md`,
-`docs/TASKS.md`, and `docs/TASKS-archive.md`. Do not use `.Codex/`.
+Detailed local architecture and tickets live in `docs/PROJECT.md`,
+`docs/TASKS.md`, and `docs/TASKS-archive.md`. Portable continuation summaries
+live in `.agents/HANDOFF.md`; it is not a second ticket ledger. Do not use `.Codex/`.
 Keep ticket history, investigation dates, and long rationale in project docs.
 
 ## Stack
@@ -176,3 +177,8 @@ does not edit implementation files:
   targeted edits, approximately 150 KB budget.
 - `docs/TASKS-archive.md`: closed cards, decisions, and agreement history;
   append-only.
+
+## Repository synchronization
+
+For safe upstream synchronization use [.agents/WORKFLOW.md](.agents/WORKFLOW.md).
+Its local Git opt-in records the specifically approved server-sync exception.

@@ -14,6 +14,7 @@ and background tasks; `/health` reports application health.
 | Persistence | [app/repositories/](app/repositories/) queries [app/models/](app/models/); [alembic/](alembic/) versions the SQLite schema. |
 | Runtime | [app/core/](app/core/) owns settings, database sessions and logging; [app/scheduler.py](app/scheduler.py) batches background work. |
 | Verification | [tests/](tests/) contains mocked unit tests, captured fixtures and file-SQLite integration tests; [pyproject.toml](pyproject.toml) defines dependencies and quality checks. |
+| Agent continuity | [.agents/WORKFLOW.md](.agents/WORKFLOW.md) documents safe upstream synchronization; [scripts/sync_upstream.py](scripts/sync_upstream.py) synchronizes the configured upstream with local-work protection. |
 
 Product flow: Telegram input → domain reference → tracking preview → marketplace
 client → FSM confirmation → user-scoped product and alert records. A WB reference
