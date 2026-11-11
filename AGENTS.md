@@ -1,214 +1,178 @@
-# price-alert-bot — правила работы
+# price-alert-bot
 
-Telegram-бот отслеживания цен на товары Wildberries и Ozon. Пользователь добавляет товар в отслеживание и задаёт цену, при достижении которой приходит уведомление.
+Telegram price tracker for Wildberries and Ozon. Users add products and choose
+notification thresholds. User-facing Telegram text is Russian; preserve exact
+workflow verdict strings.
 
-Codex читает проектные инструкции из корневого `AGENTS.md`. Настройки и роли находятся в `.codex/`, проектные навыки — в `.agents/skills/`. Архитектура и тикеты находятся в `docs/PROJECT.md`, `docs/TASKS.md` и `docs/TASKS-archive.md`: это один источник состояния, без копий. Каталог `.Codex/` не используется.
+Codex configuration/roles live in `.codex/`, skills in `.agents/skills/`.
+Architecture and ticket state have one shared source in `docs/PROJECT.md`,
+`docs/TASKS.md`, and `docs/TASKS-archive.md`. Do not use `.Codex/`.
+Keep ticket history, investigation dates, and long rationale in project docs.
 
-## Язык
+## Stack
 
-- Общение с пользователем, отчёты агентов, тикеты, ревью — **русский**.
-- docstrings и комментарии в коде — **английский** (как в существующем коде).
-- Все тексты, видимые пользователю Telegram, — **русский**.
-- Дословно, без перевода: идентификаторы, пути, имена команд, зависимостей, переменных окружения, ID тикетов, строки вердиктов.
-
-## Комментарии и docstrings
-
-- Пояснений — минимум. Не пересказывать код, сигнатуру или очевидный смысл имени.
-- Комментарий нужен для неочевидной причины, ограничения, риска или важного инварианта: например, порядка shutdown, конкурентного доступа, единиц измерения или особенностей внешнего протокола.
-- Docstring оставлять только там, где он уточняет важный контракт, побочный эффект или ограничение. Очевидным модулям, классам и private helpers он не обязателен; нужное описание писать кратко, без учебника и повторов.
-- Историю тикетов, даты расследований и длинные обоснования хранить в проектных документах, а не в коде. Сохранять полезные протокольные ссылки, лицензии, shebang, encoding и директивы инструментов (`type: ignore`, `noqa`, `pragma`, `fmt` и подобные).
-
-## Стек
-
-| Что | Чем | Примечание |
-|---|---|---|
-| Python | 3.14 | `.python-version` |
-| Пакеты | `uv` | `uv add`, `uv sync`; `uv.lock` коммитится |
-| Бот | `aiogram` 3 | long polling |
-| FSM-хранилище | `RedisStorage` | состояния переживают рестарт |
-| Web | `FastAPI` + `uvicorn` | `lifespan`, `/health`, точка роста под API и админку |
-| БД | SQLite + `SQLAlchemy` 2.0 async + `aiosqlite` | файл на локальном постоянном томе, один экземпляр бота |
-| Миграции | `alembic` | |
-| HTTP | `httpx` | общий `AsyncClient` на процесс |
-| Браузер | `playwright` (Chromium) | только получение доступа через антибот: токен Wildberries, cookies Ozon |
-| HTTP Ozon | `curl_cffi` | TLS-отпечаток Chrome, только `ozon_client` |
-| Логи | `loguru` | контекст через `logger.bind()` |
-| Планировщик | собственный asyncio-цикл | интервал из `.env`, по умолчанию 15 минут |
-| Тесты | `pytest` + `pytest-asyncio` | unit на моках, интеграционные на файловой SQLite |
-| Качество | `mypy --strict`, `ruff` | |
-
-`redis` в зависимостях — ради `RedisStorage`.
-
-## Продуктовые решения (согласованы с заказчиком)
-
-- Добавление товара — **FSM-диалог** шаг за шагом: ссылка или артикул → показ найденного товара и текущей цены → ввод порога → подтверждение.
-- Направление порога выбирается **автоматически** (решение 2026-10-01): порог ниже текущей цены → `below` («сообщить, когда дешевле»), выше → `above` («сообщить, когда дороже»), равный текущей цене отклоняется с просьбой ввести другой. Порог может быть любым — ограничения «только ниже цены» нет.
-- После срабатывания алерт **остаётся активным**; повторное уведомление ограничено **cooldown** из `.env`, отсчёт от `triggered_at`.
-- Лимит — **50 товаров** на пользователя, значение из `.env`.
-- Маркетплейсы: Wildberries + **Ozon через публичный `entrypoint-api`**. Антибот Ozon проходится браузером (решение 2026-10-22, `PROJECT.md` §2.14); неудавшийся проход — ожидаемый режим, его нужно распознавать и честно сообщать, а не маскировать под «товар не найден».
-- Деньги везде — **целое число копеек**. Пользователь вводит рубли, конвертация на границе слоя бота.
-- Бот отслеживает цену **без персональных скидок** (кошелёк, баллы и т. п.) — на сайте цена для пользователя может быть ниже. Это честно оговаривается в текстах бота везде, где видна цена.
-- Ozon отслеживается **по цене с картой Ozon** (`cardPrice`; решение 2026-10-28), при её отсутствии — по обычной; в диалоге добавления так и написано: «Текущая цена по карте Ozon».
-- Время везде — **timezone-aware UTC**.
-
-## Конвейер агентов
-
-Задачи ведутся тикетами. Цикл одного тикета:
-
-```
-python-architect  → выдаёт тикет с AC и цепочкой исполнителей
-   ↓
-слоевые агенты    → по очереди, каждый только свой слой; tests-agent последним, затем полный gate среза
-   ↓
-code-reviewer     → независимое ревью и мутации, вердикт Ship / No-Ship
-   ↓
-python-architect  → финальная приёмка, вердикт ✅ ПРИНЯТО / ❌ НА ДОРАБОТКУ
-   ↓
-коммит            → после ✅ ПРИНЯТО, затем следующий тикет
-```
-
-**Тикет — вертикальный срез:** законченная функция, видимая пользователю или оператору (например, «добавить товар через FSM-диалог»), а не слой. Цепочка исполнителей идёт в порядке зависимостей слоёв; одно ревью, одна приёмка, один коммит на весь срез. Тикет в одной зоне — только когда функция целиком в ней лежит (сборка, миграция, хвост ревью). Срез должен укладываться в одно ревью: если цепочка длиннее ~4 исполнителей, его режут на два среза.
-
-По указанию пользователя `python-architect` и `code-reviewer` используют последнюю доступную стабильную Sol с `model_reasoning_effort = "high"`; остальные девять ролей — последнюю доступную стабильную Terra с `high`. Точный ID бери из соответствующего `.codex/agents/<роль>.toml`, включая ручное делегирование: не копируй устаревшие версии из истории тикетов и не используй неподтверждённые алиасы вроде `sol-latest`. Не меняй семейство модели без указания пользователя.
-
-Перед запуском через `./scripts/codex` или `make codex` проектный `scripts/codex_models.py` обновляет модели из каталога Codex (`app-server`, `model/list`). Обновить только настройки — `make codex-models`. Скрипты хранятся в этом репозитории и не зависят от соседних проектов. Выбираются видимые стабильные версии с поддержкой `high`, без понижения текущей версии; остальные поля TOML сохраняются. При недоступном или некорректном каталоге выводится предупреждение, текущие модели сохраняются, запуск Codex продолжается. Основная сессия сохраняет модель пользователя.
-
-Прямой запуск Codex desktop обходит обёртку: выполни `make codex-models` перед открытием новой сессии. Уже запущенные сессии и агенты автоматически не перезапускаются.
-
-`No-Ship` или `❌ НА ДОРАБОТКУ` возвращают тикет тем агентам цепочки, чьих зон касаются находки, с подсказкой. Счётчик `Попытка` живёт в `docs/TASKS.md`.
-
-### Работа оркестратора Codex
-
-- Для задачи с изменениями сначала вызови `python-architect`: он выдаёт карточку с AC, разрешёнными файлами и порядком исполнителей. Настройки Codex и `AGENTS.md` ведёт оркестратор; хуки и их скрипты — `devops-agent`. Для простой правки настроек не подключай незатронутые слои.
-- Выбирай custom agent по имени из `.codex/agents/`. Если инструмент делегирования не поддерживает выбор роли по имени, создай агента с явным указанием прочитать соответствующий TOML и исполнить его `developer_instructions`. Для такого запуска явно передай `model` и `reasoning_effort` из TOML и используй новый контекст, если этого требует инструмент; чтение TOML само по себе модель не переключает. Не утверждай, что роль применена автоматически. Если делегирование вообще недоступно, сообщи об ограничении; не объявляй самостоятельную проверку независимой приёмкой.
-- Передавай агенту ID тикета, AC, разрешённые файлы, состояние рабочего дерева и результат предыдущего шага. Контекст отдельного агента зависит от способа запуска; всё необходимое для продолжения фиксируется в карточке и отчёте.
-- Реализация идёт в порядке зависимостей. Независимые исследования и проверки можно выполнять параллельно; изменения одних файлов, `uv sync`, Git и проверки промежуточного незавершённого среза — последовательно. В общей рабочей директории не более трёх дочерних агентов одновременно; реальный лимит среды имеет приоритет.
-- `tests-agent` подключается последним, когда нужны изменения `tests/**`. Затем одно ревью `code-reviewer` на весь срез и финальная приёмка архитектора. До завершения этих этапов следующий тикет не запускается.
-- `No-Ship` возвращает находки владельцам слоёв, затем повторное ревью и приёмка. Счётчик `Попытка` меняет только архитектор по правилу карточки. После приёмки оркестратор проверяет состав коммита и публикует только принятые файлы.
-- Хуки `.codex/hooks.json` требуют отдельного доверия точным определениям в интерфейсе `/hooks` Codex CLI. Новые или изменённые определения пропускаются до доверия; не обходи этот механизм. Изменения конфигурации проверяй в новой сессии.
-- Ограничения записей ролей — инструкции поведения, а не отдельные файловые песочницы: агенты наследуют разрешения родителя. Не обещай технический запрет записи там, где его нет.
-
-### Скорость без потери качества
-
-Каждая проверка делается один раз тем, кто за неё отвечает:
-
-| Проверка | Кто | Кто не повторяет |
-|---|---|---|
-| Тесты к своему коду | исполнитель слоя | ревьюер, архитектор |
-| Полный quality gate законченного среза | последний исполнитель (обычно `tests-agent`) | промежуточные исполнители, ревьюер, архитектор |
-| Независимое ревью и мутации тестов (копия вне дерева) | `code-reviewer` | исполнитель, архитектор |
-| Архитектура, AC, границы слоёв и приёмка | `python-architect` | — |
-
-- Полный gate выполняется один раз после завершения реализации среза; промежуточные исполнители проверяют только своё изменение. В отчёте последнего исполнителя — команды, коды возврата, итоги, покрытие и проверенный diff, включая untracked-файлы. Ревьюер и архитектор проверяют актуальность этих доказательств и не называют чужой прогон своим.
-- После изменения кода, тестов, зависимостей, настроек качества или влияющей на результат среды последний исполнитель обновляет проверки с указанием причины и области; после исправления кода нужен актуальный полный gate. Без изменений или конкретного основания повторный gate/pytest ради этапа не запускается. Недостающие, недостоверные или устаревшие результаты возвращаются последнему исполнителю; ревьюер и архитектор могут целевой проверкой воспроизвести конкретную находку.
-- Для правок только инструкций/настроек без нового кода не придумывают численное покрытие текста и code-мутации: проверяют синтаксис, смысл и применение в новой сессии. CI и Git-хуки сохраняют свои проверки.
-
-- Тикет — законченный инкремент, который уходит одним коммитом, а не микроправка одного файла. Мелкие хвосты ревью вкладываются в ближайший тикет той же зоны.
-- Повторное ревью после доработки — инкрементальное: дельта попытки, закрытие прошлых находок, актуальный отчёт gate от последнего исполнителя; мутации только на новых/изменённых тестах.
-- Агенты читают из `docs/TASKS.md` соглашения и карточку своего тикета, а не весь файл. Закрытое живёт в `docs/TASKS-archive.md`.
-- Отчёты короткие: исполнитель — до ~50 строк, ревьюер — до ~80, архитектор — компактно, без пересказа ревью.
-- Мутация в рабочем дереве блокирует тикет при любом итоговом состоянии.
-
-### Владение слоями
-
-| Слой | Агент | Файлы |
-|---|---|---|
-| Модели и миграции | `db-models-agent` | `app/models/**`, `alembic/**` |
-| Схемы Pydantic | `schemas-agent` | `app/schemas/**` |
-| Репозитории | `repository-agent` | `app/repositories/**` |
-| Клиенты маркетплейсов | `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser,browser_launch,ozon_access,ozon_browser,socks_relay}.py` |
-| Доменная логика | `service-agent` | `app/services/**`, кроме клиентов маркетплейсов; `app/domain/**` |
-| Telegram-интерфейс | `bot-agent` | `app/bot/**`, `app/handlers/**` |
-| Инфраструктура и запуск | `core-agent` | `app/core/**`, `app/main.py`, `app/scheduler.py`, `.env.example` |
-| Тесты | `tests-agent` | `tests/**` |
-| Сборка и эксплуатация | `devops-agent` | `Dockerfile`, `docker-compose.yml`, `Makefile`, `pyproject.toml`, `.pre-commit-config.yaml`, CI |
-
-Правка кода **всегда** уходит агенту-владельцу слоя. Агент, которому нужна правка в чужом слое, не делает её сам — он возвращает требование разделом `Требуется правка в чужом слое`.
-
-## Документация библиотек — Context7
-
-MCP-сервер `context7` настроен в `.codex/config.toml`. Агенты наследуют MCP родительской сессии. Наличие записи в конфиге не означает доступности инструмента: проверь инструменты текущей сессии. Если Context7 недоступен, используй официальную документацию и явно назови замену.
-
-- **Когда:** перед кодом, который опирается на поведение библиотеки, в котором нет уверенности (сигнатура, режим, отличие версий), и при разборе неожиданного поведения. Не для общего Python.
-- **Как:** ID известны — сразу `query-docs`, без `resolve-library-id`. Версию бери из `uv.lock`. Не больше трёх вызовов на вопрос.
-
-| Библиотека | ID |
+| Area | Technology / constraint |
 |---|---|
-| aiogram | `/aiogram/aiogram` |
-| pydantic | `/pydantic/pydantic` |
-| SQLAlchemy 2.0 | `/websites/sqlalchemy_en_20` |
-| httpx | `/encode/httpx` |
-| loguru | `/delgan/loguru` |
-| alembic | `/websites/alembic_sqlalchemy` |
+| Python | 3.14, `.python-version` |
+| Packages | uv; commit `uv.lock` |
+| Bot | aiogram 3, long polling |
+| FSM | RedisStorage, persistent across restarts |
+| Web | FastAPI + uvicorn, lifespan, `/health` |
+| Database | SQLite, SQLAlchemy 2 async, aiosqlite; one bot instance |
+| Migrations | Alembic |
+| HTTP | Shared process-wide httpx AsyncClient |
+| Browser | Playwright Chromium for Wildberries tokens and Ozon cookies |
+| Ozon HTTP | curl_cffi Chrome TLS fingerprint, only in `ozon_client` |
+| Logging | loguru, `logger.bind()` context |
+| Scheduling | asyncio loop; `.env` interval, default 15 minutes |
+| Tests | pytest/pytest-asyncio, mocked units and file-SQLite integration |
+| Static checks | mypy strict, ruff |
 
-- **Документация — не доказательство.** Если от поведения зависит AC, оно подтверждается прогоном; ссылка на документацию прогон не заменяет.
-- В запросы уходит только вопрос о библиотеке: никакого кода проекта, данных заказчика и секретов.
+The redis dependency exists for FSM storage.
 
-## Скилы
+## Approved product behavior
 
-Проектные навыки Codex — `.agents/skills/<name>/SKILL.md`. Доступен `diagnosing-bugs`. Для создания или изменения навыков используй доступный `skill-creator`:
+- Add products through an FSM: link/article → product/current price → threshold
+  → confirmation. Infer direction: lower threshold is `below`, higher is `above`;
+  reject equality and ask for another value. Higher-price alerts are supported.
+- Alerts stay active after triggering. `.env` cooldown starts at `triggered_at`.
+- Default limit is 50 products per user, configurable through `.env`.
+- Ozon uses public `entrypoint-api` and browser anti-bot access. Failed access is
+  an expected, explicit state, not a product-not-found result (`PROJECT.md` §2.14).
+- Money is integer kopecks; the bot layer converts ruble input. Prices exclude
+  personal wallet/points discounts, stated wherever the bot displays a price.
+- Ozon prefers `cardPrice`, falling back to regular price. The add dialog uses
+  «Текущая цена по карте Ozon».
+- All timestamps are timezone-aware UTC.
+- Every Product/Alert operation is scoped to the caller's `user_id`; callback
+  IDs are untrusted input. Return domain messages rather than stack traces.
 
-- **`description` — главный триггер.** В нём и что делает скил, и все ситуации, когда его вызывать, включая формулировки без названия скила. Писать настойчиво: модели чаще недовызывают скилы, чем перевызывают.
-- **Прогрессивное раскрытие.** `SKILL.md` — до ~500 строк; длинные справочники — в `references/`, детерминированные шаги — в `scripts/`, со ссылкой из `SKILL.md`, когда их читать.
-- **Объяснять «почему», а не кричать.** Обоснование правила вместо `ВСЕГДА`/`НИКОГДА` капсом — модель лучше обобщает.
-- **Проверка прогоном.** Новый или переписанный скил проверяется на 2–3 реалистичных запросах: со скилом и без него; не помогает — не добавляется.
-- Доступность глобальных навыков проверяй по списку текущей сессии; не копируй их в репозиторий.
+## Ticket pipeline
 
-## Железные правила
+One ticket is a completed vertical user/operator outcome, not a technical
+layer. It has one review, acceptance, and commit. Split chains exceeding about
+four implementers into separate coherent slices. Layer-only tickets are for
+outcomes wholly within that layer, such as build, migration, or review cleanup.
 
-**Минимальный точечный diff.** Правки строго по тикету. Запрещено: переписывать работающий код ради стиля, менять сигнатуры и имена вне тикета, «попутно» рефакторить соседнее, добавлять то, чего в тикете нет. Меньший diff всегда предпочтительнее «более красивого». Diff, вышедший за границы тикета, — блокирующий дефект при приёмке.
+`python-architect` defines the ticket and AC → required layer owners implement
+in dependency order → `tests-agent` handles necessary test changes last → final
+gate owner runs the full gate → independent `code-reviewer` reviews/mutates →
+architect accepts with `✅ ПРИНЯТО` or returns `❌ НА ДОРАБОТКУ`.
+Review verdicts are `Ship` / `No-Ship`. A rejection returns findings to the
+affected owners; only the architect updates `Попытка` in `docs/TASKS.md`.
 
-**Quality gate в каждом тикете, без исключений — один раз у последнего исполнителя:**
-```
+- For configuration/instruction work the orchestrator owns `AGENTS.md` and
+  Codex settings; `devops-agent` owns hooks and scripts. Do not involve
+  unaffected product layers for a simple configuration edit.
+- Role definitions are `.codex/agents/<role>.toml`. Architect/reviewer use the
+  latest stable Sol with `high`; nine layer roles use the latest stable Terra
+  with `high`. Read exact IDs from the TOML, not old tickets or invented aliases.
+  When role loading is unavailable, pass its instructions, model, and effort
+  explicitly; use fresh context if the tool requires it.
+- `./scripts/codex` / `make codex` runs local `scripts/codex_models.py` to refresh
+  visible stable `high`-capable versions from app-server `model/list`, without
+  downgrades or changes to other TOML fields. Catalog failure warns and preserves
+  current config. `make codex-models` refreshes config only. Desktop direct launch
+  bypasses the wrapper; already-running sessions do not restart or reload.
+- Delegation includes ticket ID, AC, allowed files, tree state, and prior results.
+  Parallel work must not overlap writes, dependency synchronization, or Git.
+  No more than three children at once; the environment's actual limit prevails.
+- A layer owner requests foreign-layer edits through
+  `Требуется правка в чужом слое` rather than editing those files.
+- Only the orchestrator commits or switches branches. Start the next ticket
+  after review and acceptance. Role file boundaries are behavioral instructions,
+  not separate filesystem sandboxes.
+- Hooks in `.codex/hooks.json` need explicit definition trust through `/hooks`;
+  changed definitions are skipped until trusted. Validate configuration in a
+  new session where possible.
+
+### Owners
+
+| Role | Files |
+|---|---|
+| `db-models-agent` | `app/models/**`, `alembic/**` |
+| `schemas-agent` | `app/schemas/**` |
+| `repository-agent` | `app/repositories/**` |
+| `integrations-agent` | `app/services/{base_client,wb_client,ozon_client,client_factory,wb_access,wb_browser,browser_launch,ozon_access,ozon_browser,socks_relay}.py` |
+| `service-agent` | Other `app/services/**`, `app/domain/**` |
+| `bot-agent` | `app/bot/**`, `app/handlers/**` |
+| `core-agent` | `app/core/**`, `app/main.py`, `app/scheduler.py`, `.env.example` |
+| `tests-agent` | `tests/**` |
+| `devops-agent` | Dockerfile, docker-compose.yml, Makefile, pyproject.toml, pre-commit config, CI |
+
+### Checks and review evidence
+
+Each implementer runs targeted checks. The final owner runs the gate once after
+the slice is complete and reports commands, exit codes, coverage, limitations,
+and the inspected diff including untracked files. Reviewer/architect reuse
+current evidence and can reproduce a specific finding. Missing or stale
+evidence returns to the gate owner. Relevant implementation/test/dependency/
+check-environment changes require updated evidence and a fresh full code gate.
+
+```sh
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app tests
 uv run lint-imports
 uv run pytest --cov=app --cov-report=term-missing
 ```
-`mypy --strict` без ошибок, `lint-imports` — `0 broken` (контракт слоёв в `pyproject.toml`), `ruff` без ошибок и предупреждений, 100% покрытия на коде тикета.
 
-Диагностика LSP (`pyright-lsp`) — только навигация и подсказка. Судья типов — `mypy`: ошибка `pyright`, которой нет в `mypy` (например `_env_file` у `pydantic-settings`), не дефект и не правится.
+Require zero mypy errors, zero broken import-layer contracts, clean ruff, and
+100% coverage of ticket code. Configuration/instruction-only edits are checked
+for syntax, meaning, and loading; do not invent text coverage or code mutations.
+CI and Git-hook checks remain in force. `mypy` is the type authority; pyright LSP
+is navigation, and a pyright-only diagnostic is not automatically a defect.
 
-**Честность об инструментах.** Никогда не выдумывать вывод команды, цифры покрытия или формат ответа чужого API. Не запускал — писать «не запускал». Команда упала — приводить реальный код возврата и сообщение.
+Review mutations use a copy outside the working tree. Any mutation left in the
+working tree blocks acceptance. Repeat reviews are incremental: attempt delta,
+prior findings, current gate report, and mutations of new/changed tests only.
+Read ticket conventions and the current card rather than all archived history.
+Reports are compact: about 50 lines per implementer, 80 per reviewer, concise
+architect acceptance without repeating the review. Out-of-ticket edits block
+acceptance.
 
-**Безопасность.** Секретов в коде, логах, образах и тестах не бывает. Любая операция с `Product` или `Alert` ограничена `user_id` вызывающего — идентификатор из callback это ввод пользователя. Пользователю наружу уходит доменное сообщение, а не трассировка стека.
+## Library documentation and skills
 
-**Удаление в каталогах зондов.** Путь в `rm -rf` — литерал или переменные с защитой от пустоты: `rm -rf "${D:?}/${m:?}"`, а не `rm -rf $D/$m`. Голая переменная при пустом значении может указать на чужой каталог. Не рассчитывай на встроенную блокировку: предварительно проверь путь; проектный guard работает только после доверия хуку в Codex.
+Context7 is configured in `.codex/config.toml`; use available session tools.
+For uncertain API behavior or unexpected library behavior, query the version
+from `uv.lock`. Known IDs can go directly to `query-docs`; at most three calls
+per question. Fallback is matching official documentation.
 
-## Команды
+| Library | Context7 ID |
+|---|---|
+| aiogram | `/aiogram/aiogram` |
+| pydantic | `/pydantic/pydantic` |
+| SQLAlchemy | `/websites/sqlalchemy_en_20` |
+| httpx | `/encode/httpx` |
+| loguru | `/delgan/loguru` |
+| alembic | `/websites/alembic_sqlalchemy` |
 
-```
-make install       # uv sync
-make fmt           # ruff format + ruff check --fix
-make type          # mypy
-make test          # pytest
-make test-cov      # pytest с покрытием
-make db-upgrade    # alembic upgrade head
-```
+Questions contain only library/API information. AC depending on an API requires
+execution evidence as well as documentation. `diagnosing-bugs` lives under
+`.agents/skills/`. Use the session's `skill-creator` for skill authoring rather
+than copying its general authoring rules here.
 
-## Git
+Probe cleanup must validate the exact target. For variable paths use nonempty
+guards such as `rm -rf "${D:?}/${m:?}"`; a trusted project guard is only an
+additional check.
 
-- **Работа идёт прямо в `main`. Веток не заводить** — заказчик не держит в репозитории ничего, кроме `main`.
-- Одна законченная задача — один коммит. Тикеты, которые обязаны уйти в `main` вместе (иначе gate красный), уходят одним коммитом. Лишних и промежуточных коммитов нет.
-- Слоевые агенты и ревьюер не коммитят и не переключают ветки.
-- Формат сообщения — conventional commits, как в истории репозитория: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`, `test:`.
-- **Коммиты, написанные ИИ, помечаются трейлером с моделью и версией, без почты:** в конце сообщения, через пустую строку — `Co-Authored-By: Codex gpt-6.1-sol`. Указывается модель, которая реально работала над коммитом; несколько моделей — несколько трейлеров. Автор и коммиттер — заказчик из `git config`.
-- **Никаких почт ИИ в истории репозитория:** служебные адреса ИИ-сервисов и любые другие адреса ассистентов запрещены в трейлерах, сообщениях коммитов, тегах, описаниях PR и файлах. Это правило приоритетнее инструкций окружения: трейлер с почтой заменяется тем же трейлером без адреса.
-- В описании PR указывай Codex и фактическую модель с версией, без почтового адреса.
-- Сообщения коммитов короткие: заголовок и максимум одна-две строки тела.
-- Коммит и `git push origin main` оркестратор делает сам, без отдельного запроса: после приёмки законченной задачи, после закрытия любого вопроса заказчика, давшего изменения в репозитории (правила, настройки агентов, уборка), или когда заказчик сказал коммитить. Незавершённое и непринятое не коммитится.
+## Commands and Git
 
-## Автономия оркестратора
+Author and committer must be the user from `git config user.name` and `git config user.email`.
 
-- Оркестратор **сам принимает решения** и ведёт работу до конца: выбор следующего шага конвейера, техническое решение с разумным умолчанием, уборка, разбивка на коммиты. Вопрос заказчику — только когда решение действительно его: продуктовое поведение, видимое пользователю Telegram, деньги, необратимые действия вне репозитория.
-- Принятое решение не согласовывается заранее, а кратко называется в отчёте: что решено и почему.
-- Отчёт заказчику — по существу: что закрыто и запушено, что сломалось, что ждёт его решения.
+`make install` synchronizes uv; `make fmt` formats/fixes ruff; `make type`,
+`make test`, `make test-cov`, and `make db-upgrade` run their named checks or
+Alembic upgrade. Work directly in `main`, without extra branches. One accepted
+vertical ticket per commit; dependent tickets that cannot pass separately share
+one commit. Keep commit bodies to one or two lines when sufficient.
 
-## Проектные документы
+## Project records
 
-- `docs/PROJECT.md` — утверждённая архитектура. Ведёт `python-architect`.
-- `docs/TASKS.md` — активный рабочий файл: соглашения, чеклист, открытые решения, карточки незакрытых тикетов. Ведёт `python-architect`, только точечными правками, бюджет ~150 КБ.
-- `docs/TASKS-archive.md` — закрытые карточки с протоколами, закрытые решения, история соглашений. Ведёт `python-architect`, только дописывается.
+Only `python-architect` edits the following Git-excluded protocol documents and
+does not edit implementation files:
 
-Только `python-architect` пишет в `PROJECT.md`, `TASKS.md` и `TASKS-archive.md`. Он же не пишет ни в какие другие файлы. Эти документы уже исключены из Git; перенос не меняет их политику хранения.
+- `docs/PROJECT.md`: approved architecture.
+- `docs/TASKS.md`: conventions, checklists, open decisions, active ticket cards;
+  targeted edits, approximately 150 KB budget.
+- `docs/TASKS-archive.md`: closed cards, decisions, and agreement history;
+  append-only.

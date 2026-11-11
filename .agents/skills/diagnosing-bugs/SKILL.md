@@ -1,55 +1,42 @@
 ---
 name: diagnosing-bugs
-description: Дисциплина разбора трудного бага или регрессии производительности в price-alert-bot — сначала воспроизводимая проверка, потом гипотезы. Использовать, когда что-то сломано, падает, ведёт себя нестабильно или медленно, включая неожиданные ответы WB/Ozon и антибот. Обязательно применять и тогда, когда слово «баг» не звучит: красный или флапающий тест, трассировка в логах, бот не отвечает или отвечает не то, уведомление не пришло или пришло дважды, `IntegrityError`, зависание при остановке, «вчера работало».
+description: "Diagnose a price-alert-bot failure or performance regression from a reproducible check before testing hypotheses. Use for failing or flaky tests, tracebacks, missing or duplicate notifications, incorrect bot responses, IntegrityError, shutdown hangs, or WB/Ozon anti-bot failures."
 ---
 
-# Разбор бага
+# Diagnose a bug
 
-Адаптировано из `mattpocock/skills` (`diagnosing-bugs`). Фазы не пропускаются без явного обоснования.
+Adapted from `mattpocock/skills` (`diagnosing-bugs`). Explain any necessary departure from this sequence.
 
-## Секреты
+## 1. A check that fails for the reported symptom
 
-Токены, пароли, DSN и заголовки авторизации в показываемом выводе заменяй на `<REDACTED>`. Из сохранённых ответов цитируй только строки с сигналом.
+Establish a reproducible check before hypothesis-driven exploration. Prefer:
 
-## 1. Проверка, которая краснеет на этом баге
+1. A failing boundary test: `uv run pytest tests/... -k <scenario> -x`.
+2. A saved response in `tests/fixtures/<marketplace>/` through a mocked transport: WB uses `httpx.MockTransport`, Ozon uses `FakeOzonSession`. Sanitize a newly saved fixture and quote only diagnostically relevant lines.
+3. A one-off mocked service harness using `uv run python -c ...`.
+4. For intermittent failures, controlled repeated inputs that make the failure reproducible.
+5. For a commit regression, `git bisect run` with the check, only within an isolated copy that preserves the shared tree.
 
-Это главное. Без неё не переходи к гипотезам: чтение кода ради теории до появления проверки — именно та ошибка, от которой защищает скилл.
+Run the check at least once and retain its command/result. It must test the actual symptom, fix time/randomness, run quickly and require no human input. Live WB/Ozon/Telegram requests require explicit approval and never belong in automated tests.
 
-Способы, по убыванию предпочтения:
+If no check can be built, report attempts and the missing environment/artifact; pause dependent diagnosis while continuing independent authorized work.
 
-1. Падающий тест на подходящей границе: `uv run pytest tests/... -k <сценарий> -x`.
-2. Воспроизведение сохранённого ответа маркетплейса: реальное тело из `tests/fixtures/<marketplace>/` через подменённый транспорт (WB — `httpx.MockTransport`, Ozon — `FakeOzonSession`). Новое тело — сохранить в `tests/fixtures/` (после редактирования секретов) и дальше работать от него.
-3. Одноразовая обвязка: минимальный вызов сервиса с мок-зависимостями одним `uv run python -c ...`.
-4. Для «иногда»: цикл из сотен прогонов со случайным входом, поднять частоту воспроизведения до отлаживаемой.
-5. Регрессия между двумя коммитами — `git bisect run` с этой проверкой.
+## 2. Reproduce and narrow
 
-Готово, когда есть **одна команда**, уже запущенная хотя бы раз (показать команду и вывод), которая:
-- проверяет **именно симптом** пользователя, а не «не упало»;
-- детерминирована (время и случайность зафиксированы);
-- отрабатывает за секунды;
-- не требует человека. Живые запросы к WB, Ozon и Telegram — только с явного согласия заказчика и не в тестах.
+Confirm it is the reported failure rather than a neighboring one. Remove inputs, steps and configuration until every retained element affects reproduction.
 
-Если проверку построить нельзя — остановись, перечисли попытки и попроси у заказчика окружение или сохранённый артефакт.
+## 3. Hypotheses
 
-## 2. Воспроизвести и сузить
+Before testing a candidate, present 3–5 ranked falsifiable hypotheses: what change would remove the failure and what would strengthen it. Do not block on a reply to this hypothesis list.
 
-Убедись, что краснеет тот же отказ, что описан, а не соседний. Затем убирай вход, шаги и конфигурацию по одному, пока каждый оставшийся элемент не станет несущим.
+## 4. Instrumentation
 
-## 3. Гипотезы
+One probe tests one prediction/variable. Mark temporary logs with `[DEBUG-<4 characters>]` for targeted cleanup. For performance, measure timing or `EXPLAIN ANALYZE` before changing behavior.
 
-3–5 ранжированных гипотез до проверки любой из них. Каждая — фальсифицируемая: «если причина X, то изменение Y уберёт баг, а Z усилит». Список показать заказчику до проверки, но не блокироваться на ответе.
+## 5. Fix and regression
 
-## 4. Инструментирование
+Write the regression before the fix when an observable test boundary reproduces the scenario. A missing boundary is a finding for the architect. The layer owner implements the fix under the root pipeline; `tests-agent` owns the assigned tests.
 
-Одна проба — одно предсказание, одна переменная за раз. Отладочные логи помечай уникальным префиксом `[DEBUG-<4 символа>]` — уборка потом одним `grep`. Для производительности — сначала замер (время, `EXPLAIN ANALYZE`), потом правка.
+## 6. Completion
 
-## 5. Исправление и регрессионный тест
-
-Регрессионный тест пишется до исправления, если есть граница, на которой он воспроизводит настоящий сценарий бага. Если такой границы нет — это отдельная находка для архитектора. Исправление и тест делает агент-владелец слоя по правилам конвейера.
-
-## 6. Уборка
-
-- исходная проверка из фазы 1 зелёная;
-- регрессионный тест проходит, либо отсутствие границы записано;
-- `grep -rn "\[DEBUG-" app tests` пуст;
-- подтверждённая гипотеза названа в отчёте, чтобы следующий разбор начинал с неё.
+The original check passes; the regression passes or its missing seam is recorded; `grep -rn "\[DEBUG-" app tests` has no temporary matches. Name the confirmed hypothesis so the next investigation can reuse the result.
