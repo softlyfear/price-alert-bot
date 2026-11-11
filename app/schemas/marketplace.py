@@ -13,6 +13,16 @@ from pydantic import Field
 # above this limit must fail validation here - the single point of truth for
 # "a valid price" - rather than reach the database and fail on the driver.
 _MAX_PRICE_KOPECKS = 2_147_483_647
+_MAX_WB_SIZE_ID = 9_223_372_036_854_775_807
+
+type WbSizeId = Annotated[int, Field(strict=True, gt=0, le=_MAX_WB_SIZE_ID)]
+
+
+class WbSizeData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str | None, Field(max_length=150)] = None
+    price: Annotated[int | None, Field(strict=True, gt=0, le=_MAX_PRICE_KOPECKS)] = None
 
 
 class MarketplaceProductData(BaseModel):
@@ -20,6 +30,9 @@ class MarketplaceProductData(BaseModel):
 
     name: Annotated[str, Field(min_length=2, max_length=150)]
     price: Annotated[int, Field(gt=0, le=_MAX_PRICE_KOPECKS)]
+    wb_sizes: Annotated[dict[WbSizeId, WbSizeData] | None, Field(max_length=10_000)] = (
+        None
+    )
 
     model_config = {
         "extra": "forbid",

@@ -66,6 +66,7 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
+from app.schemas.marketplace import WbSizeData
 from app.services.wb_access import WbAccessStage
 from app.services.wb_access import WbAccessUnavailable
 from app.services.wb_client import WbClient
@@ -75,6 +76,16 @@ from tests.unit.wb_access_stub import make_pair
 
 _ARTICLE = 860043555
 _PRICE_KOPECKS = 142900
+_FIXTURE_SIZES = {
+    1294600121: WbSizeData(name="36", price=None),
+    1294600122: WbSizeData(name="37", price=142900),
+    1294600123: WbSizeData(name="38", price=142900),
+    1294600124: WbSizeData(name="39", price=142900),
+    1294600125: WbSizeData(name="40", price=None),
+    1294600126: WbSizeData(name="41", price=142900),
+    1294600127: WbSizeData(name="42", price=None),
+    1294600128: WbSizeData(name="43", price=142900),
+}
 _PRODUCT_NAME = "Кроссовки женские на высокой подошве"
 _FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent.parent
@@ -163,7 +174,9 @@ async def test_success_on_full_fixture_returns_marketplace_product_data(
         wb_client = WbClient(client, StubWbAccess())
         result = await wb_client.get_product_data(_ARTICLE)
 
-    assert result == MarketplaceProductData(name=_PRODUCT_NAME, price=_PRICE_KOPECKS)
+    assert result == MarketplaceProductData(
+        name=_PRODUCT_NAME, price=_PRICE_KOPECKS, wb_sizes=_FIXTURE_SIZES
+    )
 
 
 @pytest.mark.asyncio
@@ -197,7 +210,7 @@ async def test_minimum_price_rule_picks_the_lowest_price_not_the_first() -> None
         wb_client = WbClient(client, StubWbAccess())
         result = await wb_client.get_product_data(_ARTICLE)
 
-    assert result == MarketplaceProductData(name="Кроссовки", price=10000)
+    assert result == MarketplaceProductData(name="Кроссовки", price=10000, wb_sizes={})
 
 
 @pytest.mark.asyncio
@@ -224,7 +237,9 @@ async def test_product_selected_by_id_not_by_list_position() -> None:
         wb_client = WbClient(client, StubWbAccess())
         result = await wb_client.get_product_data(_ARTICLE)
 
-    assert result == MarketplaceProductData(name="Нужный товар", price=77700)
+    assert result == MarketplaceProductData(
+        name="Нужный товар", price=77700, wb_sizes={}
+    )
 
 
 @pytest.mark.asyncio
@@ -655,7 +670,9 @@ async def test_body_of_exactly_max_bytes_still_parses(fixture_bytes: bytes) -> N
     async with client:
         result = await WbClient(client, StubWbAccess()).get_product_data(_ARTICLE)
 
-    assert result == MarketplaceProductData(name=_PRODUCT_NAME, price=_PRICE_KOPECKS)
+    assert result == MarketplaceProductData(
+        name=_PRODUCT_NAME, price=_PRICE_KOPECKS, wb_sizes=_FIXTURE_SIZES
+    )
 
 
 @pytest.mark.asyncio
@@ -777,7 +794,9 @@ async def test_stalled_body_hits_overall_deadline(
 
 # --- PAB-079: access by the anti-bot token --------------------------------
 
-_RECOVERED = MarketplaceProductData(name=_PRODUCT_NAME, price=_PRICE_KOPECKS)
+_RECOVERED = MarketplaceProductData(
+    name=_PRODUCT_NAME, price=_PRICE_KOPECKS, wb_sizes=_FIXTURE_SIZES
+)
 
 
 def _sequence(responses: list[httpx.Response], seen: list[httpx.Request]) -> _Handler:

@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from app.schemas.marketplace import WbSizeId
+
 
 class WbPrice(BaseModel):
     """The product price is in kopecks, before personal discounts."""
@@ -25,6 +27,8 @@ class WbSize(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     price: WbPrice | None = None
+    option_id: WbSizeId | None = Field(default=None, alias="optionId")
+    name: Annotated[str | None, Field(max_length=150)] = None
 
 
 class WbProduct(BaseModel):

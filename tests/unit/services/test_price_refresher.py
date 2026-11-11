@@ -221,7 +221,7 @@ class _FakePriceService:
 
     async def apply_result(
         self, product_id: int, result: MarketplaceFetchResult, session: AsyncSession
-    ) -> None:
+    ) -> FetchFailureReason | None:
         cast(
             _FakeSession, session
         ).tx_active = True  # real apply_result begins the write
@@ -229,6 +229,7 @@ class _FakePriceService:
         if self.apply_hook is not None:
             await self.apply_hook(product_id)
         self.applied.append((product_id, result))
+        return result.reason if isinstance(result, MarketplaceFetchFailure) else None
 
     def as_service(self) -> PriceService:
         return cast(PriceService, self)

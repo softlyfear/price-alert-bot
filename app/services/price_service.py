@@ -32,6 +32,18 @@ from app.services.failure_levels import failure_log_level
 from app.services.notification import NotificationService
 
 
+def select_wb_size(
+    result: MarketplaceFetchResult, wb_size_id: int
+) -> MarketplaceFetchResult:
+    """Project a shared article result onto one selected size."""
+    if wb_size_id == 0 or isinstance(result, MarketplaceFetchFailure):
+        return result
+    size = result.wb_sizes.get(wb_size_id) if result.wb_sizes is not None else None
+    if size is None or size.price is None:
+        return MarketplaceFetchFailure(reason=FetchFailureReason.out_of_stock)
+    return result.model_copy(update={"price": size.price})
+
+
 class PriceService:
     """Price service logic."""
 
@@ -77,7 +89,7 @@ class PriceService:
         product_id: int,
         result: MarketplaceFetchResult,
         session: AsyncSession,
-    ) -> None:
+    ) -> FetchFailureReason | None:
         """Apply an already fetched result to a product and send alerts.
 
         A product deleted since the batch was loaded is a no-op.
@@ -87,20 +99,21 @@ class PriceService:
         await product_repo.begin_write()
         product = await product_repo.get_by_id(product_id)
         if product is None:
-            return
-        await self._apply(product, result, session)
+            return None
+        return await self._apply(product, result, session)
 
     async def _apply(
         self,
         product: Product,
         market_data: MarketplaceFetchResult,
         session: AsyncSession,
-    ) -> None:
+    ) -> FetchFailureReason | None:
         """Write a fetch result to the loaded product and notify (no commit)."""
 
         alert_repo = self._alert_repo_factory(session)
         user_repo = self._user_repo_factory(session)
         now_utc = datetime.now(UTC)
+        market_data = select_wb_size(market_data, product.wb_size_id or 0)
 
         if isinstance(market_data, MarketplaceFetchFailure):
             # Any failure category updates `last_checked_at` only; the known
@@ -124,7 +137,7 @@ class PriceService:
                 failure_log_level(market_data.reason), "Marketplace fetch failed"
             )
             await session.flush()
-            return
+            return market_data.reason
 
         previous_price = product.current_price
         current_price = market_data.price
@@ -133,16 +146,19 @@ class PriceService:
         product.current_price = current_price
         product.last_checked_at = now_utc
         product.price_fetched_at = now_utc
+        if product.wb_size_id:
+            assert market_data.wb_sizes is not None
+            product.wb_size_name = market_data.wb_sizes[product.wb_size_id].name
 
         alerts = await alert_repo.get_active_by_product(product.id)
         if not alerts:
             await session.flush()
-            return
+            return None
 
         user = await user_repo.get_by_id(product.user_id)
         if user is None:
             await session.flush()
-            return
+            return None
 
         for alert in alerts:
             if alert.direction == AlertDirection.below:
@@ -179,6 +195,7 @@ class PriceService:
                 )
 
         await session.flush()
+        return None
 
 
 REFRESH_WINDOW_SECONDS = 60.0
@@ -450,11 +467,13 @@ class PriceRefresher:
                 return RefreshFailure.error
             result = results[article]
             async with self._sessionmaker() as session:
-                await self._price_service.apply_result(product_id, result, session)
+                failure = await self._price_service.apply_result(
+                    product_id, result, session
+                )
                 await session.commit()
         except Exception:
             logger.bind(product_id=product_id).exception("Manual refresh apply failed")
             return RefreshFailure.error
-        if isinstance(result, MarketplaceFetchFailure):
-            return RefreshFailure(str(result.reason))
+        if failure is not None:
+            return RefreshFailure(str(failure))
         return None

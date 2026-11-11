@@ -33,6 +33,7 @@ from app.schemas.marketplace import MarketplaceFetchResult
 from app.services.base_client import BaseMarketplaceClient
 from app.services.client_factory import UnsupportedMarketplaceError
 from app.services.failure_levels import failure_log_level
+from app.services.price_service import select_wb_size
 
 LIST_PAGE_SIZE = 10
 """Products per page of the "My products" list (PROJECT.md 2.13 R20)."""
@@ -120,13 +121,19 @@ class TrackingService:
         self._alerts = AlertRepository(session)
 
     async def preview(
-        self, tg_user_id: int, marketplace: Marketplace, article: int
+        self,
+        tg_user_id: int,
+        marketplace: Marketplace,
+        article: int,
+        *,
+        wb_size_id: int = 0,
     ) -> MarketplaceFetchResult:
         """Fetch current product data for the dialog; failures are values."""
         user = await self._users.get_by_tg_id(tg_user_id)
         if user is not None:
-            await self._ensure_within_limit(user, marketplace, article)
-        return await self._fetch(marketplace, article, routes_on_not_found=False)
+            await self._ensure_within_limit(user, marketplace, article, wb_size_id)
+        result = await self._fetch(marketplace, article, routes_on_not_found=False)
+        return select_wb_size(result, wb_size_id)
 
     async def resolve_short_link(
         self, code: str
@@ -213,6 +220,8 @@ class TrackingService:
         target_price: int,
         *,
         price_fetched_at: datetime | None,
+        wb_size_id: int = 0,
+        wb_size_name: str | None = None,
     ) -> Alert:
         """Create (or reuse) the product and add an alert for it.
 
@@ -223,11 +232,9 @@ class TrackingService:
         """
         direction = choose_direction(current_price, target_price)
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
-        await self._ensure_within_limit(user, marketplace, article)
+        await self._ensure_within_limit(user, marketplace, article, wb_size_id)
 
-        product = await self._products.get_by_article_and_user(
-            article, user.id, marketplace
-        )
+        product = await self._get_by_identity(article, user.id, marketplace, wb_size_id)
         if product is None:
             product = await self._create_product(
                 user.id,
@@ -236,6 +243,8 @@ class TrackingService:
                 product_name,
                 current_price,
                 price_fetched_at,
+                wb_size_id,
+                wb_size_name,
             )
         return await self._create_alert(user.id, product.id, target_price, direction)
 
@@ -296,7 +305,12 @@ class TrackingService:
         return await self._build_card(user.id, product)
 
     async def find_tracked_product(
-        self, tg_user_id: int, marketplace: Marketplace, article: int
+        self,
+        tg_user_id: int,
+        marketplace: Marketplace,
+        article: int,
+        *,
+        wb_size_id: int = 0,
     ) -> ProductCard | None:
         """Return the caller's product by (marketplace, article), or None.
 
@@ -305,9 +319,7 @@ class TrackingService:
         user = await self._users.get_by_tg_id(tg_user_id)
         if user is None:
             return None
-        product = await self._products.get_by_article_and_user(
-            article, user.id, marketplace
-        )
+        product = await self._get_by_identity(article, user.id, marketplace, wb_size_id)
         if product is None:
             return None
         return await self._build_card(user.id, product)
@@ -408,13 +420,17 @@ class TrackingService:
         return self._max_products if user.product_limit is None else user.product_limit
 
     async def _ensure_within_limit(
-        self, user: User, marketplace: Marketplace, article: int
+        self, user: User, marketplace: Marketplace, article: int, wb_size_id: int = 0
     ) -> None:
         """Raise when at the limit, unless the product is already counted."""
-        await self._ensure_within_limit_any(user, (marketplace,), article)
+        await self._ensure_within_limit_any(user, (marketplace,), article, wb_size_id)
 
     async def _ensure_within_limit_any(
-        self, user: User, marketplaces: tuple[Marketplace, ...], article: int
+        self,
+        user: User,
+        marketplaces: tuple[Marketplace, ...],
+        article: int,
+        wb_size_id: int = 0,
     ) -> None:
         """Raise when at the limit, unless a candidate is already counted."""
         limit = self._effective_limit(user)
@@ -422,14 +438,25 @@ class TrackingService:
         if await self._products.count_active_by_user(user_id) < limit:
             return
         for marketplace in marketplaces:
-            product = await self._products.get_by_article_and_user(
-                article, user_id, marketplace
+            product = await self._get_by_identity(
+                article, user_id, marketplace, wb_size_id
             )
             if product is not None:
                 alerts = await self._alerts.get_by_user_and_product(user_id, product.id)
                 if any(alert.is_active for alert in alerts):
                     return
         raise ProductLimitExceededError(limit)
+
+    async def _get_by_identity(
+        self, article: int, user_id: int, marketplace: Marketplace, wb_size_id: int
+    ) -> Product | None:
+        if wb_size_id:
+            return await self._products.get_by_article_and_user(
+                article, user_id, marketplace, wb_size_id=wb_size_id
+            )
+        return await self._products.get_by_article_and_user(
+            article, user_id, marketplace
+        )
 
     async def _create_product(
         self,
@@ -439,6 +466,8 @@ class TrackingService:
         product_name: str,
         current_price: int,
         price_fetched_at: datetime | None,
+        wb_size_id: int,
+        wb_size_name: str | None,
     ) -> Product:
         try:
             async with self._session.begin_nested():
@@ -447,6 +476,11 @@ class TrackingService:
                         "user_id": user_id,
                         "marketplace": marketplace,
                         "article": article,
+                        **(
+                            {"wb_size_id": wb_size_id, "wb_size_name": wb_size_name}
+                            if wb_size_id
+                            else {}
+                        ),
                         "product_name": product_name,
                         "current_price": current_price,
                         "initial_price": current_price,
@@ -454,8 +488,8 @@ class TrackingService:
                     }
                 )
         except IntegrityError:
-            existing = await self._products.get_by_article_and_user(
-                article, user_id, marketplace
+            existing = await self._get_by_identity(
+                article, user_id, marketplace, wb_size_id
             )
             if existing is None:
                 raise

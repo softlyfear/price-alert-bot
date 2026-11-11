@@ -122,6 +122,8 @@ async def test_button_card_is_stored_in_fsm_with_the_pressed_message_as_marker(
     assert stub.preview_calls == [(_USER, Marketplace.ozon, 1234567)]
     assert await dialog.state() == AddProduct.waiting_target_price.state
     assert _without_stamp(await dialog.data(), before, after) == {
+        "wb_size_id": 0,
+        "wb_size_name": None,
         "marketplace": "ozon",
         "article": 1234567,
         "product_name": _NAME,
@@ -419,6 +421,8 @@ async def test_button_from_the_confirming_step_replaces_the_other_products_draft
     assert stub.preview_calls == [(_USER, Marketplace.ozon, 777)]
     assert await dialog.state() == AddProduct.waiting_target_price.state
     assert _without_stamp(await dialog.data(), before, after) == {
+        "wb_size_id": 0,
+        "wb_size_name": None,
         "marketplace": "ozon",
         "article": 777,
         "product_name": _NAME,

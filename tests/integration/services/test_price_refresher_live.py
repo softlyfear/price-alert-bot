@@ -66,6 +66,7 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
+from app.schemas.marketplace import WbSizeData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.notification import NotificationService
 from app.services.price_service import PriceRefresher
@@ -230,8 +231,8 @@ class _FailingApply(PriceService):
 
     async def apply_result(
         self, product_id: int, result: MarketplaceFetchResult, session: AsyncSession
-    ) -> None:
-        await super().apply_result(product_id, result, session)
+    ) -> FetchFailureReason | None:
+        failure = await super().apply_result(product_id, result, session)
         if self.stall_past is not None:
             reached = asyncio.Event()
             asyncio.get_running_loop().call_at(self.stall_past, reached.set)
@@ -239,6 +240,7 @@ class _FailingApply(PriceService):
             await reached.wait()
         if product_id == self.fail_for:
             raise RuntimeError("boom after the flush")
+        return failure
 
 
 class _Rig(NamedTuple):
@@ -865,4 +867,195 @@ async def test_no_write_starts_after_the_deadline_so_the_rest_stays_untouched(
     stamps = [await _triggered_at(sessionmaker, a) for a in alerts]
     assert [s is not None for s in stamps] == [st == _REFRESHED for st in states]
     assert len(_sent(rig)) == 1
+    assert _checked_out(engine) == 0
+
+
+@pytest.mark.asyncio
+async def test_selected_sizes_share_one_batch_and_count_stock_failure(
+    engine: AsyncEngine, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    user = await _seed_user(sessionmaker, _TG_A)
+    async with sessionmaker() as session, session.begin():
+        products = [
+            Product(
+                user_id=user,
+                marketplace=Marketplace.wb,
+                article=123,
+                product_name="Item",
+                current_price=10000,
+                initial_price=10000,
+                wb_size_id=size,
+                wb_size_name="old" if size else None,
+                price_fetched_at=_OLD_STAMP,
+            )
+            for size in (0, 42, 43)
+        ]
+        session.add_all(products)
+        await session.flush()
+        ids = [p.id for p in products]
+    alert_id = await _seed_alert(
+        sessionmaker,
+        user,
+        ids[2],
+        direction=AlertDirection.below,
+        target=9000,
+        triggered_at=_OLD_STAMP,
+    )
+    selected_alert = await _seed_alert(
+        sessionmaker, user, ids[1], direction=AlertDirection.below, target=8500
+    )
+    rig = _rig(engine, sessionmaker, concurrency=1)
+    snapshot = MarketplaceProductData(
+        name="Item",
+        price=8000,
+        wb_sizes={
+            42: WbSizeData(name="54-188", price=8500),
+            43: WbSizeData(name="43", price=None),
+        },
+    )
+    original = snapshot.model_dump()
+    rig.tally.answers = {123: snapshot}
+
+    report = await rig.refresher.refresh_list(_TG_A)
+
+    assert report == RefreshReport(3, 2, {RefreshFailure.out_of_stock: 1})
+    assert rig.tally.calls == [(Marketplace.wb, [123])]
+    rows = [await _row(sessionmaker, i) for i in ids]
+    assert [row.current_price for row in rows] == [8000, 8500, 10000]
+    async with sessionmaker() as session:
+        names = (
+            (
+                await session.execute(
+                    select(Product.wb_size_name)
+                    .where(Product.id.in_(ids))
+                    .order_by(Product.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert names == [None, "54-188", "old"]
+    assert (rows[2].last_checked_at, rows[2].price_fetched_at) == (_NOW, _OLD_STAMP)
+    assert await _triggered_at(sessionmaker, alert_id) == _OLD_STAMP
+    assert await _triggered_at(sessionmaker, selected_alert) == _NOW
+    assert len(_sent(rig)) == 1
+    assert "Размер: 54-188" in _sent(rig)[0].text
+    assert "?size=42" in _sent(rig)[0].text
+    assert snapshot.model_dump() == original
+
+
+@pytest.mark.asyncio
+async def test_cancel_selected_apply_rolls_back_flushed_price_and_cooldown(
+    engine: AsyncEngine,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    user = await _seed_user(sessionmaker, _TG_A)
+    async with sessionmaker() as session, session.begin():
+        product = Product(
+            user_id=user,
+            marketplace=Marketplace.wb,
+            article=123,
+            product_name="Item",
+            current_price=10000,
+            previous_price=11000,
+            initial_price=12000,
+            last_checked_at=_OLD_CHECK,
+            price_fetched_at=_OLD_STAMP,
+            wb_size_id=42,
+            wb_size_name="old",
+        )
+        session.add(product)
+        await session.flush()
+        product_id = product.id
+    alert_id = await _seed_alert(
+        sessionmaker,
+        user,
+        product_id,
+        direction=AlertDirection.below,
+        target=9000,
+        triggered_at=_OLD_STAMP,
+    )
+    reached = asyncio.Event()
+    never = asyncio.Event()
+    completion: list[bool] = []
+    active: list[AsyncSession] = []
+
+    class BlockingNotification:
+        async def send_alert(
+            self, *, alert: Alert, product: Product, user: User
+        ) -> None:
+            assert (
+                product.current_price,
+                product.previous_price,
+                product.wb_size_name,
+            ) == (8500, 10000, "54-188")
+            await active[0].flush()
+            flushed = await active[0].execute(
+                select(
+                    Product.current_price, Product.previous_price, Product.wb_size_name
+                ).where(Product.id == product_id)
+            )
+            assert flushed.one() == (8500, 10000, "54-188")
+            reached.set()
+            await never.wait()
+            completion.append(True)
+
+    def product_repository(session: AsyncSession) -> ProductRepository:
+        active.append(session)
+        return ProductRepository(session)
+
+    tally = _Tally(engine)
+    service = PriceService(
+        cast(NotificationService, BlockingNotification()),
+        product_repository,
+        AlertRepository,
+        UserRepository,
+        lambda _m, _h: _WbStub(tally),
+        httpx.AsyncClient(),
+        _COOLDOWN,
+    )
+    snapshot = MarketplaceProductData(
+        name="Item",
+        price=8000,
+        wb_sizes={42: WbSizeData(name="54-188", price=8500)},
+    )
+    tally.answers = {123: snapshot}
+    refresher = PriceRefresher(
+        service,
+        sessionmaker,
+        ProductRepository,
+        UserRepository,
+        concurrency=1,
+        limiter=RefreshLimiter(60.0, lambda: 0.0),
+        deadline_seconds=20.0,
+    )
+    task = asyncio.create_task(refresher.refresh_product(_TG_A, product_id))
+    try:
+        async with asyncio.timeout(_HANG_GUARD):
+            await reached.wait()
+            assert not task.done()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert completion == []
+    async with sessionmaker() as session:
+        stored = await session.get(Product, product_id)
+        stored_alert = await session.get(Alert, alert_id)
+        assert stored is not None and stored_alert is not None
+        assert (stored.current_price, stored.previous_price, stored.initial_price) == (
+            10000,
+            11000,
+            12000,
+        )
+        assert (
+            stored.last_checked_at,
+            stored.price_fetched_at,
+            stored.wb_size_name,
+        ) == (_OLD_CHECK, _OLD_STAMP, "old")
+        assert stored_alert.triggered_at == _OLD_STAMP
     assert _checked_out(engine) == 0

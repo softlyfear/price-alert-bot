@@ -18,6 +18,7 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
+from app.schemas.marketplace import WbSizeData
 from app.schemas.wb import WbDetailResponse
 from app.schemas.wb import WbProduct
 from app.schemas.wb import WbSize
@@ -41,6 +42,23 @@ def _select_wb_price(sizes: list[WbSize]) -> int | None:
     if not prices:
         return None
     return min(prices)
+
+
+class _DuplicateWbSize(Exception):
+    pass
+
+
+def _collect_wb_sizes(sizes: list[WbSize]) -> dict[int, WbSizeData]:
+    result: dict[int, WbSizeData] = {}
+    for size in sizes:
+        if size.option_id is None:
+            continue
+        if size.option_id in result:
+            raise _DuplicateWbSize
+        result[size.option_id] = WbSizeData(
+            name=size.name, price=size.price.product if size.price is not None else None
+        )
+    return result
 
 
 class _TokenRejected:
@@ -217,6 +235,7 @@ class WbClient(BaseMarketplaceClient):
                     detail="no product with matching id",
                 )
 
+            wb_sizes = _collect_wb_sizes(product.sizes)
             price = _select_wb_price(product.sizes)
             if price is None:
                 logger.info(f"No size has a price for article {article} - out of stock")
@@ -225,8 +244,10 @@ class WbClient(BaseMarketplaceClient):
                     detail="no size has a price",
                 )
 
-            return MarketplaceProductData(name=product.name, price=price)
-        except ValidationError as e:
+            return MarketplaceProductData(
+                name=product.name, price=price, wb_sizes=wb_sizes
+            )
+        except (ValidationError, _DuplicateWbSize) as e:
             # Validation errors may contain the upstream input.
             logger.error(f"Bad payload for article {article}: {type(e).__name__}")
             return MarketplaceFetchFailure(
@@ -275,19 +296,20 @@ class WbClient(BaseMarketplaceClient):
                     detail="absent from batch response",
                 )
                 continue
-            price = _select_wb_price(product.sizes)
-            if price is None:
-                no_price += 1
-                results[article] = MarketplaceFetchFailure(
-                    reason=FetchFailureReason.out_of_stock,
-                    detail="no size has a price",
-                )
-                continue
             try:
+                wb_sizes = _collect_wb_sizes(product.sizes)
+                price = _select_wb_price(product.sizes)
+                if price is None:
+                    no_price += 1
+                    results[article] = MarketplaceFetchFailure(
+                        reason=FetchFailureReason.out_of_stock,
+                        detail="no size has a price",
+                    )
+                    continue
                 results[article] = MarketplaceProductData(
-                    name=product.name, price=price
+                    name=product.name, price=price, wb_sizes=wb_sizes
                 )
-            except ValidationError as e:
+            except (ValidationError, _DuplicateWbSize) as e:
                 logger.error(f"Bad product data in batch: {type(e).__name__}")
                 results[article] = MarketplaceFetchFailure(
                     reason=FetchFailureReason.bad_payload,

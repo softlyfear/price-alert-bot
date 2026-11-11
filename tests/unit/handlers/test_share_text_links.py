@@ -152,8 +152,11 @@ async def test_share_text_outside_a_dialog_gets_the_offer_to_add(
 
     assert len(dialog.requests) == 1
     offer = dialog.sent[0]
-    assert offer.text == "Добавить этот товар? Wildberries, артикул 13511022."
-    assert _menu_callbacks(offer) == ["addref:wb:13511022", "menu:start"]
+    assert (
+        offer.text
+        == "Добавить этот товар? Wildberries, артикул 13511022 · Размер: 41036292."
+    )
+    assert _menu_callbacks(offer) == ["addsz:13511022:41036292", "menu:start"]
     assert service.mock_calls == []
 
 

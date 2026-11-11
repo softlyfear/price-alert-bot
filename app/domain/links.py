@@ -8,6 +8,7 @@ belongs to the service layer (PROJECT.md 2.15 R22).
 from dataclasses import dataclass
 from typing import Final
 from typing import assert_never
+from urllib.parse import parse_qsl
 from urllib.parse import urlsplit
 
 from app.domain.exceptions import MultipleProductRefsError
@@ -35,6 +36,7 @@ class ProductRef:
 
     marketplace: Marketplace
     article: int
+    wb_size_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -135,7 +137,16 @@ def _parse_link(value: str) -> ProductRef | OzonShortLink:
         raise ProductRefParseError("unsupported URL authority")
 
     if host in _WB_HOSTS:
-        return ProductRef(Marketplace.wb, _wb_article(parts.path))
+        sizes = [
+            value
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if key == "size"
+        ]
+        if len(sizes) > 1:
+            raise ProductRefParseError("duplicate Wildberries size")
+        return ProductRef(
+            Marketplace.wb, _wb_article(parts.path), _article(sizes[0]) if sizes else 0
+        )
     if host in _OZON_HOSTS:
         if parts.path.startswith("/t/"):
             return _ozon_short_code(parts.path)
@@ -197,11 +208,14 @@ def extract_product_ref(text: str) -> ProductQuery:
         return next(iter(refs))
 
 
-def build_product_url(marketplace: Marketplace, article: int) -> str:
+def build_product_url(
+    marketplace: Marketplace, article: int, *, wb_size_id: int = 0
+) -> str:
     """Build the canonical product URL; the only place that does it."""
     match marketplace:
         case Marketplace.wb:
-            return f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
+            url = f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
+            return f"{url}?size={wb_size_id}" if wb_size_id else url
         case Marketplace.ozon:
             return f"https://www.ozon.ru/product/{article}/"
         case _:

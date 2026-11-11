@@ -32,6 +32,7 @@ _COMMAND = re.compile(r"(?<![\w/:])/(?:start|add|list|help|cancel)\b")
 _COMMANDS_SECTION = "Команды:"
 
 _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
+    "size_suffix": lambda: texts.size_suffix(42, "42"),
     "help_text": lambda: texts.help_text(50).split(_COMMANDS_SECTION)[0],
     "direction_phrase": lambda: texts.direction_phrase(AlertDirection.below, 1_000_00),
     "direction_arrow": lambda: texts.direction_arrow(AlertDirection.above),

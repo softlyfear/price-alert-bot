@@ -95,8 +95,12 @@ def create_router() -> Router:
                 )
             case ProductRef():
                 await message.answer(
-                    texts.add_ref_offer_text(ref.marketplace, ref.article),
-                    reply_markup=add_ref_keyboard(ref.marketplace, ref.article),
+                    texts.add_ref_offer_text(
+                        ref.marketplace, ref.article, wb_size_id=ref.wb_size_id
+                    ),
+                    reply_markup=add_ref_keyboard(
+                        ref.marketplace, ref.article, wb_size_id=ref.wb_size_id
+                    ),
                     parse_mode=None,
                 )
             case _:

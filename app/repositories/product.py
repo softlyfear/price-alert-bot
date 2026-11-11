@@ -27,6 +27,8 @@ class ProductRepository(
             "user_id",
             "marketplace",
             "article",
+            "wb_size_id",
+            "wb_size_name",
             "product_name",
             "current_price",
             "previous_price",
@@ -74,12 +76,15 @@ class ProductRepository(
         article: int,
         user_id: int,
         marketplace: Marketplace,
+        *,
+        wb_size_id: int = 0,
     ) -> Product | None:
         """Get product by user id and article."""
         stmt = select(Product).where(
             Product.user_id == user_id,
             Product.article == article,
             Product.marketplace == marketplace,
+            Product.wb_size_id == wb_size_id,
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()

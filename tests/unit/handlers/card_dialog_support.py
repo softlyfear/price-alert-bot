@@ -70,6 +70,7 @@ def product(
         user_id=1,
         marketplace=Marketplace.wb,
         article=DB_ARTICLE,
+        wb_size_id=0,
         product_name=DB_NAME,
         current_price=DB_PRICE,
         price_fetched_at=price_fetched_at,

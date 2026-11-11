@@ -336,9 +336,20 @@ def direction_arrow(direction: AlertDirection) -> str:
             assert_never(direction)
 
 
-def add_ref_offer_text(marketplace: Marketplace, article: int) -> str:
+def size_suffix(wb_size_id: int = 0, wb_size_name: str | None = None) -> str:
+    """Optional plain-text size label."""
+    return f" · Размер: {wb_size_name or wb_size_id}" if wb_size_id else ""
+
+
+def add_ref_offer_text(
+    marketplace: Marketplace, article: int, *, wb_size_id: int = 0
+) -> str:
     """Offer to add a product recognised in free text (plain text, no markup)."""
-    return f"Добавить этот товар? {marketplace_title(marketplace)}, артикул {article}."
+    size = size_suffix(wb_size_id)
+    return (
+        f"Добавить этот товар? {marketplace_title(marketplace)}, "
+        f"артикул {article}{size}."
+    )
 
 
 def add_article_offer_text(article: int) -> str:
@@ -408,23 +419,37 @@ def article_failure_text(marketplace: Marketplace, reason: FetchFailureReason) -
             assert_never(marketplace)
 
 
-def product_found_text(marketplace: Marketplace, name: str, current_price: int) -> str:
+def product_found_text(
+    marketplace: Marketplace,
+    name: str,
+    current_price: int,
+    *,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
+) -> str:
     """Product card shown after a successful preview (plain text, no markup)."""
     card = " по карте Ozon" if marketplace is Marketplace.ozon else ""
     return (
-        f"Нашёл товар на {marketplace_title(marketplace)}:\n{name}\n"
+        f"Нашёл товар на {marketplace_title(marketplace)}:\n{name}"
+        f"{size_suffix(wb_size_id, wb_size_name)}\n"
         f"Текущая цена{card}: {format_price(current_price)}\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n\n" + ADD_PROMPT_PRICE_TEXT
     )
 
 
 def confirm_text(
-    name: str, current_price: int, target_price: int, direction: AlertDirection
+    name: str,
+    current_price: int,
+    target_price: int,
+    direction: AlertDirection,
+    *,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
 ) -> str:
     """Confirmation step text (plain text, no markup)."""
     return (
         "Проверьте и подтвердите:\n"
-        f"Товар: {name}\n"
+        f"Товар: {name}{size_suffix(wb_size_id, wb_size_name)}\n"
         f"Текущая цена: {format_price(current_price)}\n"
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}."
@@ -439,10 +464,17 @@ def limit_exceeded_text(limit: int) -> str:
     )
 
 
-def added_text(name: str, target_price: int, direction: AlertDirection) -> str:
+def added_text(
+    name: str,
+    target_price: int,
+    direction: AlertDirection,
+    *,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
+) -> str:
     """Tracking added successfully (plain text, no markup)."""
     return (
-        f"Отслеживание добавлено: {name}.\n"
+        f"Отслеживание добавлено: {name}{size_suffix(wb_size_id, wb_size_name)}.\n"
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n\n" + SOUND_REMINDER_TEXT
     )
@@ -480,11 +512,13 @@ def product_card_text(
     price_label: str | None = None,
     *,
     initial_line: str | None = None,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
 ) -> str:
     """Product card with its thresholds (plain text, no markup)."""
     when = f" (цена на {price_label})" if price_label is not None else ""
     lines = [
-        name,
+        f"{name}{size_suffix(wb_size_id, wb_size_name)}",
         f"Маркетплейс: {marketplace_title(marketplace)}",
         url,
         f"Текущая цена: {format_price(current_price)}{when}",
@@ -539,11 +573,17 @@ EDIT_UNCHANGED_TEXT: Final[str] = "Порог не изменился."
 
 
 def edit_prompt_text(
-    name: str, current_price: int, direction: AlertDirection, target_price: int
+    name: str,
+    current_price: int,
+    direction: AlertDirection,
+    target_price: int,
+    *,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
 ) -> str:
     """Prompt of the threshold edit step (plain text, no markup)."""
     return (
-        f"{name}\n"
+        f"{name}{size_suffix(wb_size_id, wb_size_name)}\n"
         f"Текущая цена: {format_price(current_price)}\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n"
         f"Изменяемый порог: {direction_arrow(direction)} "

@@ -16,6 +16,8 @@ from datetime import UTC
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from typing import NotRequired
+from typing import TypedDict
 from typing import assert_never
 from zoneinfo import ZoneInfo
 
@@ -44,6 +46,7 @@ from app.bot.keyboards import CB_MENU_ADD
 from app.bot.keyboards import AddArticleCb
 from app.bot.keyboards import AddRefCb
 from app.bot.keyboards import AddShortLinkCb
+from app.bot.keyboards import AddWbSizeCb
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
 from app.bot.keyboards import duplicate_exit_keyboard
@@ -57,6 +60,7 @@ from app.domain.exceptions import MultipleProductRefsError
 from app.domain.exceptions import ProductLimitExceededError
 from app.domain.exceptions import ProductRefParseError
 from app.domain.exceptions import TargetEqualsCurrentPriceError
+from app.domain.links import MAX_ARTICLE
 from app.domain.links import BareArticle
 from app.domain.links import OzonShortLink
 from app.domain.links import ProductQuery
@@ -84,6 +88,14 @@ _KEY_TARGET_PRICE = "target_price"
 _KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
 _KEY_LINK_MESSAGE_ID = "link_message_id"
 _KEY_PRICE_FETCHED_AT = "price_fetched_at"
+_KEY_WB_SIZE_ID = "wb_size_id"
+_KEY_WB_SIZE_NAME = "wb_size_name"
+
+
+class _SizeKwargs(TypedDict):
+    wb_size_id: NotRequired[int]
+    wb_size_name: NotRequired[str | None]
+
 
 # aiogram's marker for "use the bot-wide parse_mode"; same as ``answer`` default.
 _BOT_DEFAULT_PARSE_MODE = Default("parse_mode")
@@ -201,7 +213,10 @@ async def _lookup_tracked(
         case BareArticle(article=article):
             card = await tracking.find_tracked_article(user_id, article)
         case ProductRef(marketplace=marketplace, article=article):
-            card = await tracking.find_tracked_product(user_id, marketplace, article)
+            kwargs = {"wb_size_id": ref.wb_size_id} if ref.wb_size_id else {}
+            card = await tracking.find_tracked_product(
+                user_id, marketplace, article, **kwargs
+            )
         case OzonShortLink():
             # Nothing to look up before the code is expanded into a product.
             card = None
@@ -236,6 +251,23 @@ def _parse_fetched_at(raw: object) -> datetime | None:
     return value
 
 
+def _draft_size(data: dict[str, Any]) -> tuple[int, str | None] | None:
+    size_id = data.get(_KEY_WB_SIZE_ID, 0)
+    size_name = data.get(_KEY_WB_SIZE_NAME)
+    if (
+        type(size_id) is not int
+        or not 0 <= size_id <= MAX_ARTICLE
+        or (
+            size_name is not None
+            and (not isinstance(size_name, str) or len(size_name) > 150)
+        )
+        or (size_id == 0 and size_name is not None)
+        or (size_id > 0 and data.get(_KEY_MARKETPLACE) != Marketplace.wb.value)
+    ):
+        return None
+    return size_id, size_name
+
+
 async def enter_price_step(
     state: FSMContext,
     marketplace: Marketplace,
@@ -244,6 +276,8 @@ async def enter_price_step(
     price: int,
     *,
     price_fetched_at: datetime | None,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
 ) -> None:
     """Move the dialog to the threshold step with the product draft in FSM.
 
@@ -256,6 +290,8 @@ async def enter_price_step(
             _KEY_ARTICLE: article,
             _KEY_NAME: name,
             _KEY_CURRENT_PRICE: price,
+            _KEY_WB_SIZE_ID: wb_size_id,
+            _KEY_WB_SIZE_NAME: wb_size_name,
             _KEY_PRICE_FETCHED_AT: (
                 price_fetched_at.isoformat() if price_fetched_at is not None else None
             ),
@@ -298,7 +334,10 @@ async def _preview(
             outcome = await tracking.preview_article(user_id, article)
             return outcome.marketplace, outcome.result
         case ProductRef(marketplace=marketplace, article=article):
-            return marketplace, await tracking.preview(user_id, marketplace, article)
+            kwargs = {"wb_size_id": ref.wb_size_id} if ref.wb_size_id else {}
+            return marketplace, await tracking.preview(
+                user_id, marketplace, article, **kwargs
+            )
         case _:
             assert_never(ref)
 
@@ -425,6 +464,9 @@ async def _check_and_deliver(
             reply_markup=cancel_keyboard(),
         )
         return
+    size_id = target.wb_size_id if isinstance(target, ProductRef) else 0
+    size = result.wb_sizes.get(size_id) if size_id and result.wb_sizes else None
+    size_name = size.name if size is not None else None
     # Accepted window: an interrupt landing between the check above and
     # these writes (a few Redis round-trips) can still be overwritten.
     await enter_price_step(
@@ -434,11 +476,19 @@ async def _check_and_deliver(
         result.name,
         result.price,
         price_fetched_at=fetched_at,
+        wb_size_id=size_id,
+        wb_size_name=size_name,
     )
     await _deliver_outcome(
         anchor,
         notice,
-        texts.product_found_text(marketplace, result.name, result.price),
+        texts.product_found_text(
+            marketplace,
+            result.name,
+            result.price,
+            wb_size_id=size_id,
+            wb_size_name=size_name,
+        ),
         reply_markup=cancel_keyboard(),
         parse_mode=None,
     )
@@ -539,6 +589,19 @@ def create_router() -> Router:
         ref = BareArticle(callback_data.article)
         await _start_from_button(callback, ref, state, tracking, display_timezone)
 
+    @router.callback_query(AddWbSizeCb.filter())
+    async def on_add_wb_size(
+        callback: CallbackQuery,
+        callback_data: AddWbSizeCb,
+        state: FSMContext,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
+    ) -> None:
+        ref = ProductRef(
+            Marketplace.wb, callback_data.article, callback_data.wb_size_id
+        )
+        await _start_from_button(callback, ref, state, tracking, display_timezone)
+
     @router.callback_query(AddShortLinkCb.filter())
     async def on_add_short_link(
         callback: CallbackQuery,
@@ -558,6 +621,10 @@ def create_router() -> Router:
     @router.callback_query(F.data.startswith(AddShortLinkCb.__prefix__))
     async def on_stale_add_short_link(callback: CallbackQuery) -> None:
         """Forged or malformed payload: never touch the service."""
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+
+    @router.callback_query(F.data.startswith(AddWbSizeCb.__prefix__))
+    async def on_stale_add_wb_size(callback: CallbackQuery) -> None:
         await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
 
     @router.callback_query(F.data.startswith(AddArticleCb.__prefix__))
@@ -631,7 +698,12 @@ def create_router() -> Router:
         data = await state.get_data()
         name = data.get(_KEY_NAME)
         current_price = data.get(_KEY_CURRENT_PRICE)
-        if not isinstance(name, str) or not isinstance(current_price, int):
+        size = _draft_size(data)
+        if (
+            not isinstance(name, str)
+            or not isinstance(current_price, int)
+            or size is None
+        ):
             await state.clear()
             await message.answer(
                 texts.ADD_STALE_TEXT, reply_markup=main_menu_keyboard()
@@ -647,7 +719,14 @@ def create_router() -> Router:
         await state.update_data({_KEY_TARGET_PRICE: target_price})
         await state.set_state(AddProduct.confirming)
         card = await message.answer(
-            texts.confirm_text(name, current_price, target_price, direction),
+            texts.confirm_text(
+                name,
+                current_price,
+                target_price,
+                direction,
+                wb_size_id=size[0],
+                wb_size_name=size[1],
+            ),
             reply_markup=confirm_keyboard(),
             parse_mode=None,
         )
@@ -704,15 +783,20 @@ def create_router() -> Router:
         except KeyError, ValueError:
             await _finish(callback, state, texts.ADD_STALE_TEXT)
             return
+        size = _draft_size(data)
         if (
             not isinstance(article, int)
             or not isinstance(name, str)
             or not isinstance(current_price, int)
             or not isinstance(target_price, int)
+            or size is None
         ):
             await _finish(callback, state, texts.ADD_STALE_TEXT)
             return
         try:
+            size_kwargs: _SizeKwargs = (
+                {"wb_size_id": size[0], "wb_size_name": size[1]} if size[0] else {}
+            )
             alert = await tracking.add_tracking(
                 callback.from_user.id,
                 marketplace,
@@ -721,6 +805,7 @@ def create_router() -> Router:
                 current_price,
                 target_price,
                 price_fetched_at=_parse_fetched_at(data.get(_KEY_PRICE_FETCHED_AT)),
+                **size_kwargs,
             )
         except ProductLimitExceededError as exc:
             await _finish(callback, state, texts.limit_exceeded_text(exc.limit))
@@ -740,7 +825,13 @@ def create_router() -> Router:
             await _finish(
                 callback,
                 state,
-                texts.added_text(name, target_price, alert.direction),
+                texts.added_text(
+                    name,
+                    target_price,
+                    alert.direction,
+                    wb_size_id=size[0],
+                    wb_size_name=size[1],
+                ),
             )
 
     @router.callback_query(F.data == CB_ADD_CONFIRM)

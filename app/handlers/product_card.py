@@ -41,10 +41,14 @@ def card_screen(
     text = texts.product_card_text(
         product.product_name,
         product.marketplace,
-        build_product_url(product.marketplace, product.article),
+        build_product_url(
+            product.marketplace, product.article, wb_size_id=product.wb_size_id
+        ),
         product.current_price,
         [(alert.direction, alert.target_price) for alert in card.alerts],
         price_label,
         initial_line=initial_line,
+        wb_size_id=product.wb_size_id,
+        wb_size_name=product.wb_size_name,
     )
     return text, product_card_keyboard(product.id, card.alerts, card.list_page)

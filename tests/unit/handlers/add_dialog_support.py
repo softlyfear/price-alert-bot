@@ -67,6 +67,7 @@ class _TrackingStub:
     def __init__(self) -> None:
         self.init_kwargs: list[dict[str, Any]] = []
         self.preview_calls: list[tuple[int, Marketplace, int]] = []
+        self.preview_sizes: list[int] = []
         self.add_calls: list[tuple[Any, ...]] = []
         self.add_fetched_at: list[datetime | None] = []
         self.preview_result: Any = MarketplaceProductData(name=_NAME, price=_PRICE)
@@ -82,7 +83,12 @@ class _TrackingStub:
         )
 
     async def find_tracked_product(
-        self, tg_user_id: int, marketplace: Marketplace, article: int
+        self,
+        tg_user_id: int,
+        marketplace: Marketplace,
+        article: int,
+        *,
+        wb_size_id: int = 0,
     ) -> None:
         """The user tracks nothing: the link step goes on to ``preview``."""
         return None
@@ -101,9 +107,15 @@ class _TrackingStub:
         return self.article_preview
 
     async def preview(
-        self, tg_user_id: int, marketplace: Marketplace, article: int
+        self,
+        tg_user_id: int,
+        marketplace: Marketplace,
+        article: int,
+        *,
+        wb_size_id: int = 0,
     ) -> Any:
         self.preview_calls.append((tg_user_id, marketplace, article))
+        self.preview_sizes.append(wb_size_id)
         if self.on_preview is not None:
             self.on_preview()
         if self.preview_error is not None:
@@ -111,7 +123,11 @@ class _TrackingStub:
         return self.preview_result
 
     async def add_tracking(
-        self, *args: Any, price_fetched_at: datetime | None
+        self,
+        *args: Any,
+        price_fetched_at: datetime | None,
+        wb_size_id: int = 0,
+        wb_size_name: str | None = None,
     ) -> Alert:
         self.add_calls.append(args)
         self.add_fetched_at.append(price_fetched_at)
@@ -427,7 +443,12 @@ class _GatedTracking(_TrackingStub):
         return call
 
     async def preview(
-        self, tg_user_id: int, marketplace: Marketplace, article: int
+        self,
+        tg_user_id: int,
+        marketplace: Marketplace,
+        article: int,
+        *,
+        wb_size_id: int = 0,
     ) -> Any:
         call = self.calls.setdefault(len(self.preview_calls), _Call())
         self.preview_calls.append((tg_user_id, marketplace, article))

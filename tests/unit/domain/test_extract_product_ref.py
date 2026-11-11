@@ -23,7 +23,7 @@ _TITLE = "Брюки чиносы прямые без стрелок черны�
 _WB_LINK = "https://www.wildberries.ru/catalog/13511022/detail.aspx?size=41036292"
 _OZON_LINK = "https://www.ozon.ru/product/nazvanie-tovara-123456789/?at=abc"
 _EDGE_CHARS = "«»\"'()[]<>,.;:!?…"
-_WB_REF = ProductRef(WB, 13511022)
+_WB_REF = ProductRef(WB, 13511022, 41036292)
 
 
 def test_customer_share_text_with_newline_gives_the_wildberries_product() -> None:
@@ -73,7 +73,7 @@ def test_two_hosts_of_the_same_article_are_one_product() -> None:
         "https://www.wildberries.ru/catalog/13511022/detail.aspx"
     )
 
-    assert extract_product_ref(text) == _WB_REF
+    assert extract_product_ref(text) == ProductRef(WB, 13511022)
 
 
 def test_two_different_wildberries_products_are_refused() -> None:

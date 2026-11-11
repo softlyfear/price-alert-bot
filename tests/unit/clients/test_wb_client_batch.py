@@ -34,6 +34,7 @@ from app.schemas.marketplace import MarketplaceProductData
 from app.services.wb_access import WbAccessStage
 from app.services.wb_access import WbAccessUnavailable
 from app.services.wb_client import WbClient
+from tests.unit.clients.test_wb_client import _FIXTURE_SIZES
 from tests.unit.wb_access_stub import StubWbAccess
 from tests.unit.wb_access_stub import make_pair
 
@@ -144,7 +145,8 @@ async def test_hundred_articles_are_one_request_with_a_literal_semicolon_in_nm()
     assert seen[0].headers["deviceid"] == make_pair(1).device_id
     assert jar_size == 0
     assert results == {
-        a: MarketplaceProductData(name="Товар", price=a * 100) for a in articles
+        a: MarketplaceProductData(name="Товар", price=a * 100, wb_sizes={})
+        for a in articles
     }
 
 
@@ -233,9 +235,9 @@ async def test_prices_are_matched_by_id_when_products_come_in_reverse_order() ->
     )
 
     assert results == {
-        111: MarketplaceProductData(name="Первый", price=10000),
-        222: MarketplaceProductData(name="Второй", price=20000),
-        333: MarketplaceProductData(name="Третий", price=30000),
+        111: MarketplaceProductData(name="Первый", price=10000, wb_sizes={}),
+        222: MarketplaceProductData(name="Второй", price=20000, wb_sizes={}),
+        333: MarketplaceProductData(name="Третий", price=30000, wb_sizes={}),
     }
 
 
@@ -250,9 +252,11 @@ async def test_batch_of_the_real_fixture_product_gives_the_known_price() -> None
     )
 
     assert results[860043555] == MarketplaceProductData(
-        name="Кроссовки женские на высокой подошве", price=142900
+        name="Кроссовки женские на высокой подошве",
+        price=142900,
+        wb_sizes=_FIXTURE_SIZES,
     )
-    assert results[7] == MarketplaceProductData(name="Товар", price=500)
+    assert results[7] == MarketplaceProductData(name="Товар", price=500, wb_sizes={})
 
 
 @pytest.mark.asyncio
@@ -264,7 +268,7 @@ async def test_product_without_any_priced_size_is_out_of_stock() -> None:
 
     assert results == {
         1: _failure(FetchFailureReason.out_of_stock, "no size has a price"),
-        2: MarketplaceProductData(name="Товар", price=9900),
+        2: MarketplaceProductData(name="Товар", price=9900, wb_sizes={}),
     }
 
 
@@ -275,7 +279,7 @@ async def test_article_absent_from_a_non_empty_response_is_not_found() -> None:
     results = await _fetch(_recording(httpx.Response(200, content=body), []), [1, 2])
 
     assert results == {
-        1: MarketplaceProductData(name="Товар", price=9900),
+        1: MarketplaceProductData(name="Товар", price=9900, wb_sizes={}),
         2: _failure(FetchFailureReason.not_found, "absent from batch response"),
     }
 
@@ -297,7 +301,7 @@ async def test_unrequested_products_in_the_response_are_ignored() -> None:
     body = _payload(_product(1, price=100), _product(99, price=200))
     results = await _fetch(_recording(httpx.Response(200, content=body), []), [1])
 
-    assert results == {1: MarketplaceProductData(name="Товар", price=100)}
+    assert results == {1: MarketplaceProductData(name="Товар", price=100, wb_sizes={})}
 
 
 @pytest.mark.asyncio
@@ -306,7 +310,7 @@ async def test_first_product_wins_when_the_response_repeats_an_id() -> None:
     body = _payload(_product(1, price=100), _product(1, price=999))
     results = await _fetch(_recording(httpx.Response(200, content=body), []), [1])
 
-    assert results == {1: MarketplaceProductData(name="Товар", price=100)}
+    assert results == {1: MarketplaceProductData(name="Товар", price=100, wb_sizes={})}
 
 
 @pytest.mark.asyncio
@@ -324,7 +328,7 @@ async def test_one_malformed_product_is_bad_payload_for_that_article_only() -> N
 
     assert results == {
         1: _failure(FetchFailureReason.bad_payload, "ValidationError"),
-        2: MarketplaceProductData(name="Товар", price=9900),
+        2: MarketplaceProductData(name="Товар", price=9900, wb_sizes={}),
     }
     assert [r["level"].name for r in records] == ["ERROR"]
     assert "xxxx" not in records[0]["message"]
@@ -534,7 +538,7 @@ async def test_batch_body_over_the_single_cap_still_parses() -> None:
     assert len(padded) == 1_048_577
     results = await _fetch(_recording(httpx.Response(200, content=padded), []), [1])
 
-    assert results == {1: MarketplaceProductData(name="Товар", price=100)}
+    assert results == {1: MarketplaceProductData(name="Товар", price=100, wb_sizes={})}
 
 
 @pytest.mark.asyncio
@@ -549,7 +553,7 @@ async def test_batch_body_of_exactly_batch_max_bytes_still_parses() -> None:
     assert len(padded) == 4_194_304
     results = await _fetch(_recording(httpx.Response(200, content=padded), []), [1])
 
-    assert results == {1: MarketplaceProductData(name="Товар", price=100)}
+    assert results == {1: MarketplaceProductData(name="Товар", price=100, wb_sizes={})}
 
 
 @pytest.mark.asyncio
@@ -587,8 +591,8 @@ async def test_498_invalidates_the_pair_and_repeats_the_same_batch_once() -> Non
     results = await _fetch(_recording([httpx.Response(498), ok], seen), [1, 2], access)
 
     assert results == {
-        1: MarketplaceProductData(name="Товар", price=100),
-        2: MarketplaceProductData(name="Товар", price=200),
+        1: MarketplaceProductData(name="Товар", price=100, wb_sizes={}),
+        2: MarketplaceProductData(name="Товар", price=200, wb_sizes={}),
     }
     assert len(seen) == 2
     assert access.get_calls == 2

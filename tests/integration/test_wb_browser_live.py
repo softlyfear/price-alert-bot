@@ -40,6 +40,7 @@ from app.services.wb_browser import fetch_wb_token
 from app.services.wb_client import WbClient
 from tests.integration.browser_probe import observe_chromium_environments
 from tests.integration.wb_antibot_stub import WbAntibotStub
+from tests.unit.clients.test_wb_client import _FIXTURE_SIZES
 
 _ARTICLE = 860043555
 _FUSE_SECONDS = 60.0
@@ -150,7 +151,9 @@ async def test_chain_recovers_from_a_spent_token_through_a_new_browser_pass(
             await provider.aclose()
 
     expected = MarketplaceProductData(
-        name="Кроссовки женские на высокой подошве", price=142900
+        name="Кроссовки женские на высокой подошве",
+        price=142900,
+        wb_sizes=_FIXTURE_SIZES,
     )
     assert first == expected
     assert second == expected

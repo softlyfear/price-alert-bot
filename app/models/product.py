@@ -8,6 +8,7 @@ from sqlalchemy import CheckConstraint
 from sqlalchemy import Enum
 from sqlalchemy import ForeignKey
 from sqlalchemy import UniqueConstraint
+from sqlalchemy import text
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
@@ -34,6 +35,10 @@ class Product(Base, TimestampMixin):
         Enum(Marketplace, create_constraint=True, validate_strings=True)
     )
     article: Mapped[int] = mapped_column(BigInteger)
+    wb_size_id: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    wb_size_name: Mapped[str | None] = mapped_column()
     product_name: Mapped[str] = mapped_column()
     current_price: Mapped[int] = mapped_column(
         CheckConstraint(
@@ -58,7 +63,20 @@ class Product(Base, TimestampMixin):
             "user_id",
             "marketplace",
             "article",
-            name="uq_user_marketplace_article",
+            "wb_size_id",
+            name="uq_user_marketplace_article_size",
+        ),
+        CheckConstraint(
+            "typeof(wb_size_id) = 'integer' AND "
+            "wb_size_id BETWEEN 0 AND 9223372036854775807",
+            name="ck_products_wb_size_id_range",
+        ),
+        CheckConstraint(
+            "wb_size_id = 0 OR marketplace = 'wb'",
+            name="ck_products_wb_size_marketplace",
+        ),
+        CheckConstraint(
+            "wb_size_id != 0 OR wb_size_name IS NULL", name="ck_products_wb_size_name"
         ),
         {"sqlite_autoincrement": True},
     )

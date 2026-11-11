@@ -131,6 +131,13 @@ class AddRefCb(CallbackData, prefix="addref"):
     article: int = Field(ge=1, le=MAX_ARTICLE)
 
 
+class AddWbSizeCb(CallbackData, prefix="addsz"):
+    """Start tracking a specific Wildberries option."""
+
+    article: int = Field(ge=1, le=MAX_ARTICLE)
+    wb_size_id: int = Field(ge=1, le=MAX_ARTICLE)
+
+
 class AddArticleCb(CallbackData, prefix="addart"):
     """Start the /add link step with a bare article: the marketplace is searched."""
 
@@ -160,14 +167,20 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def add_ref_keyboard(marketplace: Marketplace, article: int) -> InlineKeyboardMarkup:
+def add_ref_keyboard(
+    marketplace: Marketplace, article: int, *, wb_size_id: int = 0
+) -> InlineKeyboardMarkup:
     """Offer to add the recognised product, or go to the main menu."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 _button(
                     texts.ADD_REF_BUTTON_TEXT,
-                    AddRefCb(marketplace=marketplace, article=article).pack(),
+                    (
+                        AddWbSizeCb(article=article, wb_size_id=wb_size_id).pack()
+                        if wb_size_id
+                        else AddRefCb(marketplace=marketplace, article=article).pack()
+                    ),
                 )
             ],
             [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_MENU_START)],
@@ -289,6 +302,7 @@ def product_list_keyboard(page: ProductPage) -> InlineKeyboardMarkup:
                 text=(
                     f"{format_price(product.current_price)} · "
                     f"{_short_name(product.product_name)}"
+                    f"{texts.size_suffix(product.wb_size_id, product.wb_size_name)}"
                 ),
                 callback_data=ProductCardCb(product_id=product.id).pack(),
             )

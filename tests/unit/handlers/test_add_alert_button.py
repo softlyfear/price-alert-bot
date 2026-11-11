@@ -47,6 +47,8 @@ from tests.unit.handlers.card_dialog_support import rows
 _DRAFT_FROM_DB: dict[str, Any] = {
     "marketplace": "wb",
     "article": DB_ARTICLE,
+    "wb_size_id": 0,
+    "wb_size_name": None,
     "product_name": DB_NAME,
     "current_price": DB_PRICE,
     "price_fetched_at": DB_FETCHED_AT.isoformat(),

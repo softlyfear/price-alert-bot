@@ -76,14 +76,23 @@ class NotificationService:
         `AlertDeliveryError` without the original exception text.
         """
 
+        size_line = (
+            f"Размер: {product.wb_size_name or product.wb_size_id}\n"
+            if product.wb_size_id
+            else ""
+        )
+        product_url = build_product_url(
+            product.marketplace, product.article, wb_size_id=product.wb_size_id or 0
+        )
         message = (
             f"{_headline(alert.direction)}\n"
             f"Товар: {product.product_name}\n"
             f"Артикул: {product.article}\n"
+            f"{size_line}"
             f"Текущая цена: {format_price(product.current_price)}\n"
             f"{_threshold_label(alert.direction)} {format_price(alert.target_price)}\n"
             f"{PRICE_DISCLAIMER_SHORT}.\n"
-            f"Ссылка: {build_product_url(product.marketplace, product.article)}"
+            f"Ссылка: {product_url}"
         )
         log_context = logger.bind(
             alert_id=alert.id,

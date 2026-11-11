@@ -96,7 +96,12 @@ class _ShortTracking(_TrackingStub):
         return self.resolve_outcome
 
     async def find_tracked_product(
-        self, tg_user_id: int, marketplace: Marketplace, article: int
+        self,
+        tg_user_id: int,
+        marketplace: Marketplace,
+        article: int,
+        *,
+        wb_size_id: int = 0,
     ) -> Any:
         self.find_product_calls.append((tg_user_id, marketplace, article))
         if self.after_find is not None:

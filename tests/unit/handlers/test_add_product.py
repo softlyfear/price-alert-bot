@@ -282,6 +282,8 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
     assert _keyboard_callbacks(card) == [CB_ADD_CANCEL]
     assert await dialog.state() == AddProduct.waiting_target_price.state
     assert _without_stamp(await dialog.data(), before, after) == {
+        "wb_size_id": 0,
+        "wb_size_name": None,
         "marketplace": "wb",
         "article": 12345678,
         "product_name": _NAME,
@@ -1246,6 +1248,8 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
     _assert_only_dropped_edit(dialog, base, notice_a)
     assert await dialog.state() == AddProduct.waiting_target_price.state
     assert _without_stamp(await dialog.data(), before, after) == {
+        "wb_size_id": 0,
+        "wb_size_name": None,
         "marketplace": "wb",
         "article": 22222222,
         "product_name": _NAME_B,
