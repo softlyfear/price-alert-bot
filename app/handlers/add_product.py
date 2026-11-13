@@ -810,6 +810,12 @@ def create_router() -> Router:
         except ProductLimitExceededError as exc:
             await _finish(callback, state, texts.limit_exceeded_text(exc.limit))
         except DuplicateAlertError:
+            # A second tap loses the write after the first tap has already
+            # cleared this dialog. Reopening the price step would cover the
+            # success message and treat the next text as a new amount.
+            if await state.get_state() != AddProduct.confirming.state:
+                await callback.answer()
+                return
             await state.set_state(AddProduct.waiting_target_price)
             await edit_callback_message(
                 callback,
