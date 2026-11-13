@@ -159,6 +159,7 @@ async def test_short_link_is_expanded_previewed_and_confirmed_as_an_ozon_product
     assert stub.preview_calls == [(_USER, Marketplace.ozon, _ARTICLE)]
     assert _USER != _CHAT
     assert [m.text for m in dialog.sent][1] == texts.ADD_CHECKING_TEXT
+    assert dialog.edits[-1].text is not None
     assert dialog.edits[-1].text.startswith(f"Нашёл товар на Ozon:\n{_NAME}\n")
     data = await dialog.data()
     assert (data["marketplace"], data["article"]) == ("ozon", _ARTICLE)
@@ -458,6 +459,7 @@ async def test_pressing_the_offer_runs_the_same_path_in_place(
     assert dialog.sent == []
     checking, shown = dialog.edits
     assert checking.text == texts.ADD_CHECKING_TEXT
+    assert shown.text is not None
     assert shown.text.startswith(f"Нашёл товар на Ozon:\n{_NAME}\n")
     assert (shown.chat_id, shown.message_id) == (_CHAT, _CARD_ID)
     assert stub.resolve_calls == [(_USER, _CODE)]

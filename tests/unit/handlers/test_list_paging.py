@@ -152,6 +152,7 @@ async def test_lpage_shows_the_page_the_service_clamped_to(
     await card_dialog.press("lpage:99")
 
     card_service.list_page.assert_awaited_once_with(_USER, 99)
+    assert card_dialog.edits[0].text is not None
     assert card_dialog.edits[0].text.startswith("Вы следите за товарами: 23. Стр. 3/3.")
     assert [d for _, d in rows(card_dialog.edits[0])[-3]] == ["lpage:2"]
 
@@ -268,6 +269,7 @@ async def test_lref_of_an_emptied_page_shows_the_last_non_empty_page(
 
     card_service.list_page.assert_awaited_once_with(_USER, 3)
     text = card_dialog.edits[1].text
+    assert text is not None
     assert "Вы следите за товарами: 20. Стр. 2/2." in text
     assert ("🔄 Обновить цены", "lref:2") in rows(card_dialog.edits[1])[-2]
 
@@ -312,6 +314,7 @@ async def test_card_refresh_of_a_gone_product_redraws_the_page_it_was_on(
 
     card_service.list_page_of.assert_awaited_once_with(_USER, PRODUCT_ID)
     card_service.list_page.assert_awaited_once_with(_USER, 2)
+    assert card_dialog.edits[1].text is not None
     assert card_dialog.edits[1].text.endswith(_HEADER_P2)
 
 

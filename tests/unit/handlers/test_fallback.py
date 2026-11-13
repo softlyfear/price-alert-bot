@@ -181,9 +181,11 @@ async def test_link_inside_waiting_link_is_checked_and_gets_no_fallback_or_offer
     await dialog.say("https://www.wildberries.ru/catalog/12345678/detail.aspx")
 
     service.preview.assert_awaited_once()
-    shown = [
-        r.text for r in dialog.requests if isinstance(r, (SendMessage, EditMessageText))
-    ]
+    shown = []
+    for request in dialog.requests:
+        if isinstance(request, (SendMessage, EditMessageText)):
+            assert request.text is not None
+            shown.append(request.text)
     assert texts.FALLBACK_TEXT not in shown
     assert not any(t.startswith("Добавить этот товар?") for t in shown)
     assert await dialog.state() == AddProduct.waiting_target_price.state
@@ -359,12 +361,16 @@ _WHITELIST: list[Any] = [
             "poll": {
                 "id": "1",
                 "question": "q",
-                "options": [{"text": "a", "voter_count": 0}],
+                "options": [
+                    {"persistent_id": "option-1", "text": "a", "voter_count": 0}
+                ],
                 "total_voter_count": 0,
                 "is_closed": False,
                 "is_anonymous": True,
                 "type": "regular",
                 "allows_multiple_answers": False,
+                "allows_revoting": True,
+                "members_only": False,
             }
         },
         None,

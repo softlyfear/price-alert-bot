@@ -51,6 +51,7 @@ async def test_selected_callback_through_confirmation_preserves_size(
     card_service.preview.assert_awaited_once_with(
         _USER, Marketplace.wb, 123, wb_size_id=42
     )
+    assert card_dialog.edits[-1].text is not None
     assert "54-188" in card_dialog.edits[-1].text
     assert (await card_dialog.data())["wb_size_id"] == 42
     await card_dialog.say("5992")

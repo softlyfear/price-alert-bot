@@ -150,6 +150,7 @@ async def test_list_label_is_also_on_the_menu_button_screen(
 
     await card_dialog.press("menu:list")
 
+    assert card_dialog.edits[0].text is not None
     assert _price_line(card_dialog.edits[0].text) == "Цены на 14:05"
 
 
@@ -161,6 +162,7 @@ async def test_card_shows_the_price_time_in_brackets_after_the_price(
 
     await card_dialog.press("pcard:5")
 
+    assert card_dialog.edits[0].text is not None
     assert f"\nТекущая цена: 1{NB}755{NB}₽ (цена на 14:05)\n" in (
         card_dialog.edits[0].text
     )
@@ -174,6 +176,7 @@ async def test_card_adds_the_date_when_the_price_is_not_from_today(
 
     await card_dialog.press("pcard:5")
 
+    assert card_dialog.edits[0].text is not None
     assert "(цена на 20.10 14:05)" in card_dialog.edits[0].text
 
 
@@ -185,6 +188,7 @@ async def test_card_without_a_stamp_has_no_brackets(
 
     await card_dialog.press("pcard:5")
 
+    assert card_dialog.edits[0].text is not None
     assert f"\nТекущая цена: 1{NB}755{NB}₽\n" in card_dialog.edits[0].text
     assert "цена на" not in card_dialog.edits[0].text
 
@@ -198,6 +202,7 @@ async def test_card_label_uses_the_display_zone_of_the_dispatcher(
 
     await card_dialog.press("pcard:5")
 
+    assert card_dialog.edits[0].text is not None
     assert "(цена на 18:05)" in card_dialog.edits[0].text
 
 

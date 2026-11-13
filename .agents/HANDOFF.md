@@ -49,3 +49,22 @@ healthy. Runtime checks: HTTP 200, one app instance, live polling/scheduler task
 4 products checked with 0 failures, source hashes and synthetic size-selection
 probe passed. No Telegram test messages were sent. Next user check: submit the
 WB link with the intended size again and verify the displayed size and price.
+
+
+## Security dependency maintenance — PAB-127 (2026-11-13)
+
+Targeted dependencies and runtime tooling/packages were updated without changing
+application behavior or data paths. aiogram 3.29.1 is required for aiohttp 3.14.4;
+existing test fixtures/assertions were adapted to its Bot API types. Mako 1.4.2
+also covers the subsequent Windows traversal advisory. Image uv is 0.13.5;
+system pip is 26.3, with patched vendor bundles; APT upgrades are limited to
+apt/libapt and zlib1g.
+
+Verification: 3325 tests, 100% line/branch application coverage, strict mypy,
+ruff and seven import contracts passed. Independent Ship, three positive
+controls and three killed mutants; architect accepted. Final image build and
+isolated non-root filesystem/OpenAPI smoke passed. Five targeted Python OSV
+queries returned no findings; no full image or repository clean scan is claimed.
+Unrelated WORKFLOW edits are preserved outside this task. No deployment or live
+data/credential operation was performed. Next external condition: authorized
+replacement of the deployed image and runtime verification, if deployment is requested.

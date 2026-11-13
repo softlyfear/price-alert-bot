@@ -138,6 +138,7 @@ async def test_press_edit_replaces_the_card_with_a_prompt_and_waits_for_the_amou
     edit = dialog.edits[0]
     assert (edit.chat_id, edit.message_id) == (_CHAT, _CARD_ID)
     assert edit.parse_mode is None
+    assert edit.text is not None
     assert edit.text.startswith(
         f"{_NAME}\nТекущая цена: 1{_NB}990{_NB}₽\nЦена без учёта персональных скидок.\n"
         f"Изменяемый порог: {arrow} 1{_NB}500{_NB}₽\n"

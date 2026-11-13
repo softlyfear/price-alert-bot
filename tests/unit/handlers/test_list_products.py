@@ -513,6 +513,7 @@ async def test_back_to_list_button_of_the_card_edits_the_card_into_the_list(
 
     service.list_page.assert_awaited_once_with(_USER, 1)
     assert len(bot.edits) == 2
+    assert bot.edits[1].text is not None
     assert bot.edits[1].text.startswith("Вы следите за товарами: 1.")
     assert bot.sent == []
 
@@ -754,6 +755,7 @@ async def test_remove_product_success_names_how_to_return(
 
     await bot.press("pdel:5")
 
+    assert bot.edits[0].text is not None
     assert bot.edits[0].text.startswith(
         "Больше не слежу за этим товаром, его пороги удалены. "
         "Чтобы вернуть товар, добавьте его заново: "
@@ -777,6 +779,7 @@ async def test_remove_product_draws_the_list_page_the_product_was_on(
     service.remove_product.assert_awaited_once_with(_USER, 23)
     service.list_page_of.assert_awaited_once_with(_USER, 23)
     service.list_page.assert_awaited_once_with(_USER, 2)
+    assert bot.edits[0].text is not None
     assert bot.edits[0].text.startswith(texts.LIST_PRODUCT_REMOVED_TEXT)
     assert "Вы следите за товарами: 20. Стр. 2/2." in bot.edits[0].text
     assert _rows(bot.edits[0])[10] == [("◀", "lpage:1")]

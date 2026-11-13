@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
-    "aiogram==3.26.0",
+    "aiogram==3.29.1",
     "aiosqlite>=0.22",
     "alembic>=1.18.4",
     "curl_cffi==0.16.3",

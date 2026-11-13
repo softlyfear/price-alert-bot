@@ -304,6 +304,7 @@ async def test_menu_help_button_edits_to_help_with_the_effective_limit_and_keeps
 
     edits = [r for r in _requests(bot) if isinstance(r, EditMessageText)]
     assert [(e.text, e.parse_mode) for e in edits] == [(texts.help_text(limit), None)]
+    assert edits[0].text is not None
     assert f"Лимит товаров: {limit}." in edits[0].text
     assert _callbacks(edits[0]) == _MENU
     assert len([r for r in _requests(bot) if isinstance(r, AnswerCallbackQuery)]) == 1

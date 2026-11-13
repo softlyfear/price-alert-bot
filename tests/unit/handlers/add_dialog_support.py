@@ -474,9 +474,12 @@ def _assert_only_dropped_edit(dialog: _Dialog, base: int, notice_id: int) -> Non
 
 
 def _shown_texts(dialog: _Dialog) -> str:
-    return "\n".join(
-        r.text for r in dialog.requests if isinstance(r, (SendMessage, EditMessageText))
-    )
+    shown = []
+    for request in dialog.requests:
+        if isinstance(request, (SendMessage, EditMessageText)):
+            assert request.text is not None
+            shown.append(request.text)
+    return "\n".join(shown)
 
 
 def _without_stamp(

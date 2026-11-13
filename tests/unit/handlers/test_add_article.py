@@ -144,6 +144,7 @@ async def test_wb_data_gives_a_wildberries_card_and_the_draft_keeps_wb(
     await dialog.say("12345678")
 
     shown = dialog.edits[-1]
+    assert shown.text is not None
     assert shown.text.startswith(f"Нашёл товар на Wildberries:\n{_NAME}\n")
     assert shown.parse_mode is None
     data = await dialog.data()
@@ -162,6 +163,7 @@ async def test_ozon_data_gives_an_ozon_card_and_the_draft_keeps_ozon(
 
     await dialog.say(_NUMBER_TEXT)
 
+    assert dialog.edits[-1].text is not None
     assert dialog.edits[-1].text.startswith(f"Нашёл товар на Ozon:\n{_NAME}\n")
     data = await dialog.data()
     assert (data["marketplace"], data["article"]) == ("ozon", _OZON_NUMBER)
@@ -440,6 +442,7 @@ async def test_button_on_an_untracked_article_shows_checking_then_the_card_in_pl
     assert dialog.sent == []
     checking, shown = dialog.edits
     assert checking.text == texts.ADD_CHECKING_TEXT
+    assert shown.text is not None
     assert shown.text.startswith(f"Нашёл товар на Ozon:\n{_NAME}\n")
     assert (shown.chat_id, shown.message_id) == (_CHAT, _CARD_ID)
     assert stub.preview_article_calls == [(_USER, _OZON_NUMBER)]

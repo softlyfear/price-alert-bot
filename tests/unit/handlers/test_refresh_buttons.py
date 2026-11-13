@@ -89,6 +89,7 @@ def _texts_and_markups(
     for request in dialog.requests:
         if isinstance(request, (SendMessage, EditMessageText)):
             assert isinstance(request.reply_markup, InlineKeyboardMarkup)
+            assert request.text is not None
             shown.append((request.text, request.reply_markup))
     return shown
 
@@ -447,6 +448,7 @@ async def test_card_refresh_block_names_the_marketplace_of_the_product(
 
     await card_dialog.press(f"pref:{PRODUCT_ID}")
 
+    assert card_dialog.edits[1].text is not None
     assert card_dialog.edits[1].text.startswith(
         f"{name} заблокировал запрос: он защищается от автоматических обращений. "
         "Показана прежняя цена.\n\n"

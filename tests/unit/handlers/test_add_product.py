@@ -204,6 +204,7 @@ async def test_preview_limit_shows_the_limit_and_clears_the_state(
 
     await dialog.say(_WB_LINK)
 
+    assert dialog.outcome.text is not None
     assert "37" in dialog.outcome.text
     assert await dialog.state() is None
 
@@ -240,6 +241,7 @@ async def test_each_fetch_failure_has_its_own_text_and_keeps_the_state(
 
     await dialog.say(_WB_LINK)
 
+    assert dialog.outcome.text is not None
     assert keyword in dialog.outcome.text
     assert "SECRET-DETAIL-MARKER" not in dialog.outcome.text
     assert await dialog.state() == AddProduct.waiting_link.state
@@ -275,6 +277,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
     after = datetime.now(UTC)
 
     card = dialog.outcome
+    assert card.text is not None
     assert _NAME in card.text
     assert f"1{_NBSP}990{_NBSP}₽" in card.text
     assert PRICE_DISCLAIMER_SHORT in card.text
@@ -1256,7 +1259,11 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
         "current_price": 222,
         "link_message_id": _MSG_B,
     }
-    card = [(e.message_id, e.text) for e in dialog.edits if _NAME_B in e.text]
+    card = []
+    for edit in dialog.edits:
+        assert edit.text is not None
+        if _NAME_B in edit.text:
+            card.append((edit.message_id, edit.text))
     assert card == [(notice_b, texts.product_found_text(Marketplace.wb, _NAME_B, 222))]
     assert _NAME_A not in _shown_texts(dialog)
 
@@ -1290,6 +1297,7 @@ async def test_first_link_finishing_first_is_dropped_by_foreign_marker_second_ap
     last = dialog.outcome
     assert isinstance(last, EditMessageText)
     assert last.message_id == notice_b
+    assert last.text is not None
     assert _NAME_B in last.text
     assert _NAME_A not in _shown_texts(dialog)
 
