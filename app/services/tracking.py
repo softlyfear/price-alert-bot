@@ -249,9 +249,14 @@ class TrackingService:
         return await self._create_alert(user.id, product.id, target_price, direction)
 
     async def product_limit(self, tg_user_id: int) -> int:
-        """Return the caller's effective product limit (personal or global)."""
-        user = await self._users.get_by_tg_id(tg_user_id)
-        return self._max_products if user is None else self._effective_limit(user)
+        """Return the caller's effective product limit, creating the user row.
+
+        Help is the first read of the limit. The row has to exist then, so an
+        operator can set ``product_limit`` before the user adds a product.
+        A new row has no personal limit and therefore uses the global one.
+        """
+        user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
+        return self._effective_limit(user)
 
     async def list_page(self, tg_user_id: int, page: int) -> ProductPage:
         """Return one page of the caller's products ordered by `id`.

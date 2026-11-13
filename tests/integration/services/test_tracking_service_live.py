@@ -579,17 +579,28 @@ async def test_at_personal_limit_another_threshold_on_a_counted_product_is_allow
     assert await _counts_for_user(db_session, tg) == (1, 2)
 
 
-async def test_product_limit_sees_a_direct_update_on_the_select_branch(
+async def test_product_limit_creates_the_user_and_sees_a_direct_update(
     db_session: AsyncSession,
 ) -> None:
+    """Help's limit read is the first users row, before any product is added."""
     tg = next(_tg_ids)
     service = _service(db_session, limit=50)
-    assert await service.product_limit(tg) == 50  # unknown user
-    await UserRepository(db_session).get_or_create_by_tg_id(tg)
-    await _set_limit(db_session, tg, 7)
 
-    assert await service.product_limit(tg) == 7  # select branch
-    assert await service.product_limit(next(_tg_ids)) == 50  # insert branch, NULL
+    assert await service.product_limit(tg) == 50
+    created = (
+        await db_session.execute(select(User).where(User.tg_user_id == tg))
+    ).scalar_one()
+    assert created.product_limit is None
+
+    await _set_limit(db_session, tg, 7)
+    assert await service.product_limit(tg) == 7
+
+    other = next(_tg_ids)
+    assert await service.product_limit(other) == 50
+    other_row = (
+        await db_session.execute(select(User).where(User.tg_user_id == other))
+    ).scalar_one()
+    assert other_row.product_limit is None
 
 
 async def test_product_limit_sees_a_row_created_with_a_personal_limit(

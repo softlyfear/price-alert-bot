@@ -1086,7 +1086,7 @@ async def test_product_limit_returns_the_effective_limit(
     harness = _build(monkeypatch, personal_limit=personal)
 
     assert await harness.service.product_limit(_TG_USER_ID) == expected
-    harness.users.get_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
+    harness.users.get_or_create_by_tg_id.assert_awaited_once_with(_TG_USER_ID)
 
 
 @pytest.mark.asyncio
