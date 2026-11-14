@@ -121,6 +121,8 @@ Require zero mypy errors, zero broken import-layer contracts, clean ruff, and
 for syntax, meaning, and loading; do not invent text coverage or code mutations.
 CI and Git-hook checks remain in force. `mypy` is the type authority; pyright LSP
 is navigation, and a pyright-only diagnostic is not automatically a defect.
+For post-edit guard changes, also run
+`node --test scripts/tests/test_project_guard.mjs`; CI runs these regressions.
 
 Review mutations use a copy outside the working tree. Any mutation left in the
 working tree blocks acceptance. Repeat reviews are incremental: attempt delta,

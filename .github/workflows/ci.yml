@@ -104,6 +104,9 @@ jobs:
       - name: shellcheck shell scripts
         run: shellcheck --severity=warning scripts/check-ai-email scripts/pre-push scripts/smoke-image
 
+      - name: OpenCode post-edit guard regressions
+        run: node --test scripts/tests/test_project_guard.mjs
+
       # Dummy values only: the repository holds no env file and no secrets.
       - name: docker compose config -q
         env:

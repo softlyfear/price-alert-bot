@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Plugin } from "@opencode/plugin"
+import { editedPythonPaths } from "./edited-paths.mjs"
 
 const pluginDir = path.dirname(fileURLToPath(import.meta.url))
 const EDIT_TOOLS = new Set(["edit", "write", "patch"])
@@ -39,25 +40,6 @@ async function guardCommand(command, cwd) {
     return null
   }
   return null
-}
-
-function editedPythonPaths(input, cwd) {
-  if (!input || typeof input !== "object") return []
-  const names = []
-  for (const key of ["filePath", "file_path", "path"]) {
-    if (typeof input[key] === "string") names.push(input[key])
-  }
-  if (Array.isArray(input.files)) {
-    for (const file of input.files) {
-      if (typeof file === "string") names.push(file)
-      else if (file && typeof file.path === "string") names.push(file.path)
-    }
-  }
-  const root = path.resolve(cwd)
-  return [...new Set(names)]
-    .map((name) => path.resolve(root, name))
-    .filter((file) => file.endsWith(".py") || file.endsWith(".pyi"))
-    .filter((file) => file === root || file.startsWith(root + path.sep))
 }
 
 export default Plugin.define({
