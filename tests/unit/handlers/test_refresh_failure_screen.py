@@ -165,7 +165,11 @@ async def test_a_crash_is_logged_once_at_error_without_the_screen_text_or_the_se
     await card_dialog.press(callback_data)
 
     (record,) = _errors(log_records)
-    assert record["extra"] == {"user_id": _USER, "error_type": "RuntimeError"}
+    assert record["extra"] == {
+        "user_id": _USER,
+        "error_type": "RuntimeError",
+        "scope": "list" if callback_data == "list:refresh" else "card",
+    }
     assert record["exception"] is not None
     assert record["exception"].type is RuntimeError
     assert _SECRET not in record["message"]

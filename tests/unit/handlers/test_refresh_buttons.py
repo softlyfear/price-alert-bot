@@ -27,6 +27,7 @@ from aiogram.methods import SendMessage
 from aiogram.methods.base import TelegramMethod
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
+from aiogram.types import Update
 
 from app.bot import texts
 from app.bot.states import AddProduct
@@ -40,6 +41,7 @@ from app.services.price_service import RefreshReport
 from app.services.price_service import RefreshThrottled
 from app.services.tracking import ProductPage
 from tests.unit.conftest import FakeTelegramSession
+from tests.unit.conftest import make_callback_update
 from tests.unit.conftest import sent_message_id
 from tests.unit.handlers.add_dialog_support import _CARD_ID
 from tests.unit.handlers.add_dialog_support import _CHAT
@@ -113,6 +115,104 @@ def _popups(dialog: _Dialog) -> list[tuple[str | None, bool | None]]:
 
 
 # --- the list button: the happy path ----------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_data", ["list:refresh", "lref:1"])
+async def test_list_refresh_keeps_product_rows_visible_while_waiting(
+    card_dialog: _Dialog,
+    refresher: MagicMock,
+    card_service: MagicMock,
+    callback_data: str,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def refresh(_user: int) -> RefreshReport:
+        started.set()
+        await release.wait()
+        return _OK
+
+    refresher.refresh_list.side_effect = refresh
+    list_rows = [row[:] for row in _LIST_ROWS]
+    list_rows[1] = [("🔄 Обновить цены", callback_data)]
+    keyboard = InlineKeyboardMarkup.model_validate(
+        {
+            "inline_keyboard": [
+                [{"text": text, "callback_data": data} for text, data in row]
+                for row in list_rows
+            ]
+        }
+    )
+    update = make_callback_update(
+        callback_data,
+        chat_id=_CHAT,
+        user_id=_USER,
+        message_id=_CARD_ID,
+        message_text=_LIST_HEAD,
+        message_markup=keyboard,
+    )
+    update = Update.model_validate(
+        update.model_dump(), context={"bot": card_dialog.bot}
+    )
+    assert update.callback_query is not None
+    assert isinstance(update.callback_query.message, Message)
+    original_markup = update.callback_query.message.reply_markup
+    assert original_markup is not None
+    before = original_markup.model_dump()
+    await card_dialog.set_state(AddProduct.waiting_target_price.state, {"draft": 42})
+    task = asyncio.create_task(card_dialog.feed(update))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        progress = card_dialog.edits[-1]
+        assert progress.text == _LIST_HEAD
+        progress_rows = rows(progress)
+        assert len(progress_rows) == len(_LIST_ROWS)
+        assert [[label for label, _ in row] for row in progress_rows] == [
+            ["1\u00a0755\u00a0₽ · Из базы <b>1"],
+            ["Обновляю цены…"],
+            ["➕ Добавить товар", "Главное меню"],
+        ]
+        assert all(data == "refresh:busy" for row in progress_rows for _, data in row)
+        assert original_markup.model_dump() == before
+        await card_dialog.press("refresh:busy")
+        assert len(card_dialog.edits) == 1
+        assert len(card_dialog.callback_answers) == 2
+        assert card_dialog.callback_answers[-1].text is None
+        assert await card_dialog.state() == AddProduct.waiting_target_price.state
+        assert await card_dialog.data() == {"draft": 42}
+        card_service.list_page.assert_not_called()
+        card_service.get_product_card.assert_not_called()
+    finally:
+        release.set()
+        await task
+    assert card_dialog.edits[-1].text == f"Цены обновлены.\n\n{_LIST_HEAD}"
+    before_stale = len(card_dialog.requests)
+    service_calls = card_service.mock_calls[:]
+    await card_dialog.press("refresh:busy")
+    assert len(card_dialog.requests) == before_stale + 1
+    assert card_service.mock_calls == service_calls
+    refresher.refresh_list.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["text", "markup"])
+async def test_list_refresh_without_complete_snapshot_uses_compact_progress(
+    card_dialog: _Dialog, refresher: MagicMock, missing: str
+) -> None:
+    keyboard = InlineKeyboardMarkup.model_validate(
+        {"inline_keyboard": [[{"text": "Refresh", "callback_data": "lref:1"}]]}
+    )
+    update = make_callback_update(
+        "lref:1",
+        chat_id=_CHAT,
+        user_id=_USER,
+        message_text=None if missing == "text" else _LIST_HEAD,
+        message_markup=None if missing == "markup" else keyboard,
+    )
+    await card_dialog.feed(update)
+    assert card_dialog.edits[0].text == "Обновляю цены…"
+    assert rows(card_dialog.edits[0]) == []
 
 
 @pytest.mark.asyncio

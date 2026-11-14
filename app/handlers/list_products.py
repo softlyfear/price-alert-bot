@@ -13,6 +13,7 @@ exactly once.
 
 from datetime import UTC
 from datetime import datetime
+from typing import Literal
 from typing import assert_never
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from aiogram.types import InaccessibleMessage
+from aiogram.types import InlineKeyboardButton
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from loguru import logger
@@ -73,6 +75,7 @@ from app.services.tracking import TrackingService
 
 _KEY_ALERT_ID = "alert_id"
 _KEY_PRODUCT_ID = "product_id"
+_CB_REFRESH_BUSY = "refresh:busy"
 
 
 async def _list_screen(
@@ -108,7 +111,7 @@ async def _list_screen(
 
 
 async def _begin_refresh(
-    callback: CallbackQuery, price_refresher: PriceRefresher
+    callback: CallbackQuery, price_refresher: PriceRefresher, *, keep_list: bool = False
 ) -> Message | None:
     """Spend the refresh budget and show the progress screen.
 
@@ -127,20 +130,48 @@ async def _begin_refresh(
             show_alert=True,
         )
         return None
+    message = callback.message
+    if (
+        keep_list
+        and isinstance(message, Message)
+        and message.text is not None
+        and message.reply_markup is not None
+    ):
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            texts.REFRESH_IN_PROGRESS_TEXT
+                            if button.callback_data == callback.data
+                            else button.text
+                        ),
+                        callback_data=_CB_REFRESH_BUSY,
+                    )
+                    for button in row
+                ]
+                for row in message.reply_markup.inline_keyboard
+            ]
+        )
+        return await edit_callback_message(
+            callback, message.text, reply_markup=keyboard
+        )
     return await edit_callback_message(
         callback, texts.REFRESH_IN_PROGRESS_TEXT, reply_markup=no_buttons_keyboard()
     )
 
 
-async def _fail_refresh(progress: Message, user_id: int, error: Exception) -> None:
+async def _fail_refresh(
+    progress: Message, user_id: int, error: Exception, scope: Literal["list", "card"]
+) -> None:
     """Replace the progress screen with a generic error; the error is logged.
 
     The exception is not re-raised: the ``errors`` handler would send a
-    second copy of the message. Only the error type and ``user_id`` are bound.
+    second copy of the message.
     """
-    logger.bind(user_id=user_id, error_type=type(error).__name__).exception(
-        "Refresh failed after the progress screen"
-    )
+    logger.bind(
+        user_id=user_id, error_type=type(error).__name__, scope=scope
+    ).exception("Refresh failed after the progress screen")
     await edit_message_or_answer(
         progress, texts.UNEXPECTED_ERROR_TEXT, reply_markup=nav_keyboard()
     )
@@ -149,6 +180,11 @@ async def _fail_refresh(progress: Message, user_id: int, error: Exception) -> No
 def create_router() -> Router:
     """Build a fresh ``list_products`` router (see ``common.create_router``)."""
     router = Router(name="list_products")
+
+    @router.callback_query(F.data == _CB_REFRESH_BUSY)
+    async def on_refresh_busy(callback: CallbackQuery) -> None:
+        await callback.answer()
+
     middleware = TrackingServiceMiddleware()
     router.message.middleware(middleware)
     router.callback_query.middleware(middleware)
@@ -544,7 +580,7 @@ def create_router() -> Router:
     ) -> None:
         """Refresh all prices of the pressing user and redraw list page ``page``."""
         user_id = callback.from_user.id
-        progress = await _begin_refresh(callback, price_refresher)
+        progress = await _begin_refresh(callback, price_refresher, keep_list=True)
         if progress is None:
             return
         # _begin_refresh has already returned when the pressed message is missing.
@@ -559,7 +595,7 @@ def create_router() -> Router:
                 tracking, user_id, display_timezone, page
             )
         except Exception as error:
-            await _fail_refresh(progress, user_id, error)
+            await _fail_refresh(progress, user_id, error, "list")
             return
         await dismiss_link_prompt(
             progress, state, keep_message_ids=keep, user_id=user_id
@@ -658,7 +694,7 @@ def create_router() -> Router:
                 )
                 return
         except Exception as error:
-            await _fail_refresh(progress, user_id, error)
+            await _fail_refresh(progress, user_id, error, "card")
             return
         card_text, keyboard = card_screen(card, display_timezone)
         summary = texts.refresh_card_summary(result, card.product.marketplace)
