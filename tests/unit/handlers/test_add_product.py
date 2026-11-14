@@ -126,6 +126,7 @@ async def test_add_command_enters_waiting_link_with_prompt_and_cancel_button(
     await dialog.command("add")
 
     assert await dialog.state() == AddProduct.waiting_link.state
+    assert await dialog.data() == {"prompt_message_id": sent_message_id(0)}
     assert len(dialog.sent) == 1
     assert dialog.last_text == texts.ADD_PROMPT_LINK_TEXT
     assert _keyboard_callbacks(dialog.sent[0]) == [CB_ADD_CANCEL]
@@ -140,7 +141,7 @@ async def test_add_command_restarts_a_running_dialog_and_drops_its_draft(
     await dialog.command("add")
 
     assert await dialog.state() == AddProduct.waiting_link.state
-    assert await dialog.data() == {}
+    assert await dialog.data() == {"prompt_message_id": sent_message_id(0)}
 
 
 # --- link step -----------------------------------------------------------------
@@ -292,6 +293,7 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
         "product_name": _NAME,
         "current_price": _PRICE,
         "link_message_id": 77,  # PAB-091 marker: the id of the link message
+        "prompt_message_id": sent_message_id(0),
     }
 
 
@@ -1226,7 +1228,13 @@ async def test_interrupt_during_check_wins_and_late_result_only_retitles_the_not
     await _finish_link(task, call)
 
     assert await dialog.state() == state_after
-    assert await dialog.data() == {}
+    data = await dialog.data()
+    if state_after is None:
+        assert data == {}
+    else:
+        # A restarted link step keeps only the new prompt id, not the draft.
+        assert set(data) == {"prompt_message_id"}
+        assert type(data["prompt_message_id"]) is int
     _assert_only_dropped_edit(dialog, base, notice_id)
     assert [r["extra"]["reason"] for r in _dropped_infos(log_records)] == [reason]
 
@@ -1258,6 +1266,7 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
         "product_name": _NAME_B,
         "current_price": 222,
         "link_message_id": _MSG_B,
+        "prompt_message_id": sent_message_id(0),
     }
     card = []
     for edit in dialog.edits:
@@ -1287,7 +1296,10 @@ async def test_first_link_finishing_first_is_dropped_by_foreign_marker_second_ap
         "marker_mismatch"
     ]
     assert await dialog.state() == AddProduct.waiting_link.state
-    assert await dialog.data() == {"link_message_id": _MSG_B}
+    assert await dialog.data() == {
+        "link_message_id": _MSG_B,
+        "prompt_message_id": sent_message_id(0),
+    }
 
     await _finish_link(task_b, call_b)
 
@@ -1347,14 +1359,14 @@ async def test_late_outcome_of_every_branch_writes_no_fsm_and_shows_no_outcome(
     await dialog.command("add")
     task = await _start_link(dialog, call, _LINK_A, _MSG_A)
     notice_id = _checking_notice_id(dialog)
-    await dialog.command("add")  # restart: state waiting_link, data empty
+    await dialog.command("add")  # restart: waiting_link, only the new prompt id
     base = len(dialog.requests)
 
     await _finish_link(task, call)
 
     # a state.clear() in the limit branch would leave None here
     assert await dialog.state() == AddProduct.waiting_link.state
-    assert await dialog.data() == {}
+    assert await dialog.data() == {"prompt_message_id": sent_message_id(2)}
     _assert_only_dropped_edit(dialog, base, notice_id)
 
 
@@ -1492,7 +1504,7 @@ async def test_menu_add_button_restarts_the_dialog_in_place_from_any_state(
     await dialog.press("menu:add")
 
     assert await dialog.state() == AddProduct.waiting_link.state
-    assert await dialog.data() == {}
+    assert await dialog.data() == {"prompt_message_id": _CARD_ID}
     assert dialog.sent == []
     assert [(e.text, e.message_id, e.parse_mode) for e in dialog.edits] == [
         (texts.ADD_PROMPT_LINK_TEXT, _CARD_ID, None)

@@ -69,7 +69,12 @@ def dialog(real_dispatcher: Dispatcher) -> _Dialog:
 
 
 def _without_fetch_time(data: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in data.items() if k != "price_fetched_at"}
+    """Product draft only: the prompt id belongs to the message that opened it."""
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in {"price_fetched_at", "prompt_message_id"}
+    }
 
 
 # --- /add dialog ---------------------------------------------------------------

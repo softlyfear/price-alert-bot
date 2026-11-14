@@ -19,12 +19,19 @@ from unittest.mock import MagicMock
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.exceptions import TelegramNetworkError
+from aiogram.fsm.context import FSMContext
 from aiogram.methods import AnswerCallbackQuery
+from aiogram.methods import DeleteMessage
 from aiogram.methods import EditMessageText
 from aiogram.methods import SendMessage
+from aiogram.methods.base import TelegramMethod
 from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import Message
 
 from app.bot import texts
+from app.bot.states import AddProduct
+from app.bot.states import EditAlert
+from app.handlers.add_product import dismiss_link_prompt
 from app.models.enums import Marketplace
 from app.services.price_service import RefreshFailure
 from app.services.price_service import RefreshGone
@@ -32,7 +39,10 @@ from app.services.price_service import RefreshLimiter
 from app.services.price_service import RefreshReport
 from app.services.price_service import RefreshThrottled
 from app.services.tracking import ProductPage
+from tests.unit.conftest import FakeTelegramSession
+from tests.unit.conftest import sent_message_id
 from tests.unit.handlers.add_dialog_support import _CARD_ID
+from tests.unit.handlers.add_dialog_support import _CHAT
 from tests.unit.handlers.add_dialog_support import _USER
 from tests.unit.handlers.add_dialog_support import _Dialog
 from tests.unit.handlers.card_dialog_support import CARD_PAGE1_NAV
@@ -346,6 +356,162 @@ async def test_a_refresh_from_the_list_spends_the_budget_of_the_card_button_too(
     refresher.refresh_list.assert_awaited_once()
     refresher.refresh_product.assert_not_called()
     assert _popups(card_dialog)[-1] == (texts.refresh_throttled_text(60), True)
+
+
+def _deleted(dialog: _Dialog) -> list[tuple[int | str, int]]:
+    return [
+        (method.chat_id, method.message_id)
+        for method in dialog.requests
+        if isinstance(method, DeleteMessage)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_data", ["list:refresh", "lref:1"])
+async def test_list_refresh_removes_the_add_link_prompt_left_above_the_list(
+    card_dialog: _Dialog, refresher: MagicMock, callback_data: str
+) -> None:
+    """An open link prompt stays above the list; refresh must take it down."""
+    await card_dialog.command("add")
+    assert card_dialog.sent[-1].text == texts.ADD_PROMPT_LINK_TEXT
+
+    await card_dialog.press(callback_data)
+
+    assert await card_dialog.state() is None
+    assert _deleted(card_dialog) == [(_CHAT, sent_message_id(0))]
+    assert card_dialog.edits[-1].text == f"Цены обновлены.\n\n{_LIST_HEAD}"
+    refresher.refresh_list.assert_awaited_once_with(_USER)
+
+
+@pytest.mark.asyncio
+async def test_list_refresh_on_an_inaccessible_message_still_deletes_the_prompt(
+    card_dialog: _Dialog, refresher: MagicMock
+) -> None:
+    await card_dialog.command("add")
+
+    await card_dialog.press("lref:1", accessible=False)
+
+    assert await card_dialog.state() is None
+    assert _deleted(card_dialog) == [(_CHAT, sent_message_id(0))]
+    assert [message.text for message in card_dialog.sent] == [
+        texts.ADD_PROMPT_LINK_TEXT,
+        "Обновляю цены…",
+    ]
+    assert card_dialog.edits[-1].message_id == sent_message_id(1)
+    assert card_dialog.edits[-1].text == f"Цены обновлены.\n\n{_LIST_HEAD}"
+
+
+@pytest.mark.asyncio
+async def test_list_refresh_does_not_delete_the_message_it_is_updating(
+    card_dialog: _Dialog, refresher: MagicMock
+) -> None:
+    await card_dialog.set_state(
+        AddProduct.waiting_link.state, {"prompt_message_id": _CARD_ID}
+    )
+
+    await card_dialog.press("list:refresh")
+
+    assert await card_dialog.state() is None
+    assert await card_dialog.data() == {}
+    assert _deleted(card_dialog) == []
+    assert [edit.message_id for edit in card_dialog.edits] == [_CARD_ID, _CARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_list_refresh_closes_a_link_prompt_it_cannot_identify(
+    card_dialog: _Dialog, refresher: MagicMock
+) -> None:
+    await card_dialog.set_state(
+        AddProduct.waiting_link.state, {"prompt_message_id": "missing"}
+    )
+
+    await card_dialog.press("lref:1")
+
+    assert await card_dialog.state() is None
+    assert await card_dialog.data() == {}
+    assert _deleted(card_dialog) == []
+    refresher.refresh_list.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_refresh_still_updates_when_the_prompt_cannot_be_deleted(
+    card_dialog: _Dialog, refresher: MagicMock
+) -> None:
+    session = cast(FakeTelegramSession, card_dialog.bot.session)
+    inner = session._responder
+
+    async def respond(method: TelegramMethod[Any]) -> Any:
+        if isinstance(method, DeleteMessage):
+            raise TelegramBadRequest(
+                method=method, message="message to delete not found"
+            )
+        return await inner(method)
+
+    session._responder = respond
+    await card_dialog.command("add")
+
+    await card_dialog.press("list:refresh")
+
+    assert await card_dialog.state() is None
+    assert card_dialog.edits[-1].text == f"Цены обновлены.\n\n{_LIST_HEAD}"
+    refresher.refresh_list.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_link_prompt_closes_when_the_progress_message_has_no_bot(
+    card_dialog: _Dialog,
+) -> None:
+    await card_dialog.set_state(
+        AddProduct.waiting_link.state, {"prompt_message_id": 77}
+    )
+    progress = Message.model_validate(
+        {"message_id": 1, "date": 1, "chat": {"id": _CHAT, "type": "private"}}
+    )
+    state = FSMContext(storage=card_dialog.dispatcher.storage, key=card_dialog.key)
+
+    await dismiss_link_prompt(progress, state, keep_message_ids=set(), user_id=_USER)
+
+    assert progress.bot is None
+    assert await card_dialog.state() is None
+    assert _deleted(card_dialog) == []
+
+
+@pytest.mark.asyncio
+async def test_throttled_list_refresh_keeps_the_open_link_prompt(
+    card_dialog: _Dialog, refresher: MagicMock
+) -> None:
+    refresher.reserve.return_value = RefreshThrottled(42)
+    await card_dialog.command("add")
+
+    await card_dialog.press("list:refresh")
+
+    assert await card_dialog.state() == AddProduct.waiting_link.state
+    assert (await card_dialog.data())["prompt_message_id"] == sent_message_id(0)
+    assert _deleted(card_dialog) == []
+    refresher.refresh_list.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        AddProduct.waiting_target_price.state,
+        AddProduct.confirming.state,
+        EditAlert.waiting_target_price.state,
+    ],
+)
+async def test_list_refresh_leaves_every_other_dialog_and_its_message_alone(
+    card_dialog: _Dialog, refresher: MagicMock, state: str
+) -> None:
+    draft = {"prompt_message_id": 77, "article": 1}
+    await card_dialog.set_state(state, draft)
+
+    await card_dialog.press("lref:1")
+
+    assert await card_dialog.state() == state
+    assert await card_dialog.data() == draft
+    assert _deleted(card_dialog) == []
+    refresher.refresh_list.assert_awaited_once()
 
 
 # --- the card button --------------------------------------------------------------

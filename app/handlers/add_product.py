@@ -87,6 +87,7 @@ _KEY_CURRENT_PRICE = "current_price"
 _KEY_TARGET_PRICE = "target_price"
 _KEY_CONFIRM_MESSAGE_ID = "confirm_message_id"
 _KEY_LINK_MESSAGE_ID = "link_message_id"
+_KEY_PROMPT_MESSAGE_ID = "prompt_message_id"
 _KEY_PRICE_FETCHED_AT = "price_fetched_at"
 _KEY_WB_SIZE_ID = "wb_size_id"
 _KEY_WB_SIZE_NAME = "wb_size_name"
@@ -143,6 +144,37 @@ def _failure_text(reason: FetchFailureReason) -> str:
             return texts.ADD_FETCH_FAILURE_TEXTS[reason]
         case _:
             assert_never(reason)
+
+
+async def dismiss_link_prompt(
+    progress: Message,
+    state: FSMContext,
+    *,
+    keep_message_ids: set[int],
+    user_id: int,
+) -> None:
+    """Close an open link prompt so its message does not stay above the list.
+
+    Only the link step is closed. A threshold step, a confirmation and an
+    ``EditAlert`` dialog stay. ``keep_message_ids`` are the messages the
+    refresh itself is editing; those are never deleted.
+    """
+    if await state.get_state() != AddProduct.waiting_link.state:
+        return
+    data = await state.get_data()
+    await state.clear()
+    prompt_id = data.get(_KEY_PROMPT_MESSAGE_ID)
+    if type(prompt_id) is not int or prompt_id in keep_message_ids:
+        return
+    bot = progress.bot
+    if bot is None:
+        return
+    try:
+        await bot.delete_message(chat_id=progress.chat.id, message_id=prompt_id)
+    except TelegramAPIError as exc:
+        logger.bind(user_id=user_id, error_type=type(exc).__name__).warning(
+            "Could not delete the add-link prompt"
+        )
 
 
 async def _finish(callback: CallbackQuery, state: FSMContext, text: str) -> None:
@@ -555,19 +587,24 @@ def create_router() -> Router:
         """Start the dialog (restarts it if one is already running)."""
         await state.clear()
         await state.set_state(AddProduct.waiting_link)
-        await message.answer(texts.ADD_PROMPT_LINK_TEXT, reply_markup=cancel_keyboard())
+        sent = await message.answer(
+            texts.ADD_PROMPT_LINK_TEXT, reply_markup=cancel_keyboard()
+        )
+        await state.update_data({_KEY_PROMPT_MESSAGE_ID: sent.message_id})
 
     @router.callback_query(F.data == CB_MENU_ADD)
     async def on_menu_add(callback: CallbackQuery, state: FSMContext) -> None:
         """ "Add a product" button: same effect as /add, edited in place."""
         await state.clear()
         await state.set_state(AddProduct.waiting_link)
-        await edit_callback_message(
+        shown = await edit_callback_message(
             callback,
             texts.ADD_PROMPT_LINK_TEXT,
             reply_markup=cancel_keyboard(),
             alert_text=texts.MENU_STALE_ALERT_TEXT,
         )
+        if shown is not None:
+            await state.update_data({_KEY_PROMPT_MESSAGE_ID: shown.message_id})
 
     @router.callback_query(AddRefCb.filter())
     async def on_add_ref(

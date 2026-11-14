@@ -6,12 +6,15 @@ them, and every service call is scoped to the Telegram user who pressed the
 button. Product names come from a marketplace (untrusted), so every message
 carrying one is sent with ``parse_mode=None``. ``/list`` never touches FSM
 state, except the one-step ``EditAlert`` dialog that changes a threshold.
-Each callback handler answers the callback exactly once.
+Refreshing the list also closes an open add-link prompt, so that message
+does not stay above the list. Each callback handler answers the callback
+exactly once.
 """
 
 from datetime import UTC
 from datetime import datetime
 from typing import assert_never
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from aiogram import F
@@ -20,6 +23,7 @@ from aiogram.filters import Command
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
+from aiogram.types import InaccessibleMessage
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import Message
 from loguru import logger
@@ -54,6 +58,7 @@ from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.domain.money import rubles_to_kopecks
 from app.handlers.add_product import MAX_TEXT_LENGTH
 from app.handlers.add_product import TrackingServiceMiddleware
+from app.handlers.add_product import dismiss_link_prompt
 from app.handlers.add_product import enter_price_step
 from app.handlers.callback_reply import edit_callback_message
 from app.handlers.callback_reply import edit_message_or_answer
@@ -535,13 +540,20 @@ def create_router() -> Router:
         tracking: TrackingService,
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
+        state: FSMContext,
     ) -> None:
         """Refresh all prices of the pressing user and redraw list page ``page``."""
         user_id = callback.from_user.id
         progress = await _begin_refresh(callback, price_refresher)
         if progress is None:
             return
+        # _begin_refresh has already returned when the pressed message is missing.
+        pressed = cast(Message | InaccessibleMessage, callback.message)
+        keep = {progress.message_id, pressed.message_id}
         try:
+            await dismiss_link_prompt(
+                progress, state, keep_message_ids=keep, user_id=user_id
+            )
             report = await price_refresher.refresh_list(user_id)
             text, keyboard = await _list_screen(
                 tracking, user_id, display_timezone, page
@@ -549,6 +561,9 @@ def create_router() -> Router:
         except Exception as error:
             await _fail_refresh(progress, user_id, error)
             return
+        await dismiss_link_prompt(
+            progress, state, keep_message_ids=keep, user_id=user_id
+        )
         if report.total:
             text = f"{texts.refresh_list_summary(report)}\n\n{text}"
         await edit_message_or_answer(progress, text, reply_markup=keyboard)
@@ -559,10 +574,11 @@ def create_router() -> Router:
         tracking: TrackingService,
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
+        state: FSMContext,
     ) -> None:
         """Old page-less "Refresh prices" button: stays on page 1."""
         await refresh_list_page(
-            callback, 1, tracking, price_refresher, display_timezone
+            callback, 1, tracking, price_refresher, display_timezone, state
         )
 
     @router.callback_query(ListRefreshCb.filter())
@@ -572,10 +588,16 @@ def create_router() -> Router:
         tracking: TrackingService,
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
+        state: FSMContext,
     ) -> None:
         """Refresh prices and stay on the page the button was pressed on."""
         await refresh_list_page(
-            callback, callback_data.page, tracking, price_refresher, display_timezone
+            callback,
+            callback_data.page,
+            tracking,
+            price_refresher,
+            display_timezone,
+            state,
         )
 
     @router.callback_query(ListPageCb.filter())
