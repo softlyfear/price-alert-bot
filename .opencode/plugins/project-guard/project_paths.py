@@ -1,11 +1,11 @@
-"""Resolve hook paths from Codex's session directory."""
+"""Resolve the checkout root from the working directory."""
 
 import subprocess
 from pathlib import Path
 
 
 def project_root(cwd: str) -> Path:
-    """Find the checkout root even when Codex starts in a subdirectory."""
+    """Find the checkout root even when the session starts in a subdirectory."""
     result = subprocess.run(
         ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
         capture_output=True,

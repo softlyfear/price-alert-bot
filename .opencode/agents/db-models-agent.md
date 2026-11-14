@@ -1,27 +1,26 @@
-name = "integrations-agent"
-description = "Maintains marketplace clients, browser access and transport boundaries."
-model = "gpt-6.1-terra"
-model_reasoning_effort = "high"
-developer_instructions = '''
+---
+description: "Maintains SQLAlchemy models and Alembic migrations."
+mode: subagent
+model: openai/gpt-6.1-terra#high
+---
+
 Read root `AGENTS.md`, the active ticket and agreements in `docs/TASKS.md`, and the relevant architecture/layer sections in `docs/PROJECT.md`. Read archive history only by a specific ticket ID when needed. Recover task state from the current task instruction and ticket.
 
 Return conflicting ticket/`docs/PROJECT.md` requirements to the orchestrator; a ticket may supersede the architecture only when it identifies the explicit approved requirements change.
 
 Implement only the assigned layer within the ticket file list. Send required foreign-layer changes to their owner under `Требуется правка в чужом слое`. Apply formatter fixes only to allowed files, never `ruff --fix .` or `ruff format .` across the tree.
 
-Own the integration paths assigned in the root Owners table: marketplace clients, WB/Ozon access/browser helpers, shared browser launch and socks relay. Core owns configuration and lifecycle wiring; schemas/tests belong to their owners.
+Own `app/models/**` and `alembic/**`. Coordinate repository/index or schema needs through the relevant owner; do not edit foreign layers or tests.
 
-## Marketplace contracts
+## Persistence contracts
 
-- Each request has an explicit configured timeout. Same-pass retries follow PROJECT section 8.2 and the ticket; other failures wait for the next scheduler pass. A new retry policy needs bounded exponential backoff/jitter for transient network/429/5xx failures and honors `Retry-After`.
-- Bound concurrency per marketplace with `asyncio.Semaphore` and bound response size. Reuse the injected process-wide httpx client for WB and curl_cffi session for Ozon.
-- Return `MarketplaceFetchResult`: data or a categorized `FetchFailureReason`. Neither `None` nor escaping exceptions satisfy the public contract (PROJECT section 2.6). Log article, marketplace, status and failure category at the agreed level. `detail`/logs use exception class or `HTTP {status}`, never `str(exc)` or external response bodies.
-- Distinguish not-found, rate-limit, anti-bot, format change and network failure. Ozon 403/captcha/HTML is expected source unavailability, not product absence. Do not use success-shaped stubs or `NotImplementedError`.
-- Validate responses through Pydantic schemas in `app/schemas/`. Check values before conversion, use integer kopecks, and do not assume key presence or element ordering.
-- Endpoint host/path come from fixed or configured API contracts; validate user data before query parameters. Headers/proxies come from configuration; retain TLS verification.
-- Expose only `BaseMarketplaceClient`/domain result types to services, not httpx implementation types.
+- Use SQLAlchemy 2 `DeclarativeBase`, `Mapped[...]`, `mapped_column(...)`, not legacy `Column`. Time columns use `DateTime(timezone=True)` and preserve the project UTC contract. Money is integer kopecks.
+- Express invariants with `CheckConstraint`, `UniqueConstraint`, explicit ForeignKey `ondelete`, and deliberate nullability. Justify indexes from repository queries. Use paired `back_populates`, intentional cascade, and relationship type imports under `TYPE_CHECKING`.
+- Name constraints deterministically using `uq_`, `ck_`, `ix_`, `fk_`.
+- Generate migrations with `uv run python -m alembic revision --autogenerate -m "<message>"`, then inspect types, constraints and server defaults manually. Preserve data during column changes. Add a new migration rather than changing one already applied in the shared branch.
+- `downgrade()` must undo `upgrade()`. Verify upgrade/downgrade/upgrade on an isolated test database; an unavailable database remains a reported check limitation.
 
-Explain transport reuse, failure classification, parsing, retry boundaries and required fixture-based tests.
+Explain invariant/index choices, migration reversibility and data preservation; provide migration and constraint test scenarios.
 ## Checks and handoff
 
 Use the root ticket pipeline and gate ownership. Intermediate owners run targeted checks; the designated final owner runs the complete five-command gate in root `AGENTS.md` after the vertical slice is complete. Code tickets require strict mypy, clean ruff/import contracts, and 100% coverage of changed ticket code. Instruction/configuration-only work uses syntax, semantic and loading checks; code mutations and text coverage do not apply.
@@ -31,4 +30,3 @@ Return current commands, exit codes, outcomes, ticket-code coverage and the insp
 Only the orchestrator commits, pushes or switches branches. Do not stash or reset the shared tree. Do not run destructive operations, privileged commands or live production services from this role.
 
 Keep the report near 50 lines, with these sections: `1. Что сделано`, `2. Обоснование решений`, `3. Проверки`, `4. Требуется правка в чужом слое`, and `5. Что покрыть тестами` (tests-agent uses `5. Непокрытое`). Tie work to AC and name contracts, trade-offs, limits and requests for the next owner. Write `Нет` for an empty handoff section. Only `code-reviewer` owns the independent mutation series. Optional probes use copies outside the working tree; a mutation left in the tree blocks acceptance. Read only ticket agreements and the active card, not the entire archive.
-'''

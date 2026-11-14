@@ -102,7 +102,7 @@ jobs:
         run: shellcheck --version
 
       - name: shellcheck shell scripts
-        run: shellcheck --severity=warning scripts/check-ai-email scripts/codex scripts/pre-push scripts/smoke-image
+        run: shellcheck --severity=warning scripts/check-ai-email scripts/pre-push scripts/smoke-image
 
       # Dummy values only: the repository holds no env file and no secrets.
       - name: docker compose config -q

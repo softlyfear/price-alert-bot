@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Python formatting uses the same uv-managed ruff invocation as the former
+  // post-edit hook. Other built-ins stay off so only that formatter runs.
+  "formatter": {
+    "ruff": {
+      "command": ["uv", "run", "--quiet", "ruff", "format", "--", "$FILE"],
+      "extensions": [".py", ".pyi"],
+    },
+    "air": { "disabled": true },
+    "biome": { "disabled": true },
+    "clang-format": { "disabled": true },
+    "cljfmt": { "disabled": true },
+    "dart": { "disabled": true },
+    "dfmt": { "disabled": true },
+    "gofmt": { "disabled": true },
+    "htmlbeautifier": { "disabled": true },
+    "ktlint": { "disabled": true },
+    "latexindent": { "disabled": true },
+    "mix": { "disabled": true },
+    "nixfmt": { "disabled": true },
+    "ocamlformat": { "disabled": true },
+    "ormolu": { "disabled": true },
+    "oxfmt": { "disabled": true },
+    "pint": { "disabled": true },
+    "prettier": { "disabled": true },
+    "rubocop": { "disabled": true },
+    "rustfmt": { "disabled": true },
+    "shfmt": { "disabled": true },
+    "standardrb": { "disabled": true },
+    "terraform": { "disabled": true },
+    "uv": { "disabled": true },
+    "zig": { "disabled": true },
+    "gleam": { "disabled": true },
+  },
+  "mcp": {
+    "servers": {
+      "context7": {
+        "type": "remote",
+        "url": "https://mcp.context7.com/mcp"
+      }
+    }
+  },
+}

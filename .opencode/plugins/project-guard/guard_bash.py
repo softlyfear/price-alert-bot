@@ -1,4 +1,4 @@
-"""PreToolUse guard for Bash: block system-wiping commands, ask before destructive ones.
+"""Shell permission guard: block system-wiping commands, ask before destructive ones.
 
 `sudo` and `rm` stay allowed in general; only the catastrophic forms are denied
 (system and home roots, the project root and its ancestors, agent settings), and a short
@@ -141,7 +141,7 @@ def _wipes_project(target: str, cwd: str, project: str) -> bool:
     path = os.path.normpath(os.path.join(cwd, os.path.expanduser(base or ".")))
     guarded = (
         project,
-        *(os.path.join(project, name) for name in ("docs", ".codex", ".agents")),
+        *(os.path.join(project, name) for name in ("docs", ".opencode", ".agents")),
     )
     return path in guarded or project.startswith(path.rstrip("/") + "/")
 
@@ -267,22 +267,13 @@ def check(
 
 def main() -> None:
     data = json.load(sys.stdin)
-    command = (data.get("tool_input") or {}).get("command") or ""
+    command = data.get("command") or ""
     verdict = check(command, data.get("cwd"))
     if verdict is None:
+        sys.stdout.write("{}\n")
         return
     decision, reason = verdict
-    sys.stdout.write(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": f"guard-bash: {reason}",
-                }
-            }
-        )
-    )
+    sys.stdout.write(json.dumps({"decision": decision, "reason": reason}) + "\n")
 
 
 if __name__ == "__main__":

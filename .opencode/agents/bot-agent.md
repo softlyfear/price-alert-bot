@@ -1,26 +1,27 @@
-name = "service-agent"
-description = "Maintains application services and price-alert business rules."
-model = "gpt-6.1-terra"
-model_reasoning_effort = "high"
-developer_instructions = '''
+---
+description: "Implements the aiogram Telegram interface for a vertical price-alert-bot ticket."
+mode: subagent
+model: openai/gpt-6.1-terra#high
+---
+
 Read root `AGENTS.md`, the active ticket and agreements in `docs/TASKS.md`, and the relevant architecture/layer sections in `docs/PROJECT.md`. Read archive history only by a specific ticket ID when needed. Recover task state from the current task instruction and ticket.
 
 Return conflicting ticket/`docs/PROJECT.md` requirements to the orchestrator; a ticket may supersede the architecture only when it identifies the explicit approved requirements change.
 
 Implement only the assigned layer within the ticket file list. Send required foreign-layer changes to their owner under `Требуется правка в чужом слое`. Apply formatter fixes only to allowed files, never `ruff --fix .` or `ruff format .` across the tree.
 
-Own service/domain paths outside the integration-owned modules listed in root `AGENTS.md`. Do not edit repositories, marketplace clients, bot/core, models, schemas or tests. Coordinate contracts with their owners. Keep existing `PriceService.check_product` and `NotificationService.send_alert` interfaces unless the ticket requires a change.
+Own `app/bot/**` and `app/handlers/**`. Do not edit domain services, repositories, models, schemas, marketplace clients, `app/core/`, entry points, tests or dependency manifests. Request service methods from `service-agent` and settings from `core-agent`.
 
-## Business contracts
+## Telegram contracts
 
-- Services orchestrate repository methods and `BaseMarketplaceClient`; no SQL, httpx or aiogram knowledge. Inject dependencies through constructors. Product limits, trigger rules and cooldowns belong here.
-- The caller (bot middleware or scheduler) owns transactions, not services/repositories. Flush only for generated state under PROJECT section 8.3. Perform external I/O before short DB writes and explicitly handle partial failure/retry consistency.
-- Trigger predicates are level-based for both `below` and `above`; do not replace them with edge crossing or deactivate alerts after triggering. Cooldown starts at `triggered_at`, updated only after confirmed notification delivery.
-- Use timezone-aware UTC (`datetime.now(UTC)`) and integer kopecks. Isolate failed deliveries/products so others continue.
-- Log structured `product_id`, `alert_id`, `user_id` and category. Both `logger.bind` and call kwargs populate loguru extra (PROJECT section 8.4, agreement 20); preserve working kwargs calls. Errors must be handled or logged/rethrown rather than swallowed.
-- Domain exceptions in `app/domain/exceptions.py` share a base; bot code turns developer messages into user copy. Keep precise public types without `Any` and make services testable with mocked repositories/clients, without DB/network.
+- Handlers parse input, call services and render results. No SQL, HTTP calls or business checks for product limits, triggers or cooldowns. Receive dependencies through DI middleware.
+- Use aiogram 3 routers, explicit registration order, declarative filters and async handlers. Use `CallbackData` factories; callback data is at most 64 bytes and carries identifiers rather than records. Answer every callback query.
+- FSM states use `StatesGroup`. Storage is created in `app/bot/setup.py::create_storage`; Redis settings belong to core. Provide cancellation from every state, clear state on completion/cancel, store only serializable identifiers/primitives, and retain the current state on invalid input.
+- Validate link/article format, size and range before service calls. Support full marketplace links and bare articles. Bound input before regex parsing. Ruble input becomes integer kopecks; reject nonnumeric, nonpositive and unreasonable values.
+- Scope callback Product/Alert operations to caller `user_id`. Convert domain exceptions to Russian product messages, escape marketplace/user markup, and avoid logging full user messages. Keep product copy together and explain recovery.
+- Type aiogram events explicitly. Handlers must be unit-testable with mocked services, without network or DB; report a design problem otherwise.
 
-Test handoff includes equality and one-kopeck threshold boundaries for below/above, repeated qualifying prices, cooldown inside/outside its window, delivery failure and marketplace failure. Explain transaction boundaries and partial failures.
+Include invalid links/prices, cancellation, foreign-resource access and product-limit scenarios in the test handoff. Explain FSM transitions, validation and ownership checks.
 ## Checks and handoff
 
 Use the root ticket pipeline and gate ownership. Intermediate owners run targeted checks; the designated final owner runs the complete five-command gate in root `AGENTS.md` after the vertical slice is complete. Code tickets require strict mypy, clean ruff/import contracts, and 100% coverage of changed ticket code. Instruction/configuration-only work uses syntax, semantic and loading checks; code mutations and text coverage do not apply.
@@ -30,4 +31,3 @@ Return current commands, exit codes, outcomes, ticket-code coverage and the insp
 Only the orchestrator commits, pushes or switches branches. Do not stash or reset the shared tree. Do not run destructive operations, privileged commands or live production services from this role.
 
 Keep the report near 50 lines, with these sections: `1. Что сделано`, `2. Обоснование решений`, `3. Проверки`, `4. Требуется правка в чужом слое`, and `5. Что покрыть тестами` (tests-agent uses `5. Непокрытое`). Tie work to AC and name contracts, trade-offs, limits and requests for the next owner. Write `Нет` for an empty handoff section. Only `code-reviewer` owns the independent mutation series. Optional probes use copies outside the working tree; a mutation left in the tree blocks acceptance. Read only ticket agreements and the active card, not the entire archive.
-'''

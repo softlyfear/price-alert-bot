@@ -4,10 +4,11 @@ Telegram price tracker for Wildberries and Ozon. Users add products and choose
 notification thresholds. User-facing Telegram text is Russian; preserve exact
 workflow verdict strings.
 
-Codex configuration/roles live in `.codex/`, skills in `.agents/skills/`.
-Detailed local architecture and tickets live in `docs/PROJECT.md`,
-`docs/TASKS.md`, and `docs/TASKS-archive.md`. Portable continuation summaries
-live in `.agents/HANDOFF.md`; it is not a second ticket ledger. Do not use `.Codex/`.
+OpenCode roles live in `.opencode/agents/`, project settings in `opencode.jsonc`,
+and skills in `.agents/skills/`. Detailed local architecture and tickets live in
+`docs/PROJECT.md`, `docs/TASKS.md`, and `docs/TASKS-archive.md`. Portable
+continuation summaries live in `.agents/HANDOFF.md`; it is not a second ticket
+ledger. Do not add a second project agent runtime beside OpenCode.
 Keep ticket history, investigation dates, and long rationale in project docs.
 
 ## Stack
@@ -63,18 +64,15 @@ Review verdicts are `Ship` / `No-Ship`. A rejection returns findings to the
 affected owners; only the architect updates `Попытка` in `docs/TASKS.md`.
 
 - For configuration/instruction work the orchestrator owns `AGENTS.md` and
-  Codex settings; `devops-agent` owns hooks and scripts. Do not involve
-  unaffected product layers for a simple configuration edit.
-- Role definitions are `.codex/agents/<role>.toml`. Architect/reviewer use the
-  latest stable Sol with `high`; nine layer roles use the latest stable Terra
-  with `high`. Read exact IDs from the TOML, not old tickets or invented aliases.
-  When role loading is unavailable, pass its instructions, model, and effort
-  explicitly; use fresh context if the tool requires it.
-- `./scripts/codex` / `make codex` runs local `scripts/codex_models.py` to refresh
-  visible stable `high`-capable versions from app-server `model/list`, without
-  downgrades or changes to other TOML fields. Catalog failure warns and preserves
-  current config. `make codex-models` refreshes config only. Desktop direct launch
-  bypasses the wrapper; already-running sessions do not restart or reload.
+  OpenCode project config (`opencode.jsonc`, `.opencode/`). `devops-agent` owns
+  packaging, CI, and operational scripts. Do not involve unaffected product
+  layers for a simple configuration edit.
+- Role definitions are `.opencode/agents/<role>.md`. `python-architect` and
+  `code-reviewer` use `openai/gpt-6.1-sol#high`. The nine layer roles use
+  `openai/gpt-6.1-terra#high`. These are the installed OpenCode catalog IDs for
+  the previous Sol/Terra high split. Do not invent aliases. When role loading
+  is unavailable, pass its instructions, model, and variant explicitly; use
+  fresh context if the tool requires it.
 - Delegation includes ticket ID, AC, allowed files, tree state, and prior results.
   Parallel work must not overlap writes, dependency synchronization, or Git.
   No more than three children at once; the environment's actual limit prevails.
@@ -83,9 +81,9 @@ affected owners; only the architect updates `Попытка` in `docs/TASKS.md`.
 - Only the orchestrator commits or switches branches. Start the next ticket
   after review and acceptance. Role file boundaries are behavioral instructions,
   not separate filesystem sandboxes.
-- Hooks in `.codex/hooks.json` need explicit definition trust through `/hooks`;
-  changed definitions are skipped until trusted. Validate configuration in a
-  new session where possible.
+- Shell safety and post-edit Python lint live in the `project-guard` plugin.
+  OpenCode's ruff formatter formats Python after `write`, `edit`, and `patch`.
+  Changed plugin files apply on the next config reload.
 
 ### Owners
 
@@ -134,7 +132,8 @@ acceptance.
 
 ## Library documentation and skills
 
-Context7 is configured in `.codex/config.toml`; use available session tools.
+Context7 is the project MCP server `context7` in `opencode.jsonc`. Use available
+session tools.
 For uncertain API behavior or unexpected library behavior, query the version
 from `uv.lock`. Known IDs can go directly to `query-docs`; at most three calls
 per question. Fallback is matching official documentation.
