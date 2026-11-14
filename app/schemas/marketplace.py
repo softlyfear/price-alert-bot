@@ -1,11 +1,15 @@
 """Marketplace-agnostic schemas: product data and a marked fetch result."""
 
+from datetime import UTC
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
+from pydantic import AwareDatetime
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
 
 # Upper bound on `price` (kopecks): the `current_price`/`previous_price`
 # (`products`) and `target_price` (`alerts`) columns are `sa.Integer()` (int4,
@@ -30,6 +34,7 @@ class MarketplaceProductData(BaseModel):
 
     name: Annotated[str, Field(min_length=2, max_length=150)]
     price: Annotated[int, Field(gt=0, le=_MAX_PRICE_KOPECKS)]
+    fetched_at: AwareDatetime | None = None
     wb_sizes: Annotated[dict[WbSizeId, WbSizeData] | None, Field(max_length=10_000)] = (
         None
     )
@@ -37,6 +42,11 @@ class MarketplaceProductData(BaseModel):
     model_config = {
         "extra": "forbid",
     }
+
+    @field_validator("fetched_at")
+    @classmethod
+    def _normalize_fetched_at(cls, value: datetime | None) -> datetime | None:
+        return value.astimezone(UTC) if value is not None else None
 
 
 class FetchFailureReason(StrEnum):

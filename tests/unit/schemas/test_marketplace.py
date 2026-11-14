@@ -5,6 +5,10 @@ validate pydantic model behaviour only.
 """
 
 import typing
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +17,24 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
+
+
+def test_product_fetched_at_optional_and_timezone_normalized() -> None:
+    assert MarketplaceProductData(name="Item", price=1).fetched_at is None
+    assert (
+        MarketplaceProductData(name="Item", price=1, fetched_at=None).fetched_at is None
+    )
+    offset = timezone(timedelta(hours=3))
+    observed = datetime(2026, 11, 14, 12, 0, tzinfo=offset)
+    product = MarketplaceProductData(name="Item", price=1, fetched_at=observed)
+    assert product.fetched_at == datetime(2026, 11, 14, 9, 0, tzinfo=UTC)
+    assert product.fetched_at is not None and product.fetched_at.tzinfo is UTC
+
+
+def test_product_fetched_at_rejects_naive_datetime() -> None:
+    with pytest.raises(ValidationError):
+        MarketplaceProductData(name="Item", price=1, fetched_at=datetime(2026, 1, 1))  # noqa: DTZ001
+
 
 # Reference set of (member name, member value) pairs per PROJECT.md section
 # 2.6. A flat set of bare values would miss a swap between two existing

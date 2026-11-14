@@ -386,24 +386,40 @@ def _service_with_factory(
 
 
 @pytest.mark.asyncio
-async def test_fetch_prices_returns_the_batch_of_the_marketplace_client() -> None:
-    """AC3(г). Mutations: another marketplace/client passed; articles changed;
-    the result post-processed."""
+async def test_fetch_prices_stamps_success_copies_and_preserves_failures(
+    frozen_now: datetime,
+) -> None:
     http = _http()
     expected: dict[int, MarketplaceFetchResult] = {
-        5: MarketplaceProductData(name="Пять", price=500),
+        5: MarketplaceProductData(
+            name="Пять", price=500, fetched_at=datetime(2020, 1, 1, tzinfo=UTC)
+        ),
         6: MarketplaceFetchFailure(reason=FetchFailureReason.not_found),
+        7: MarketplaceProductData(name="Семь", price=700),
     }
     client = MagicMock(spec=BaseMarketplaceClient)
     client.get_products_data.return_value = expected
     calls: list[tuple[Marketplace, httpx.AsyncClient]] = []
     service = _service_with_factory(calls, cast(BaseMarketplaceClient, client), http)
 
-    result = await service.fetch_prices(Marketplace.ozon, [5, 6])
+    result = await service.fetch_prices(Marketplace.ozon, [5, 6, 7])
 
-    assert result == expected
+    assert result == {
+        5: MarketplaceProductData(name="Пять", price=500, fetched_at=frozen_now),
+        6: expected[6],
+        7: MarketplaceProductData(name="Семь", price=700, fetched_at=frozen_now),
+    }
+    assert result[5] is not expected[5]
+    assert result[7] is not expected[7]
+    assert result[6] is expected[6]
+    original = expected[5]
+    assert isinstance(original, MarketplaceProductData)
+    assert original.fetched_at == datetime(2020, 1, 1, tzinfo=UTC)
+    original_other = expected[7]
+    assert isinstance(original_other, MarketplaceProductData)
+    assert original_other.fetched_at is None
     assert calls == [(Marketplace.ozon, http)]
-    client.get_products_data.assert_called_once_with([5, 6])
+    client.get_products_data.assert_called_once_with([5, 6, 7])
     client.get_product_data.assert_not_called()
 
 

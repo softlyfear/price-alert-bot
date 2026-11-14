@@ -27,6 +27,7 @@ from app.repositories.user import UserRepository
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
+from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.failure_levels import failure_log_level
 from app.services.notification import NotificationService
@@ -82,7 +83,14 @@ class PriceService:
         """
 
         client = self._client_factory(marketplace, self._http_client)
-        return await client.get_products_data(articles)
+        results = await client.get_products_data(articles)
+        fetched_at = datetime.now(UTC)
+        return {
+            article: result.model_copy(update={"fetched_at": fetched_at})
+            if isinstance(result, MarketplaceProductData)
+            else result
+            for article, result in results.items()
+        }
 
     async def apply_result(
         self,
@@ -109,6 +117,14 @@ class PriceService:
         session: AsyncSession,
     ) -> FetchFailureReason | None:
         """Write a fetch result to the loaded product and notify (no commit)."""
+
+        if (
+            isinstance(market_data, MarketplaceProductData)
+            and market_data.fetched_at is not None
+            and product.price_fetched_at is not None
+            and market_data.fetched_at <= product.price_fetched_at
+        ):
+            return None
 
         alert_repo = self._alert_repo_factory(session)
         user_repo = self._user_repo_factory(session)
@@ -145,7 +161,7 @@ class PriceService:
         product.previous_price = previous_price
         product.current_price = current_price
         product.last_checked_at = now_utc
-        product.price_fetched_at = now_utc
+        product.price_fetched_at = market_data.fetched_at or now_utc
         if product.wb_size_id:
             assert market_data.wb_sizes is not None
             product.wb_size_name = market_data.wb_sizes[product.wb_size_id].name
@@ -221,7 +237,9 @@ class RefreshFailure(StrEnum):
 class RefreshReport:
     """Outcome of a manual refresh.
 
-    `failures` holds non-zero counters only;
+    `updated` includes successful observations already covered by an equal or
+    newer stored observation, even if no write was needed. `failures` holds
+    non-zero counters only;
     `updated + sum(failures.values()) == total`.
     """
 
@@ -460,7 +478,7 @@ class PriceRefresher:
         results: Mapping[int, MarketplaceFetchResult] | None,
         article: int,
     ) -> RefreshFailure | None:
-        """Apply one result in its own transaction; `None` means a fresh price."""
+        """Apply one result; a skipped success is covered by a newer observation."""
 
         try:
             if results is None:
