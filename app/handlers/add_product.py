@@ -151,6 +151,12 @@ async def _finish(callback: CallbackQuery, state: FSMContext, text: str) -> None
     await reply_to_callback(callback, text, reply_markup=main_menu_keyboard())
 
 
+async def _confirmation_is_current(state: FSMContext, message_id: int) -> bool:
+    if await state.get_state() != AddProduct.confirming.state:
+        return False
+    return (await state.get_data()).get(_KEY_CONFIRM_MESSAGE_ID) == message_id
+
+
 async def _send_checking_notice(message: Message) -> Message | None:
     """Send the "checking" notice; a Bot API refusal must not break the step."""
     try:
@@ -808,12 +814,15 @@ def create_router() -> Router:
                 **size_kwargs,
             )
         except ProductLimitExceededError as exc:
+            if not await _confirmation_is_current(state, callback.message.message_id):
+                await callback.answer()
+                return
             await _finish(callback, state, texts.limit_exceeded_text(exc.limit))
         except DuplicateAlertError:
             # A second tap loses the write after the first tap has already
             # cleared this dialog. Reopening the price step would cover the
             # success message and treat the next text as a new amount.
-            if await state.get_state() != AddProduct.confirming.state:
+            if not await _confirmation_is_current(state, callback.message.message_id):
                 await callback.answer()
                 return
             await state.set_state(AddProduct.waiting_target_price)
@@ -824,21 +833,27 @@ def create_router() -> Router:
                 alert_text=texts.ALERT_DUPLICATE_TEXT,
             )
         except MarketplaceNotSupportedError:
+            if not await _confirmation_is_current(state, callback.message.message_id):
+                await callback.answer()
+                return
             await _finish(callback, state, texts.ADD_MARKETPLACE_UNSUPPORTED_TEXT)
         except TargetEqualsCurrentPriceError:
+            if not await _confirmation_is_current(state, callback.message.message_id):
+                await callback.answer()
+                return
             await _finish(callback, state, texts.ADD_TARGET_EQUALS_RESTART_TEXT)
         else:
-            await _finish(
-                callback,
-                state,
-                texts.added_text(
-                    name,
-                    target_price,
-                    alert.direction,
-                    wb_size_id=size[0],
-                    wb_size_name=size[1],
-                ),
+            text = texts.added_text(
+                name,
+                target_price,
+                alert.direction,
+                wb_size_id=size[0],
+                wb_size_name=size[1],
             )
+            if await _confirmation_is_current(state, callback.message.message_id):
+                await _finish(callback, state, text)
+            else:
+                await reply_to_callback(callback, text)
 
     @router.callback_query(F.data == CB_ADD_CONFIRM)
     async def on_stale_confirm(callback: CallbackQuery) -> None:
