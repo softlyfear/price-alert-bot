@@ -21,6 +21,8 @@ line is present in the file -- exactly the failure mode above, where the
 line was present and inert.
 """
 
+from pathlib import Path
+
 import pytest
 
 
@@ -89,3 +91,28 @@ def test_strict_aggregate_key_is_not_enabled(pytestconfig: pytest.Config) -> Non
     specific keys this project wants, ``strict_markers`` and
     ``strict_config``, are allowed to be set."""
     assert pytestconfig.getini("strict") is False
+
+
+def test_gate_runs_the_sync_tool_regressions(pytestconfig: pytest.Config) -> None:
+    """The 20 ``scripts/sync_upstream.py`` regressions guard a helper that
+    mutates checkout state; the documented gate command and CI must collect
+    them (PAB-133). A future edit that drops the second entry would otherwise
+    silently return to the state where they ran nowhere."""
+    testpaths = [path.rstrip("/") for path in pytestconfig.getini("testpaths")]
+
+    assert "tests" in testpaths
+    assert "scripts/tests" in testpaths
+
+
+def test_repository_root_is_on_pythonpath(pytestconfig: pytest.Config) -> None:
+    """``scripts`` is not an installed package: without the checkout root on
+    ``sys.path``, ``from scripts.sync_upstream import ...`` fails at collection
+    with ``ModuleNotFoundError`` even though ``python -m pytest`` works
+    (PAB-133). This reads the applied config, not the file text."""
+    root = Path(pytestconfig.rootpath).resolve()
+    entries = {
+        (root / entry).resolve() if not Path(entry).is_absolute() else Path(entry)
+        for entry in pytestconfig.getini("pythonpath")
+    }
+
+    assert root in entries
