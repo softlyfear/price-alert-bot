@@ -634,6 +634,90 @@ async def test_card_refresh_edits_in_place_to_progress_then_to_the_card_with_a_s
 
 
 @pytest.mark.asyncio
+async def test_card_refresh_keeps_the_card_and_its_buttons_visible_while_waiting(
+    card_dialog: _Dialog, refresher: MagicMock, card_service: MagicMock
+) -> None:
+    """PAB-139: the card must not collapse, so the chat and input stay put."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def refresh(_user: int, _product: int) -> RefreshReport:
+        started.set()
+        await release.wait()
+        return _OK
+
+    refresher.refresh_product.side_effect = refresh
+    keyboard = InlineKeyboardMarkup.model_validate(
+        {
+            "inline_keyboard": [
+                [{"text": text, "callback_data": data} for text, data in row]
+                for row in _CARD_ROWS
+            ]
+        }
+    )
+    update = make_callback_update(
+        f"pref:{PRODUCT_ID}",
+        chat_id=_CHAT,
+        user_id=_USER,
+        message_id=_CARD_ID,
+        message_text=CARD_TEXT,
+        message_markup=keyboard,
+    )
+    update = Update.model_validate(
+        update.model_dump(), context={"bot": card_dialog.bot}
+    )
+    task = asyncio.create_task(card_dialog.feed(update))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        progress = card_dialog.edits[-1]
+        assert progress.text == CARD_TEXT
+        progress_rows = rows(progress)
+        assert len(progress_rows) == len(_CARD_ROWS)
+        assert [[label for label, _ in row] for row in progress_rows] == [
+            [f"✏️ 1{NB}500{NB}₽", "🗑 Убрать"],
+            ["Обновляю цену…"],
+            ["➕ Добавить порог"],
+            ["Перестать следить"],
+            ["← К списку", "Главное меню"],
+        ]
+        assert all(data == "refresh:busy" for row in progress_rows for _, data in row)
+        assert card_dialog.sent == []
+        await card_dialog.press("refresh:busy")
+        assert len(card_dialog.edits) == 1
+        assert _popups(card_dialog) == [(None, None), (None, None)]
+        assert await card_dialog.state() is None
+        assert card_service.get_product_card.await_count == 0
+    finally:
+        release.set()
+        await task
+    assert card_dialog.edits[-1].text == f"Цена обновлена.\n\n{CARD_TEXT}"
+    assert rows(card_dialog.edits[-1]) == _CARD_ROWS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["text", "markup"])
+async def test_card_refresh_without_a_complete_snapshot_uses_compact_progress(
+    card_dialog: _Dialog, refresher: MagicMock, missing: str
+) -> None:
+    """PAB-139 AC4: a partial card snapshot falls back to the one-line screen."""
+    keyboard = InlineKeyboardMarkup.model_validate(
+        {"inline_keyboard": [[{"text": "Refresh", "callback_data": "pref:5"}]]}
+    )
+    update = make_callback_update(
+        f"pref:{PRODUCT_ID}",
+        chat_id=_CHAT,
+        user_id=_USER,
+        message_text=None if missing == "text" else CARD_TEXT,
+        message_markup=None if missing == "markup" else keyboard,
+    )
+    await card_dialog.feed(update)
+
+    assert card_dialog.edits[0].text == "Обновляю цены…"
+    assert rows(card_dialog.edits[0]) == []
+    assert card_dialog.edits[-1].text == f"Цена обновлена.\n\n{CARD_TEXT}"
+
+
+@pytest.mark.asyncio
 async def test_card_refresh_scopes_both_the_refresh_and_the_card_read_to_the_presser(
     card_dialog: _Dialog, refresher: MagicMock, card_service: MagicMock
 ) -> None:

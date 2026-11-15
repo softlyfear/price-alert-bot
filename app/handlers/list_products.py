@@ -111,14 +111,21 @@ async def _list_screen(
 
 
 async def _begin_refresh(
-    callback: CallbackQuery, price_refresher: PriceRefresher, *, keep_list: bool = False
+    callback: CallbackQuery,
+    price_refresher: PriceRefresher,
+    *,
+    keep_screen: bool = False,
+    busy_label: str = texts.REFRESH_IN_PROGRESS_TEXT,
 ) -> Message | None:
     """Spend the refresh budget and show the progress screen.
 
-    Returns ``None`` when nothing must run (stale button or spent budget, the
-    popup is already shown); otherwise the message to edit with the result.
-    The budget is checked before the callback is answered, so the refusal can
-    be a popup.
+    With ``keep_screen`` an accessible message keeps its text and its button
+    grid; only the pressed button is relabelled and every button becomes
+    inert, so the chat does not jump while the prices are fetched. Without it
+    the screen collapses to one line without buttons. Returns ``None`` when
+    nothing must run (stale button or spent budget, the popup is already
+    shown); otherwise the message to edit with the result. The budget is
+    checked before the callback is answered, so the refusal can be a popup.
     """
     if callback.message is None:
         await callback.answer(texts.LIST_STALE_BUTTON_ALERT_TEXT, show_alert=True)
@@ -132,7 +139,7 @@ async def _begin_refresh(
         return None
     message = callback.message
     if (
-        keep_list
+        keep_screen
         and isinstance(message, Message)
         and message.text is not None
         and message.reply_markup is not None
@@ -142,7 +149,7 @@ async def _begin_refresh(
                 [
                     InlineKeyboardButton(
                         text=(
-                            texts.REFRESH_IN_PROGRESS_TEXT
+                            busy_label
                             if button.callback_data == callback.data
                             else button.text
                         ),
@@ -595,7 +602,7 @@ def create_router() -> Router:
     ) -> None:
         """Refresh all prices of the pressing user and redraw list page ``page``."""
         user_id = callback.from_user.id
-        progress = await _begin_refresh(callback, price_refresher, keep_list=True)
+        progress = await _begin_refresh(callback, price_refresher, keep_screen=True)
         if progress is None:
             return
         # _begin_refresh has already returned when the pressed message is missing.
@@ -683,7 +690,12 @@ def create_router() -> Router:
         scoped to the pressing user in SQL.
         """
         user_id = callback.from_user.id
-        progress = await _begin_refresh(callback, price_refresher)
+        progress = await _begin_refresh(
+            callback,
+            price_refresher,
+            keep_screen=True,
+            busy_label=texts.REFRESH_CARD_IN_PROGRESS_TEXT,
+        )
         if progress is None:
             return
         try:

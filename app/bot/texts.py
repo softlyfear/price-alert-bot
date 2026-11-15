@@ -724,6 +724,7 @@ def edit_changed_text(direction: AlertDirection | None, target_price: int) -> st
 REFRESH_LIST_BUTTON_TEXT: Final[str] = "🔄 Обновить цены"
 REFRESH_CARD_BUTTON_TEXT: Final[str] = "🔄 Обновить цену"
 REFRESH_IN_PROGRESS_TEXT: Final[str] = "Обновляю цены…"
+REFRESH_CARD_IN_PROGRESS_TEXT: Final[str] = "Обновляю цену…"
 REFRESH_GONE_TEXT: Final[str] = "Этот товар больше не отслеживается."
 REFRESH_ALL_DONE_TEXT: Final[str] = "Цены обновлены."
 REFRESH_CARD_DONE_TEXT: Final[str] = "Цена обновлена."
