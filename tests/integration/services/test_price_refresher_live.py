@@ -225,19 +225,23 @@ class _FailingApply(PriceService):
     """The real service, except that one product's write fails after it flushed."""
 
     fail_for: int | None = None
-    stall_past: float | None = None
-    """If set, the first write waits (after notifying, before commit) until this
-    loop time is reached; it models the deadline hitting inside a write."""
+    stall_write_seconds: float | None = None
+    """If set, the write waits this long (after notifying, before commit).
+
+    A duration, not a target loop time: the refresher computes its own deadline
+    after the selection query, so a time armed by the test could already be in
+    the past on a slow runner and would silently stop stalling (the CI flake
+    this replaced). A duration longer than `_SHORT_DEADLINE` always leaves the
+    deadline behind the write, on any machine.
+    """
 
     async def apply_result(
         self, product_id: int, result: MarketplaceFetchResult, session: AsyncSession
     ) -> FetchFailureReason | None:
         failure = await super().apply_result(product_id, result, session)
-        if self.stall_past is not None:
-            reached = asyncio.Event()
-            asyncio.get_running_loop().call_at(self.stall_past, reached.set)
-            self.stall_past = None
-            await reached.wait()
+        if self.stall_write_seconds is not None:
+            stall, self.stall_write_seconds = self.stall_write_seconds, None
+            await asyncio.sleep(stall)
         if product_id == self.fail_for:
             raise RuntimeError("boom after the flush")
         return failure
@@ -808,9 +812,8 @@ async def test_an_external_cancel_frees_every_connection(
     assert _checked_out(engine) == 0
 
 
-def _past_short_deadline() -> float:
-    """Loop time a little after the refresher's deadline (taken at its start)."""
-    return asyncio.get_running_loop().time() + _SHORT_DEADLINE + 0.05
+_STALL_WRITE_SECONDS = 0.5
+"""Write stall for the deadline tests: longer than `_SHORT_DEADLINE` by design."""
 
 
 @pytest.mark.asyncio
@@ -827,7 +830,7 @@ async def test_a_write_the_deadline_hits_after_the_notification_stays_committed(
         target=_NEW_PRICE,
     )
     rig = _rig(engine, sessionmaker, deadline=_SHORT_DEADLINE)
-    rig.service.stall_past = _past_short_deadline()
+    rig.service.stall_write_seconds = _STALL_WRITE_SECONDS
 
     async with asyncio.timeout(_HANG_GUARD):
         report = _consistent(await rig.refresher.refresh_list(_TG_A))
@@ -852,7 +855,7 @@ async def test_no_write_starts_after_the_deadline_so_the_rest_stays_untouched(
         for p in ids
     ]
     rig = _rig(engine, sessionmaker, deadline=_SHORT_DEADLINE)
-    rig.service.stall_past = _past_short_deadline()
+    rig.service.stall_write_seconds = _STALL_WRITE_SECONDS
 
     async with asyncio.timeout(_HANG_GUARD):
         report = _consistent(await rig.refresher.refresh_list(_TG_A))
