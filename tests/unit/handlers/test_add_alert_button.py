@@ -349,27 +349,25 @@ async def test_press_on_a_stale_but_priced_card_keeps_the_normal_prompt(
 
 
 @pytest.mark.parametrize(
-    ("failure", "status", "claims_out_of_stock"),
+    ("failure", "claims_out_of_stock"),
     [
-        (ProductFailure.blocked, "Не удалось проверить цену.", False),
-        (ProductFailure.not_found, "Товар не найден на маркетплейсе.", False),
-        (
-            ProductFailure.out_of_stock,
-            "Сейчас товара нет в наличии, поэтому цены у него нет.",
-            True,
-        ),
+        (ProductFailure.blocked, False),
+        (ProductFailure.not_found, False),
+        (ProductFailure.out_of_stock, True),
     ],
 )
 @pytest.mark.asyncio
-async def test_press_on_a_card_without_a_price_names_the_persisted_status(
+async def test_press_on_a_card_without_a_price_names_only_an_observed_absence(
     card_dialog: _Dialog,
     card_service: MagicMock,
     failure: ProductFailure,
-    status: str,
     claims_out_of_stock: bool,
 ) -> None:
-    """PAB-136 Р3: the preview repeats the persisted reason instead of claiming
-    "out of stock" for any failure of a product the bot has no price for."""
+    """PAB-138: the preview repeats no status the bot has not observed.
+
+    Only "нет в наличии" is a fact of the marketplace answer; a block or a
+    missing page keeps the neutral "цены пока нет" wording.
+    """
     unavailable = card()
     unavailable.product.current_price = 0
     unavailable.product.last_failure = failure
@@ -379,8 +377,9 @@ async def test_press_on_a_card_without_a_price_names_the_persisted_status(
 
     text = card_dialog.edits[-1].text
     assert text is not None
-    assert status in text
     assert "₽" not in text
     assert ("Сейчас товара нет в наличии" in text) is claims_out_of_stock
+    assert "Не удалось проверить цену" not in text
+    assert "не найден" not in text.lower()
     data = await card_dialog.data()
     assert data["price_unknown"] is True

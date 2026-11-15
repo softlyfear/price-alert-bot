@@ -158,15 +158,16 @@ def test_direction_arrow_rejects_a_value_outside_the_enum() -> None:
     ("failure", "status"),
     [
         (ProductFailure.out_of_stock, "Сейчас нет в наличии."),
-        (ProductFailure.not_found, "Товар не найден на маркетплейсе."),
-        (ProductFailure.blocked, "Не удалось проверить цену."),
-        (ProductFailure.transport_error, "Не удалось проверить цену."),
-        (ProductFailure.bad_payload, "Не удалось проверить цену."),
+        (ProductFailure.not_found, None),
+        (ProductFailure.blocked, None),
+        (ProductFailure.transport_error, None),
+        (ProductFailure.bad_payload, None),
     ],
 )
-def test_availability_status_text_maps_each_failure(
-    failure: ProductFailure, status: str
+def test_availability_status_text_names_only_an_observed_absence(
+    failure: ProductFailure, status: str | None
 ) -> None:
+    """PAB-138: only "нет в наличии" is a known fact; other failures add no line."""
     assert texts.availability_status_text(failure) == status
 
 
@@ -178,24 +179,47 @@ def test_availability_status_text_is_empty_without_a_failure() -> None:
     ("failure", "short"),
     [
         (ProductFailure.out_of_stock, "Нет в наличии"),
-        (ProductFailure.not_found, "Не найден"),
-        (ProductFailure.blocked, "Не проверено"),
-        (ProductFailure.transport_error, "Не проверено"),
-        (ProductFailure.bad_payload, "Не проверено"),
+        (ProductFailure.not_found, None),
+        (ProductFailure.blocked, None),
+        (ProductFailure.transport_error, None),
+        (ProductFailure.bad_payload, None),
     ],
 )
-def test_availability_short_text_maps_each_failure(
-    failure: ProductFailure, short: str
+def test_availability_short_text_prefixes_only_an_observed_absence(
+    failure: ProductFailure, short: str | None
 ) -> None:
     assert texts.availability_short_text(failure) == short
 
 
-def test_availability_texts_reject_a_value_outside_the_enum() -> None:
-    bogus = cast(ProductFailure, "gone")
-    with pytest.raises(AssertionError):
-        texts.availability_status_text(bogus)
-    with pytest.raises(AssertionError):
-        texts.availability_short_text(bogus)
+def test_availability_short_text_is_empty_without_a_failure() -> None:
+    assert texts.availability_short_text(None) is None
+
+
+def test_only_an_observed_absence_gets_a_status() -> None:
+    """PAB-138: a per-failure status table must not come back unnoticed."""
+    for failure in ProductFailure:
+        expected = failure is ProductFailure.out_of_stock
+        assert (texts.availability_status_text(failure) is not None) is expected
+        assert (texts.availability_short_text(failure) is not None) is expected
+
+
+def test_card_with_a_last_price_and_an_unobserved_failure_prints_no_status() -> None:
+    """PAB-138: the last known price is shown plainly, without an invented status."""
+    text = texts.product_card_text(
+        "Кроссовки",
+        Marketplace.wb,
+        "https://www.wildberries.ru/catalog/1/detail.aspx",
+        1_990_00,
+        [(AlertDirection.below, 1_000_00)],
+        "14:05",
+        last_failure=ProductFailure.not_found,
+    )
+
+    assert f"Последняя известная цена: 1{_NB}990{_NB}₽ (цена на 14:05)" in text
+    assert "не найден" not in text.lower()
+    assert "Не удалось проверить цену" not in text
+    assert "Сейчас нет в наличии" not in text
+    assert "Текущая цена" not in text
 
 
 def test_card_of_an_unavailable_product_labels_the_stale_price_and_status() -> None:
@@ -377,24 +401,26 @@ def test_edit_prompt_with_a_price_keeps_the_inference_hint() -> None:
 
 
 @pytest.mark.parametrize(
-    ("failure", "status"),
+    "failure",
     [
-        (ProductFailure.blocked, "Не удалось проверить цену."),
-        (ProductFailure.transport_error, "Не удалось проверить цену."),
-        (ProductFailure.bad_payload, "Не удалось проверить цену."),
-        (ProductFailure.not_found, "Товар не найден на маркетплейсе."),
+        ProductFailure.blocked,
+        ProductFailure.transport_error,
+        ProductFailure.bad_payload,
+        ProductFailure.not_found,
     ],
 )
-def test_unavailable_offer_does_not_claim_out_of_stock_for_another_failure(
-    failure: ProductFailure, status: str
+def test_unavailable_offer_stays_neutral_for_another_failure(
+    failure: ProductFailure,
 ) -> None:
-    """PAB-136 Р3: the persisted reason is the only source of the wording."""
+    """PAB-138: no status line and no availability claim for an unobserved state."""
     text = texts.product_unavailable_text(
         Marketplace.wb, "Кроссовки", last_failure=failure
     )
 
-    assert text.split("\n")[2] == status
+    assert texts.ADD_NO_PRICE_FOUND_TAIL in text
     assert "Сейчас товара нет в наличии" not in text
+    assert "не найден" not in text.lower()
+    assert "Не удалось проверить цену" not in text
     assert texts.ADD_UNAVAILABLE_PROMPT_PRICE_TEXT in text
 
 

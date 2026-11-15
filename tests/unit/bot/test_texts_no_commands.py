@@ -74,7 +74,9 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
         if (status := texts.availability_status_text(failure)) is not None
     ),
     "availability_short_text": lambda: "\n".join(
-        texts.availability_short_text(failure) for failure in ProductFailure
+        short
+        for failure in ProductFailure
+        if (short := texts.availability_short_text(failure)) is not None
     ),
     "remove_alert_button_text": texts.remove_alert_button_text,
     "edit_alert_button_text": lambda: texts.edit_alert_button_text(

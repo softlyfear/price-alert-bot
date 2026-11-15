@@ -326,17 +326,16 @@ def _short_name(name: str) -> str:
 
 
 def _product_button_text(product: Product) -> str:
-    """List button: the price, or the persisted failure status plus last price."""
+    """List button: the last known price, with an out-of-stock prefix only."""
     name = (
         f"{_short_name(product.product_name)}"
         f"{texts.size_suffix(product.wb_size_id, product.wb_size_name)}"
     )
-    if product.last_failure is not None:
-        status = texts.availability_short_text(product.last_failure)
-        if product.current_price > 0:
-            return f"{status} · {format_price(product.current_price)} · {name}"
-        return f"{status} · {name}"
-    return f"{format_price(product.current_price)} · {name}"
+    parts = [texts.availability_short_text(product.last_failure)]
+    if product.current_price > 0:
+        parts.append(format_price(product.current_price))
+    parts.append(name)
+    return " · ".join(part for part in parts if part is not None)
 
 
 def product_list_keyboard(page: ProductPage) -> InlineKeyboardMarkup:

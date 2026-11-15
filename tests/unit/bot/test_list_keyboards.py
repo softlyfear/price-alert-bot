@@ -95,26 +95,56 @@ def test_list_keyboard_cuts_a_long_name_to_forty_characters_with_ellipsis() -> N
 
 
 @pytest.mark.parametrize(
-    ("failure", "status"),
+    "failure",
     [
-        (ProductFailure.out_of_stock, "Нет в наличии"),
-        (ProductFailure.not_found, "Не найден"),
-        (ProductFailure.blocked, "Не проверено"),
-        (ProductFailure.transport_error, "Не проверено"),
-        (ProductFailure.bad_payload, "Не проверено"),
+        ProductFailure.not_found,
+        ProductFailure.blocked,
+        ProductFailure.transport_error,
+        ProductFailure.bad_payload,
     ],
 )
-def test_list_button_of_a_failed_product_starts_with_the_status(
-    failure: ProductFailure, status: str
+def test_list_button_of_a_failed_product_shows_the_plain_last_price(
+    failure: ProductFailure,
 ) -> None:
-    """PAB-135: the list carries the persisted status, not a bare stale price."""
+    """PAB-138: only out-of-stock is a status; the price is the last known one."""
     product = _product(7, "Кроссовки", 199_000)
     product.last_failure = failure
 
     button = product_list_keyboard(_page([product])).inline_keyboard[0][0]
 
-    assert button.text == f"{status} · 1{_NB}990{_NB}₽ · Кроссовки"
+    assert button.text == f"1{_NB}990{_NB}₽ · Кроссовки"
     assert button.callback_data == "pcard:7"
+
+
+def test_list_button_of_an_out_of_stock_product_keeps_the_status_and_price() -> None:
+    product = _product(7, "Кроссовки", 199_000)
+    product.last_failure = ProductFailure.out_of_stock
+
+    button = product_list_keyboard(_page([product])).inline_keyboard[0][0]
+
+    assert button.text == f"Нет в наличии · 1{_NB}990{_NB}₽ · Кроссовки"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ProductFailure.not_found,
+        ProductFailure.blocked,
+        ProductFailure.transport_error,
+        ProductFailure.bad_payload,
+    ],
+)
+def test_list_button_of_a_failed_product_without_a_price_shows_only_the_name(
+    failure: ProductFailure,
+) -> None:
+    """PAB-138: an unobserved failure must not turn an unknown price into 0 ₽."""
+    product = _product(7, "Кроссовки", 0)
+    product.last_failure = failure
+
+    button = product_list_keyboard(_page([product])).inline_keyboard[0][0]
+
+    assert button.text == "Кроссовки"
+    assert "₽" not in button.text
 
 
 def test_list_button_of_a_failed_product_without_a_price_has_no_amount() -> None:

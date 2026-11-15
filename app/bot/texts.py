@@ -506,17 +506,14 @@ def product_unavailable_text(
 ) -> str:
     """Preview card of a product the bot has no price for (PAB-136).
 
-    The wording follows the persisted status (Р3): only a product whose last
-    check said `out_of_stock` is called out of stock. Any other failure keeps
-    its own status line and does not claim an availability fact the bot has
-    not observed.
+    Only `out_of_stock` is named; any other failure keeps the neutral wording,
+    because the user asked for a plain last price and no extra status lines
+    (PAB-138).
     """
     if last_failure is None or last_failure is ProductFailure.out_of_stock:
         tail = ADD_OUT_OF_STOCK_FOUND_TEXT
     else:
-        status = availability_status_text(last_failure)
-        assert status is not None
-        tail = f"{status}\n{ADD_NO_PRICE_FOUND_TAIL}"
+        tail = ADD_NO_PRICE_FOUND_TAIL
     return (
         f"Нашёл товар на {marketplace_title(marketplace)}:\n{name}"
         f"{size_suffix(wb_size_id, wb_size_name)}\n{tail}"
@@ -578,39 +575,22 @@ def list_text(total: int, page: int, pages: int, price_label: str | None = None)
 
 
 def availability_status_text(failure: ProductFailure | None) -> str | None:
-    """Card status of the last fetch failure; `None` means the price is current."""
-    match failure:
-        case None:
-            return None
-        case ProductFailure.out_of_stock:
-            return "Сейчас нет в наличии."
-        case ProductFailure.not_found:
-            return "Товар не найден на маркетплейсе."
-        case (
-            ProductFailure.blocked
-            | ProductFailure.transport_error
-            | ProductFailure.bad_payload
-        ):
-            return "Не удалось проверить цену."
-        case _:
-            assert_never(failure)
+    """Card line for a product that cannot be bought right now.
+
+    Only `out_of_stock` is a fact worth printing: the user asked for a plain
+    last price otherwise, so a transport block or a missing page does not put
+    a status line on the card (PAB-138).
+    """
+    if failure is ProductFailure.out_of_stock:
+        return "Сейчас нет в наличии."
+    return None
 
 
-def availability_short_text(failure: ProductFailure) -> str:
-    """Short status of a failed product for a list button."""
-    match failure:
-        case ProductFailure.out_of_stock:
-            return "Нет в наличии"
-        case ProductFailure.not_found:
-            return "Не найден"
-        case (
-            ProductFailure.blocked
-            | ProductFailure.transport_error
-            | ProductFailure.bad_payload
-        ):
-            return "Не проверено"
-        case _:
-            assert_never(failure)
+def availability_short_text(failure: ProductFailure | None) -> str | None:
+    """Short list-button prefix, only when the product is out of stock."""
+    if failure is ProductFailure.out_of_stock:
+        return "Нет в наличии"
+    return None
 
 
 def product_card_text(
