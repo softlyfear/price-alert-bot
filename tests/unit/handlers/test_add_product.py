@@ -288,6 +288,8 @@ async def test_found_product_card_has_name_price_disclaimer_and_plain_text(
     assert _without_stamp(await dialog.data(), before, after) == {
         "wb_size_id": 0,
         "wb_size_name": None,
+        "price_unknown": False,
+        "direction": None,
         "marketplace": "wb",
         "article": 12345678,
         "product_name": _NAME,
@@ -1261,6 +1263,8 @@ async def test_second_link_finishing_first_wins_and_first_is_dropped(
     assert _without_stamp(await dialog.data(), before, after) == {
         "wb_size_id": 0,
         "wb_size_name": None,
+        "price_unknown": False,
+        "direction": None,
         "marketplace": "wb",
         "article": 22222222,
         "product_name": _NAME_B,

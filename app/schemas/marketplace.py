@@ -85,6 +85,9 @@ class MarketplaceFetchFailure(BaseModel):
 
     reason: FetchFailureReason
     detail: Annotated[str | None, Field(max_length=500)] = None
+    # Set only when the product itself was identified but has no price to
+    # track (`out_of_stock`): the add dialog offers to track it anyway.
+    product_name: Annotated[str | None, Field(max_length=150)] = None
 
 
 type MarketplaceFetchResult = MarketplaceProductData | MarketplaceFetchFailure

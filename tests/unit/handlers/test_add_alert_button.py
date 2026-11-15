@@ -24,6 +24,7 @@ from app.bot.keyboards import CB_ADD_CONFIRM
 from app.domain.exceptions import ProductLimitExceededError
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from tests.unit.conftest import sent_message_id
 from tests.unit.handlers.add_dialog_support import _CARD_ID
 from tests.unit.handlers.add_dialog_support import _CHAT
@@ -49,6 +50,8 @@ _DRAFT_FROM_DB: dict[str, Any] = {
     "article": DB_ARTICLE,
     "wb_size_id": 0,
     "wb_size_name": None,
+    "price_unknown": False,
+    "direction": None,
     "product_name": DB_NAME,
     "current_price": DB_PRICE,
     "price_fetched_at": DB_FETCHED_AT.isoformat(),
@@ -302,3 +305,82 @@ async def test_broken_add_payload_gets_the_stale_reply_and_never_reaches_the_ser
     assert [type(r) for r in card_dialog.requests] == [AnswerCallbackQuery]
     assert await card_dialog.state() == EDIT_STATE
     assert await card_dialog.data() == EDIT_DATA
+
+
+@pytest.mark.asyncio
+async def test_press_on_an_unavailable_card_asks_for_the_direction(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    """PAB-136: the direction cannot come from a price the card does not have."""
+    unavailable = card()
+    unavailable.product.current_price = 0
+    unavailable.product.last_failure = ProductFailure.out_of_stock
+    card_service.get_product_card.return_value = unavailable
+
+    await card_dialog.press(f"aadd:{PRODUCT_ID}")
+
+    edit = card_dialog.edits[-1]
+    assert edit.text == texts.product_unavailable_text(Marketplace.wb, DB_NAME)
+    assert "₽" not in edit.text
+    assert await card_dialog.state() == "AddProduct:waiting_target_price"
+    data = await card_dialog.data()
+    assert data["price_unknown"] is True
+    assert data["current_price"] == 0
+    assert data["price_fetched_at"] == DB_FETCHED_AT.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_press_on_a_stale_but_priced_card_keeps_the_normal_prompt(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    """PAB-136: only an absent price forces the explicit direction; a known
+    price keeps the ordinary prompt that names it."""
+    stale = card()
+    stale.product.last_failure = ProductFailure.blocked
+    card_service.get_product_card.return_value = stale
+
+    await card_dialog.press(f"aadd:{PRODUCT_ID}")
+
+    edit = card_dialog.edits[-1]
+    assert edit.text == texts.product_found_text(Marketplace.wb, DB_NAME, DB_PRICE)
+    data = await card_dialog.data()
+    assert data["price_unknown"] is False
+    assert data["current_price"] == DB_PRICE
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "claims_out_of_stock"),
+    [
+        (ProductFailure.blocked, "Не удалось проверить цену.", False),
+        (ProductFailure.not_found, "Товар не найден на маркетплейсе.", False),
+        (
+            ProductFailure.out_of_stock,
+            "Сейчас товара нет в наличии, поэтому цены у него нет.",
+            True,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_press_on_a_card_without_a_price_names_the_persisted_status(
+    card_dialog: _Dialog,
+    card_service: MagicMock,
+    failure: ProductFailure,
+    status: str,
+    claims_out_of_stock: bool,
+) -> None:
+    """PAB-136 Р3: the preview repeats the persisted reason instead of claiming
+    "out of stock" for any failure of a product the bot has no price for."""
+    unavailable = card()
+    unavailable.product.current_price = 0
+    unavailable.product.last_failure = failure
+    card_service.get_product_card.return_value = unavailable
+
+    await card_dialog.press(f"aadd:{PRODUCT_ID}")
+
+    text = card_dialog.edits[-1].text
+    assert text is not None
+    assert status in text
+    assert "₽" not in text
+    assert ("Сейчас товара нет в наличии" in text) is claims_out_of_stock
+    data = await card_dialog.data()
+    assert data["price_unknown"] is True

@@ -70,8 +70,9 @@ async def test_missing_or_unpriced_selection_is_stock_failure(
         selected.pop("price", None)
     result = await _fetch(payload, batch=batch)
     assert isinstance(result, MarketplaceProductData)
-    assert select_wb_size(result, _SIZE) == MarketplaceFetchFailure(
-        reason=FetchFailureReason.out_of_stock
+    failure = select_wb_size(result, _SIZE)
+    assert failure == MarketplaceFetchFailure(
+        reason=FetchFailureReason.out_of_stock, product_name=result.name
     )
     assert result.price == 521900
 

@@ -9,6 +9,7 @@ class AddProduct(StatesGroup):
 
     waiting_link = State()
     waiting_target_price = State()
+    waiting_direction = State()
     confirming = State()
 
 

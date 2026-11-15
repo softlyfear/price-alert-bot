@@ -42,7 +42,9 @@ def select_wb_size(
         return result
     size = result.wb_sizes.get(wb_size_id) if result.wb_sizes is not None else None
     if size is None or size.price is None:
-        return MarketplaceFetchFailure(reason=FetchFailureReason.out_of_stock)
+        return MarketplaceFetchFailure(
+            reason=FetchFailureReason.out_of_stock, product_name=result.name
+        )
     return result.model_copy(update={"price": size.price})
 
 

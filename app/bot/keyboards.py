@@ -19,6 +19,7 @@ from app.bot import texts
 from app.domain.links import MAX_ARTICLE
 from app.domain.money import format_price
 from app.models.alert import Alert
+from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.models.product import Product
 from app.services.tracking import ProductPage
@@ -151,6 +152,12 @@ class AddShortLinkCb(CallbackData, prefix="addsl"):
     code: str
 
 
+class AddDirectionCb(CallbackData, prefix="adddir"):
+    """Pick the threshold direction of a product that has no price yet."""
+
+    direction: AlertDirection
+
+
 def _button(text: str, callback_data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
@@ -267,6 +274,29 @@ def duplicate_exit_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_button(texts.LIST_BACK_TO_LIST_BUTTON_TEXT, CB_DLG_LIST)],
             [_button(texts.MENU_MAIN_BUTTON_TEXT, CB_DLG_MENU)],
+        ]
+    )
+
+
+def direction_keyboard() -> InlineKeyboardMarkup:
+    """Direction step of a product without a price: two choices and cancel."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    texts.ADD_DIRECTION_BELOW_BUTTON_TEXT,
+                    AddDirectionCb(direction=AlertDirection.below).pack(),
+                ),
+                _button(
+                    texts.ADD_DIRECTION_ABOVE_BUTTON_TEXT,
+                    AddDirectionCb(direction=AlertDirection.above).pack(),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=texts.CANCEL_BUTTON_TEXT, callback_data=CB_ADD_CANCEL
+                )
+            ],
         ]
     )
 

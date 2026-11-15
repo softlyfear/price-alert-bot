@@ -70,6 +70,7 @@ class _TrackingStub:
         self.preview_sizes: list[int] = []
         self.add_calls: list[tuple[Any, ...]] = []
         self.add_fetched_at: list[datetime | None] = []
+        self.add_directions: list[AlertDirection | None] = []
         self.preview_result: Any = MarketplaceProductData(name=_NAME, price=_PRICE)
         self.preview_error: Exception | None = None
         self.add_error: Exception | None = None
@@ -126,11 +127,13 @@ class _TrackingStub:
         self,
         *args: Any,
         price_fetched_at: datetime | None,
+        direction: AlertDirection | None = None,
         wb_size_id: int = 0,
         wb_size_name: str | None = None,
     ) -> Alert:
         self.add_calls.append(args)
         self.add_fetched_at.append(price_fetched_at)
+        self.add_directions.append(direction)
         if self.add_error is not None:
             raise self.add_error
         return Alert(
@@ -138,7 +141,7 @@ class _TrackingStub:
             user_id=1,
             product_id=1,
             target_price=args[5],
-            direction=self.add_direction,
+            direction=direction or self.add_direction,
         )
 
 

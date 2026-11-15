@@ -267,7 +267,11 @@ async def test_product_without_any_priced_size_is_out_of_stock() -> None:
     results = await _fetch(_recording(httpx.Response(200, content=body), []), [1, 2])
 
     assert results == {
-        1: _failure(FetchFailureReason.out_of_stock, "no size has a price"),
+        1: MarketplaceFetchFailure(
+            reason=FetchFailureReason.out_of_stock,
+            detail="no size has a price",
+            product_name="Товар",
+        ),
         2: MarketplaceProductData(name="Товар", price=9900, wb_sizes={}),
     }
 

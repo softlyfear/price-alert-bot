@@ -19,6 +19,7 @@ from datetime import UTC
 from datetime import datetime
 from typing import Any
 from typing import cast
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -34,6 +35,7 @@ from app.domain.exceptions import TargetEqualsCurrentPriceError
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.models.product import Product
 from app.models.user import User
 from app.repositories.alert import AlertRepository
@@ -41,6 +43,8 @@ from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
+from app.services.notification import NotificationService
+from app.services.price_service import PriceService
 from app.services.tracking import TrackingService
 
 pytestmark = pytest.mark.asyncio
@@ -629,3 +633,107 @@ async def test_preview_at_personal_limit_refuses_without_a_marketplace_request(
 
     assert excinfo.value.limit == 1
     assert client.fetches == 0
+
+
+async def test_adding_an_unavailable_product_stores_no_price_and_the_status(
+    db_session: AsyncSession,
+) -> None:
+    """PAB-136: a product with no price is tracked with the chosen direction.
+
+    Nothing is invented: no price, no initial price, no freshness stamp, and
+    the persisted status keeps the card honest until the first success.
+    """
+    tg, article = next(_tg_ids), next(_articles)
+
+    alert = await TrackingService(
+        session=db_session,
+        http_client=cast(httpx.AsyncClient, None),
+        client_factory=lambda _m, _h: _CountingClient(),
+        max_products_per_user=50,
+    ).add_tracking(
+        tg,
+        _WB,
+        article,
+        "Без наличия",
+        0,
+        9_000,
+        price_fetched_at=None,
+        direction=AlertDirection.above,
+    )
+
+    product = (
+        await db_session.execute(select(Product).where(Product.id == alert.product_id))
+    ).scalar_one()
+    assert alert.direction is AlertDirection.above
+    assert alert.is_active is True
+    assert (product.current_price, product.initial_price) == (0, None)
+    assert product.price_fetched_at is None
+    assert product.last_failure is ProductFailure.out_of_stock
+
+
+async def test_first_success_of_a_product_added_without_a_price_fills_it_in(
+    db_session: AsyncSession,
+) -> None:
+    """PAB-136: the first successful check installs the price, clears the
+    status, and leaves the initial price empty because it was never observed."""
+    tg, article = next(_tg_ids), next(_articles)
+    service = TrackingService(
+        session=db_session,
+        http_client=cast(httpx.AsyncClient, None),
+        client_factory=lambda _m, _h: _CountingClient(),
+        max_products_per_user=50,
+    )
+    alert = await service.add_tracking(
+        tg,
+        _WB,
+        article,
+        "Без наличия",
+        0,
+        9_000,
+        price_fetched_at=None,
+        direction=AlertDirection.above,
+    )
+    notifications = MagicMock(spec=NotificationService)
+    notifications.send_alert.return_value = None
+    price_service = PriceService(
+        notification_service=cast(NotificationService, notifications),
+        product_repo_factory=ProductRepository,
+        alert_repo_factory=AlertRepository,
+        user_repo_factory=UserRepository,
+        client_factory=lambda _m, _h: _CountingClient(),
+        http_client=cast(httpx.AsyncClient, None),
+        alert_cooldown_seconds=86_400,
+    )
+
+    failure = await price_service.apply_result(
+        alert.product_id,
+        MarketplaceProductData(name="Без наличия", price=15_000),
+        db_session,
+    )
+
+    assert failure is None
+    row = (
+        await db_session.execute(select(Product).where(Product.id == alert.product_id))
+    ).scalar_one()
+    assert (row.current_price, row.previous_price) == (15_000, 0)
+    assert row.initial_price is None
+    assert row.last_failure is None
+    assert row.price_fetched_at is not None
+    notifications.send_alert.assert_awaited()
+
+
+async def test_inference_path_with_a_zero_price_keeps_the_legacy_row_shape(
+    db_session: AsyncSession,
+) -> None:
+    """PAB-136: `no_price` is an explicit flag, so the inference path keeps its
+    old shape even for a zero price (no bot caller sends that combination)."""
+    tg, article = next(_tg_ids), next(_articles)
+
+    alert = await _add(_service(db_session), tg, article, target=5_000, price=0)
+
+    product = (
+        await db_session.execute(select(Product).where(Product.id == alert.product_id))
+    ).scalar_one()
+    assert alert.direction is AlertDirection.above
+    assert (product.current_price, product.initial_price) == (0, 0)
+    assert product.last_failure is None

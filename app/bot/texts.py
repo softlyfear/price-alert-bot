@@ -226,6 +226,35 @@ ADD_PROMPT_PRICE_TEXT: Final[str] = (
     "сообщу, когда цена вырастет до неё. Чтобы выйти, нажмите «Отмена»."
 )
 
+ADD_UNAVAILABLE_PROMPT_PRICE_TEXT: Final[str] = (
+    "Укажите пороговую цену в рублях, например 1990 или 1990,50. Цены сейчас "
+    "нет, поэтому направление я спрошу отдельно. Чтобы выйти, нажмите «Отмена»."
+)
+
+ADD_OUT_OF_STOCK_FOUND_TEXT: Final[str] = (
+    "Сейчас товара нет в наличии, поэтому цены у него нет. Я могу следить за "
+    "ним и сообщить, когда цена появится.\n\n" + ADD_UNAVAILABLE_PROMPT_PRICE_TEXT
+)
+
+ADD_NO_PRICE_FOUND_TAIL: Final[str] = (
+    "Цены у него пока нет, но я могу следить за ним и сообщить, когда она "
+    "появится.\n\n" + ADD_UNAVAILABLE_PROMPT_PRICE_TEXT
+)
+
+ADD_DIRECTION_PROMPT_TEXT: Final[str] = (
+    "Цены пока нет, поэтому направление выбрать автоматически нельзя. "
+    "Сообщить, когда цена появится и окажется ниже порога или выше него?"
+)
+
+ADD_DIRECTION_BELOW_BUTTON_TEXT: Final[str] = "📉 Ниже порога"
+ADD_DIRECTION_ABOVE_BUTTON_TEXT: Final[str] = "📈 Выше порога"
+
+ADD_UNKNOWN_PRICE_LINE: Final[str] = (
+    "Сейчас товара нет в наличии, цена пока неизвестна."
+)
+
+EDIT_UNKNOWN_PRICE_LINE: Final[str] = "Цена пока неизвестна."
+
 ADD_PRICE_INVALID_TEXT: Final[str] = (
     "Не получилось понять цену. Пришлите положительное число в рублях, "
     f"не более {format_price(MAX_PRICE_KOPECKS)}, с копейками не больше двух "
@@ -446,14 +475,51 @@ def confirm_text(
     *,
     wb_size_id: int = 0,
     wb_size_name: str | None = None,
+    price_unknown: bool = False,
 ) -> str:
-    """Confirmation step text (plain text, no markup)."""
+    """Confirmation step text (plain text, no markup).
+
+    `price_unknown` replaces the current-price line with the honest statement
+    that the product is unavailable and has no price yet (PAB-136).
+    """
+    price_line = (
+        ADD_UNKNOWN_PRICE_LINE
+        if price_unknown
+        else f"Текущая цена: {format_price(current_price)}"
+    )
     return (
         "Проверьте и подтвердите:\n"
         f"Товар: {name}{size_suffix(wb_size_id, wb_size_name)}\n"
-        f"Текущая цена: {format_price(current_price)}\n"
+        f"{price_line}\n"
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}."
+    )
+
+
+def product_unavailable_text(
+    marketplace: Marketplace,
+    name: str,
+    *,
+    wb_size_id: int = 0,
+    wb_size_name: str | None = None,
+    last_failure: ProductFailure | None = None,
+) -> str:
+    """Preview card of a product the bot has no price for (PAB-136).
+
+    The wording follows the persisted status (Р3): only a product whose last
+    check said `out_of_stock` is called out of stock. Any other failure keeps
+    its own status line and does not claim an availability fact the bot has
+    not observed.
+    """
+    if last_failure is None or last_failure is ProductFailure.out_of_stock:
+        tail = ADD_OUT_OF_STOCK_FOUND_TEXT
+    else:
+        status = availability_status_text(last_failure)
+        assert status is not None
+        tail = f"{status}\n{ADD_NO_PRICE_FOUND_TAIL}"
+    return (
+        f"Нашёл товар на {marketplace_title(marketplace)}:\n{name}"
+        f"{size_suffix(wb_size_id, wb_size_name)}\n{tail}"
     )
 
 
@@ -472,10 +538,17 @@ def added_text(
     *,
     wb_size_id: int = 0,
     wb_size_name: str | None = None,
+    price_unknown: bool = False,
 ) -> str:
-    """Tracking added successfully (plain text, no markup)."""
+    """Tracking added successfully (plain text, no markup).
+
+    `price_unknown` states that the product is unavailable instead of claiming
+    a price the bot does not have (PAB-136).
+    """
+    price_line = f"{ADD_UNKNOWN_PRICE_LINE}\n" if price_unknown else ""
     return (
         f"Отслеживание добавлено: {name}{size_suffix(wb_size_id, wb_size_name)}.\n"
+        f"{price_line}"
         f"Сообщу, когда {direction_phrase(direction, target_price)}.\n"
         f"{PRICE_DISCLAIMER_SHORT}.\n\n" + SOUND_REMINDER_TEXT
     )
@@ -629,16 +702,33 @@ def edit_prompt_text(
     wb_size_id: int = 0,
     wb_size_name: str | None = None,
 ) -> str:
-    """Prompt of the threshold edit step (plain text, no markup)."""
-    return (
-        f"{name}{size_suffix(wb_size_id, wb_size_name)}\n"
-        f"Текущая цена: {format_price(current_price)}\n"
-        f"{PRICE_DISCLAIMER_SHORT}.\n"
-        f"Изменяемый порог: {direction_arrow(direction)} "
-        f"{format_price(target_price)}\n\n"
+    """Prompt of the threshold edit step (plain text, no markup).
+
+    A product without a known price (PAB-136) says so instead of showing
+    `0 ₽`, and the hint does not promise an inference it cannot make.
+    """
+    price_known = current_price > 0
+    price_line = (
+        f"Текущая цена: {format_price(current_price)}"
+        if price_known
+        else EDIT_UNKNOWN_PRICE_LINE
+    )
+    hint = (
         "Введите новую сумму в рублях, например 1990 или 1990,50. Если она "
         "ниже текущей цены — сообщу, когда цена снизится до неё; если выше — "
         "когда вырастет. Чтобы выйти, нажмите «Отмена»."
+        if price_known
+        else "Введите новую сумму в рублях, например 1990 или 1990,50. "
+        "Направление останется прежним: цены пока нет, сравнивать не с чем. "
+        "Чтобы выйти, нажмите «Отмена»."
+    )
+    return (
+        f"{name}{size_suffix(wb_size_id, wb_size_name)}\n"
+        f"{price_line}\n"
+        f"{PRICE_DISCLAIMER_SHORT}.\n"
+        f"Изменяемый порог: {direction_arrow(direction)} "
+        f"{format_price(target_price)}\n\n"
+        f"{hint}"
     )
 
 

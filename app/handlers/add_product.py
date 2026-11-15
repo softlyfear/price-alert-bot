@@ -44,11 +44,13 @@ from app.bot.keyboards import CB_ADD_CANCEL
 from app.bot.keyboards import CB_ADD_CONFIRM
 from app.bot.keyboards import CB_MENU_ADD
 from app.bot.keyboards import AddArticleCb
+from app.bot.keyboards import AddDirectionCb
 from app.bot.keyboards import AddRefCb
 from app.bot.keyboards import AddShortLinkCb
 from app.bot.keyboards import AddWbSizeCb
 from app.bot.keyboards import cancel_keyboard
 from app.bot.keyboards import confirm_keyboard
+from app.bot.keyboards import direction_keyboard
 from app.bot.keyboards import duplicate_exit_keyboard
 from app.bot.keyboards import main_menu_keyboard
 from app.bot.states import AddProduct
@@ -72,6 +74,7 @@ from app.domain.thresholds import choose_direction
 from app.handlers.callback_reply import edit_callback_message
 from app.handlers.callback_reply import reply_to_callback
 from app.handlers.product_card import card_screen
+from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
@@ -91,6 +94,8 @@ _KEY_PROMPT_MESSAGE_ID = "prompt_message_id"
 _KEY_PRICE_FETCHED_AT = "price_fetched_at"
 _KEY_WB_SIZE_ID = "wb_size_id"
 _KEY_WB_SIZE_NAME = "wb_size_name"
+_KEY_PRICE_UNKNOWN = "price_unknown"
+_KEY_DIRECTION = "direction"
 
 
 class _SizeKwargs(TypedDict):
@@ -316,11 +321,14 @@ async def enter_price_step(
     price_fetched_at: datetime | None,
     wb_size_id: int = 0,
     wb_size_name: str | None = None,
+    price_unknown: bool = False,
 ) -> None:
     """Move the dialog to the threshold step with the product draft in FSM.
 
     The timestamp key is always written (ISO string or None) so a previous
-    draft's value never leaks into this product.
+    draft's value never leaks into this product. `price_unknown` marks a
+    product the marketplace currently has no price for: the direction cannot
+    be derived from an amount, so the dialog asks for it explicitly (PAB-136).
     """
     await state.update_data(
         {
@@ -330,6 +338,8 @@ async def enter_price_step(
             _KEY_CURRENT_PRICE: price,
             _KEY_WB_SIZE_ID: wb_size_id,
             _KEY_WB_SIZE_NAME: wb_size_name,
+            _KEY_PRICE_UNKNOWN: price_unknown,
+            _KEY_DIRECTION: None,
             _KEY_PRICE_FETCHED_AT: (
                 price_fetched_at.isoformat() if price_fetched_at is not None else None
             ),
@@ -488,6 +498,30 @@ async def _check_and_deliver(
     if await _discard_if_stale(marker, notice, state, user_id):
         return
     if isinstance(result, MarketplaceFetchFailure):
+        size_id = target.wb_size_id if isinstance(target, ProductRef) else 0
+        if result.reason is FetchFailureReason.out_of_stock and result.product_name:
+            # The product exists but has no price to track: offer tracking it
+            # with an explicitly chosen direction (PAB-136).
+            await enter_price_step(
+                state,
+                marketplace,
+                target.article,
+                result.product_name,
+                0,
+                price_fetched_at=None,
+                wb_size_id=size_id,
+                price_unknown=True,
+            )
+            await _deliver_outcome(
+                anchor,
+                notice,
+                texts.product_unavailable_text(
+                    marketplace, result.product_name, wb_size_id=size_id
+                ),
+                reply_markup=cancel_keyboard(),
+                parse_mode=None,
+            )
+            return
         match target:
             case BareArticle():
                 failure = texts.article_failure_text(marketplace, result.reason)
@@ -752,6 +786,14 @@ def create_router() -> Router:
                 texts.ADD_STALE_TEXT, reply_markup=main_menu_keyboard()
             )
             return
+        if data.get(_KEY_PRICE_UNKNOWN) is True:
+            await state.update_data({_KEY_TARGET_PRICE: target_price})
+            await state.set_state(AddProduct.waiting_direction)
+            await message.answer(
+                texts.ADD_DIRECTION_PROMPT_TEXT,
+                reply_markup=direction_keyboard(),
+            )
+            return
         try:
             direction = choose_direction(current_price, target_price)
         except TargetEqualsCurrentPriceError:
@@ -782,6 +824,62 @@ def create_router() -> Router:
     async def on_not_text(message: Message) -> None:
         """Non-text input on a text step: explain, keep the state."""
         await message.answer(texts.ADD_NOT_TEXT_TEXT, reply_markup=cancel_keyboard())
+
+    @router.callback_query(
+        StateFilter(AddProduct.waiting_direction), AddDirectionCb.filter()
+    )
+    async def on_direction(
+        callback: CallbackQuery, callback_data: AddDirectionCb, state: FSMContext
+    ) -> None:
+        """Store the direction chosen for a product without a price, then confirm.
+
+        The direction is user input: the dialog cannot derive it from an amount
+        when no price is known (PAB-136).
+        """
+        data = await state.get_data()
+        name = data.get(_KEY_NAME)
+        target_price = data.get(_KEY_TARGET_PRICE)
+        size = _draft_size(data)
+        if (
+            data.get(_KEY_PRICE_UNKNOWN) is not True
+            or not isinstance(name, str)
+            or not isinstance(target_price, int)
+            or size is None
+        ):
+            await _finish(callback, state, texts.ADD_STALE_TEXT)
+            return
+        await state.update_data({_KEY_DIRECTION: callback_data.direction.value})
+        await state.set_state(AddProduct.confirming)
+        shown = await edit_callback_message(
+            callback,
+            texts.confirm_text(
+                name,
+                0,
+                target_price,
+                callback_data.direction,
+                wb_size_id=size[0],
+                wb_size_name=size[1],
+                price_unknown=True,
+            ),
+            reply_markup=confirm_keyboard(),
+            alert_text=texts.ADD_STALE_ALERT_TEXT,
+        )
+        # A message-less callback cannot reach a state-filtered handler: the FSM
+        # chat identity comes from the pressed message, so `shown` is a message.
+        assert shown is not None
+        await state.update_data({_KEY_CONFIRM_MESSAGE_ID: shown.message_id})
+
+    @router.callback_query(F.data.startswith(AddDirectionCb.__prefix__))
+    async def on_stale_add_direction(callback: CallbackQuery) -> None:
+        """Forged or out-of-order direction payload: never touch the service."""
+        await callback.answer(texts.ADD_STALE_ALERT_TEXT, show_alert=True)
+
+    @router.message(StateFilter(AddProduct.waiting_direction))
+    async def on_direction_input(message: Message) -> None:
+        """Only the buttons pick a direction: keep the step and re-prompt."""
+        await message.answer(
+            texts.ADD_DIRECTION_PROMPT_TEXT, reply_markup=direction_keyboard()
+        )
 
     @router.message(StateFilter(AddProduct.confirming))
     async def on_text_while_confirming(message: Message, state: FSMContext) -> None:
@@ -836,6 +934,18 @@ def create_router() -> Router:
         ):
             await _finish(callback, state, texts.ADD_STALE_TEXT)
             return
+        price_unknown = data.get(_KEY_PRICE_UNKNOWN) is True
+        direction_kwargs: dict[str, AlertDirection] = {}
+        if price_unknown:
+            raw_direction = data.get(_KEY_DIRECTION)
+            if not isinstance(raw_direction, str):
+                await _finish(callback, state, texts.ADD_STALE_TEXT)
+                return
+            try:
+                direction_kwargs["direction"] = AlertDirection(raw_direction)
+            except ValueError:
+                await _finish(callback, state, texts.ADD_STALE_TEXT)
+                return
         try:
             size_kwargs: _SizeKwargs = (
                 {"wb_size_id": size[0], "wb_size_name": size[1]} if size[0] else {}
@@ -849,6 +959,7 @@ def create_router() -> Router:
                 target_price,
                 price_fetched_at=_parse_fetched_at(data.get(_KEY_PRICE_FETCHED_AT)),
                 **size_kwargs,
+                **direction_kwargs,
             )
         except ProductLimitExceededError as exc:
             if not await _confirmation_is_current(state, callback.message.message_id):
@@ -886,6 +997,7 @@ def create_router() -> Router:
                 alert.direction,
                 wb_size_id=size[0],
                 wb_size_name=size[1],
+                price_unknown=price_unknown,
             )
             if await _confirmation_is_current(state, callback.message.message_id):
                 await _finish(callback, state, text)

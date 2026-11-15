@@ -51,6 +51,9 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
     "product_found_text": lambda: texts.product_found_text(
         Marketplace.wb, "Item", 1_990_00
     ),
+    "product_unavailable_text": lambda: texts.product_unavailable_text(
+        Marketplace.wb, "Item"
+    ),
     "confirm_text": lambda: texts.confirm_text(
         "Item", 1_990_00, 1_000_00, AlertDirection.below
     ),

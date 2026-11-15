@@ -395,24 +395,39 @@ def create_router() -> Router:
             return
         product = card.product
         await state.clear()
+        # Only an absent price forces the explicit direction: there is nothing
+        # to compare the amount with. A stale-but-known price keeps the usual
+        # inference, so the prompt can still name it honestly (PAB-136).
+        unavailable = product.current_price <= 0
         await enter_price_step(
             state,
             product.marketplace,
             product.article,
             product.product_name,
-            product.current_price,
+            0 if unavailable else product.current_price,
             price_fetched_at=product.price_fetched_at,
             wb_size_id=product.wb_size_id,
             wb_size_name=product.wb_size_name,
+            price_unknown=unavailable,
         )
         await edit_callback_message(
             callback,
-            texts.product_found_text(
-                product.marketplace,
-                product.product_name,
-                product.current_price,
-                wb_size_id=product.wb_size_id,
-                wb_size_name=product.wb_size_name,
+            (
+                texts.product_unavailable_text(
+                    product.marketplace,
+                    product.product_name,
+                    wb_size_id=product.wb_size_id,
+                    wb_size_name=product.wb_size_name,
+                    last_failure=product.last_failure,
+                )
+                if unavailable
+                else texts.product_found_text(
+                    product.marketplace,
+                    product.product_name,
+                    product.current_price,
+                    wb_size_id=product.wb_size_id,
+                    wb_size_name=product.wb_size_name,
+                )
             ),
             reply_markup=cancel_keyboard(),
             alert_text=texts.LIST_STALE_BUTTON_ALERT_TEXT,

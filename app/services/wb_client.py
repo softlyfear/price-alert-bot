@@ -48,6 +48,17 @@ class _DuplicateWbSize(Exception):
     pass
 
 
+def _carried_name(name: str) -> str:
+    """Product name for a failure: bounded by the schema, never invented.
+
+    `WbProduct.name` is unbounded, `MarketplaceFetchFailure.product_name` is
+    capped at 150 characters (the same cap `MarketplaceProductData` uses), so a
+    longer upstream name is truncated instead of turning a valid out-of-stock
+    observation into `bad_payload` (PAB-136).
+    """
+    return name[:150]
+
+
 def _collect_wb_sizes(sizes: list[WbSize]) -> dict[int, WbSizeData]:
     result: dict[int, WbSizeData] = {}
     for size in sizes:
@@ -242,6 +253,7 @@ class WbClient(BaseMarketplaceClient):
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.out_of_stock,
                     detail="no size has a price",
+                    product_name=_carried_name(product.name),
                 )
 
             return MarketplaceProductData(
@@ -304,6 +316,7 @@ class WbClient(BaseMarketplaceClient):
                     results[article] = MarketplaceFetchFailure(
                         reason=FetchFailureReason.out_of_stock,
                         detail="no size has a price",
+                        product_name=_carried_name(product.name),
                     )
                     continue
                 results[article] = MarketplaceProductData(

@@ -22,6 +22,7 @@ from app.domain.thresholds import choose_direction
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.models.product import Product
 from app.models.user import User
 from app.repositories.alert import AlertRepository
@@ -223,17 +224,27 @@ class TrackingService:
         target_price: int,
         *,
         price_fetched_at: datetime | None,
+        direction: AlertDirection | None = None,
         wb_size_id: int = 0,
         wb_size_name: str | None = None,
     ) -> Alert:
         """Create (or reuse) the product and add an alert for it.
 
-        The direction follows from the threshold versus `current_price`;
-        an equal threshold raises `TargetEqualsCurrentPriceError` before
-        any database access. `price_fetched_at` is the moment the price was
-        fetched (the dialog's `preview`); it is stored only for a new product.
+        Without an explicit `direction` it follows from the threshold versus
+        `current_price`; an equal threshold raises
+        `TargetEqualsCurrentPriceError` before any database access. A product
+        with no price to track (`current_price == 0`, PAB-136) has no such
+        comparison, so the caller passes the direction the user chose; such a
+        row is stored without an initial price and with an `out_of_stock`
+        status until the first successful check. `price_fetched_at` is the
+        moment the price was fetched (the dialog's `preview`); it is stored
+        only for a new product.
         """
-        direction = choose_direction(current_price, target_price)
+        chosen = (
+            direction
+            if direction is not None
+            else choose_direction(current_price, target_price)
+        )
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
         await self._ensure_within_limit(user, marketplace, article, wb_size_id)
 
@@ -248,8 +259,9 @@ class TrackingService:
                 price_fetched_at,
                 wb_size_id,
                 wb_size_name,
+                no_price=direction is not None and current_price == 0,
             )
-        return await self._create_alert(user.id, product.id, target_price, direction)
+        return await self._create_alert(user.id, product.id, target_price, chosen)
 
     async def product_limit(self, tg_user_id: int) -> int:
         """Return the caller's effective product limit, creating the user row.
@@ -393,8 +405,10 @@ class TrackingService:
         product's current price and `DuplicateAlertError` when another alert
         of the product already has the same (target, direction). The same
         (target, direction) as the alert's own is `unchanged`: nothing is
-        written and `triggered_at` (cooldown) stays. Runs in the caller's
-        transaction; the write is wrapped in a SAVEPOINT.
+        written and `triggered_at` (cooldown) stays. When the product has no
+        known price (`current_price == 0`, PAB-136) the alert keeps its own
+        direction, because there is no price to compare against. Runs in the
+        caller's transaction; the write is wrapped in a SAVEPOINT.
         """
         user, _ = await self._users.get_or_create_by_tg_id(tg_user_id)
         alert = await self._alerts.get_by_id_for_user(alert_id, user.id)
@@ -403,7 +417,13 @@ class TrackingService:
         product = await self._products.get_by_id_for_user(alert.product_id, user.id)
         if product is None:
             return AlertChange.not_found
-        direction = choose_direction(product.current_price, target_price)
+        if product.current_price > 0:
+            direction = choose_direction(product.current_price, target_price)
+        else:
+            # No price is known (PAB-136), so the comparison has nothing to
+            # compare: keep the direction the user chose when adding the alert
+            # instead of silently flipping it to `above`.
+            direction = alert.direction
         if alert.direction is direction and alert.target_price == target_price:
             return AlertChange.unchanged
         if await self._find_duplicate(
@@ -476,7 +496,17 @@ class TrackingService:
         price_fetched_at: datetime | None,
         wb_size_id: int,
         wb_size_name: str | None,
+        *,
+        no_price: bool = False,
     ) -> Product:
+        """Insert a product row; `no_price` marks "added without a price".
+
+        The flag is explicit, not derived from `current_price == 0`: the
+        inference path keeps its old shape (PAB-136). Such a row has no price,
+        no initial price, no freshness stamp and a persisted `out_of_stock`
+        status until the first success, because there is nothing honest to
+        record yet.
+        """
         try:
             async with self._session.begin_nested():
                 return await self._products.create(
@@ -491,8 +521,13 @@ class TrackingService:
                         ),
                         "product_name": product_name,
                         "current_price": current_price,
-                        "initial_price": current_price,
+                        "initial_price": None if no_price else current_price,
                         "price_fetched_at": price_fetched_at,
+                        **(
+                            {"last_failure": ProductFailure.out_of_stock}
+                            if no_price
+                            else {}
+                        ),
                     }
                 )
         except IntegrityError:

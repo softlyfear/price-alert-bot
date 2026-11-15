@@ -282,3 +282,27 @@ async def test_statement_count_is_the_same_for_1_and_30_thresholds(
 
     assert len(with_thirty) == len(with_one)
     assert len([s for s in with_thirty if s.lstrip().upper().startswith("UPDATE")]) == 1
+
+
+async def test_edit_of_a_product_without_a_price_keeps_the_chosen_direction(
+    db_session: AsyncSession,
+) -> None:
+    """PAB-136: with no price there is nothing to compare, so the alert must
+    keep the direction the user picked instead of flipping to `above`."""
+    tg, article = next(_tg_ids), next(_articles)
+    service = _service(db_session)
+    alert = await service.add_tracking(
+        tg,
+        _WB,
+        article,
+        "Без наличия",
+        0,
+        9_000,
+        price_fetched_at=None,
+        direction=AlertDirection.below,
+    )
+
+    outcome = await service.change_alert_target(tg, alert.id, 4_500)
+
+    assert outcome is AlertChange.changed
+    assert await _stored(db_session, alert.id) == (4_500, AlertDirection.below, None)

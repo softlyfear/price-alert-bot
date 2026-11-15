@@ -243,6 +243,59 @@ def test_card_without_a_known_price_and_without_a_failure_still_says_unknown() -
     assert "Не удалось проверить цену." not in text
 
 
+def test_product_unavailable_text_offers_tracking_and_asks_for_the_amount() -> None:
+    text = texts.product_unavailable_text(Marketplace.wb, "Кроссовки")
+
+    assert text == (
+        "Нашёл товар на Wildberries:\nКроссовки\n" + texts.ADD_OUT_OF_STOCK_FOUND_TEXT
+    )
+    assert "₽" not in text
+    assert texts.ADD_UNAVAILABLE_PROMPT_PRICE_TEXT in text
+
+
+def test_unavailable_offer_names_the_size() -> None:
+    text = texts.product_unavailable_text(
+        Marketplace.wb, "Кроссовки", wb_size_id=7, wb_size_name="42"
+    )
+
+    assert "Кроссовки · Размер: 42\n" in text
+
+
+def test_confirm_text_without_a_price_states_the_absence_instead_of_an_amount() -> None:
+    text = texts.confirm_text(
+        "Кроссовки", 0, 150_000, AlertDirection.above, price_unknown=True
+    )
+
+    assert text == (
+        "Проверьте и подтвердите:\n"
+        "Товар: Кроссовки\n"
+        f"{texts.ADD_UNKNOWN_PRICE_LINE}\n"
+        f"Сообщу, когда цена станет выше 1{_NB}500{_NB}₽.\n"
+        f"{_DISCLAIMER}."
+    )
+    assert "Текущая цена" not in text
+
+
+def test_added_text_without_a_price_states_the_absence_instead_of_an_amount() -> None:
+    text = texts.added_text(
+        "Кроссовки", 150_000, AlertDirection.below, price_unknown=True
+    )
+
+    assert text.startswith(
+        "Отслеживание добавлено: Кроссовки.\n" + texts.ADD_UNKNOWN_PRICE_LINE + "\n"
+    )
+    assert "Текущая цена" not in text
+
+
+def test_confirm_and_added_text_keep_the_known_price_wording_by_default() -> None:
+    assert "Текущая цена: 1" in texts.confirm_text(
+        "Кроссовки", 1_990_00, 150_000, AlertDirection.below
+    )
+    assert texts.ADD_UNKNOWN_PRICE_LINE not in texts.added_text(
+        "Кроссовки", 150_000, AlertDirection.below
+    )
+
+
 @pytest.mark.parametrize(
     ("direction", "phrase"),
     [
@@ -299,3 +352,55 @@ def test_short_removal_texts_are_the_literal_phrases() -> None:
 def test_marketplace_title_rejects_a_value_outside_the_enum() -> None:
     with pytest.raises(AssertionError):
         texts.marketplace_title(cast(Marketplace, "amazon"))
+
+
+def test_edit_prompt_of_a_product_without_a_price_does_not_show_zero() -> None:
+    """PAB-136: the edit step must not claim a price the bot does not have."""
+    text = texts.edit_prompt_text(
+        "Кроссовки", 0, AlertDirection.below, 150_000, wb_size_id=7, wb_size_name="42"
+    )
+
+    assert text.split("\n")[1] == texts.EDIT_UNKNOWN_PRICE_LINE
+    assert "Текущая цена" not in text
+    assert "₽" not in text.split("\n")[1]
+    assert "ниже текущей цены" not in text
+    assert "Направление останется прежним" in text
+    assert "Кроссовки · Размер: 42" in text
+
+
+def test_edit_prompt_with_a_price_keeps_the_inference_hint() -> None:
+    text = texts.edit_prompt_text("Кроссовки", 1_990_00, AlertDirection.below, 150_000)
+
+    assert f"Текущая цена: 1{_NB}990{_NB}₽" in text
+    assert "ниже текущей цены" in text
+    assert texts.EDIT_UNKNOWN_PRICE_LINE not in text
+
+
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (ProductFailure.blocked, "Не удалось проверить цену."),
+        (ProductFailure.transport_error, "Не удалось проверить цену."),
+        (ProductFailure.bad_payload, "Не удалось проверить цену."),
+        (ProductFailure.not_found, "Товар не найден на маркетплейсе."),
+    ],
+)
+def test_unavailable_offer_does_not_claim_out_of_stock_for_another_failure(
+    failure: ProductFailure, status: str
+) -> None:
+    """PAB-136 Р3: the persisted reason is the only source of the wording."""
+    text = texts.product_unavailable_text(
+        Marketplace.wb, "Кроссовки", last_failure=failure
+    )
+
+    assert text.split("\n")[2] == status
+    assert "Сейчас товара нет в наличии" not in text
+    assert texts.ADD_UNAVAILABLE_PROMPT_PRICE_TEXT in text
+
+
+def test_unavailable_offer_of_an_out_of_stock_product_keeps_its_lead() -> None:
+    for failure in (None, ProductFailure.out_of_stock):
+        text = texts.product_unavailable_text(
+            Marketplace.wb, "Кроссовки", last_failure=failure
+        )
+        assert "Сейчас товара нет в наличии, поэтому цены у него нет." in text

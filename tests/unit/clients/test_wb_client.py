@@ -486,10 +486,29 @@ async def test_out_of_stock_when_no_size_has_a_price() -> None:
         logger.remove(sink_id)
 
     assert result == MarketplaceFetchFailure(
-        reason=FetchFailureReason.out_of_stock, detail="no size has a price"
+        reason=FetchFailureReason.out_of_stock,
+        detail="no size has a price",
+        product_name="Товар",
     )
     assert len(records) == 1
     assert records[0]["level"].name == "INFO"
+
+
+@pytest.mark.asyncio
+async def test_out_of_stock_carries_a_bounded_name() -> None:
+    """PAB-136: an over-long upstream name must not turn a valid out-of-stock
+    observation into `bad_payload`; the carried name is capped at 150."""
+    long_name = "я" * 151
+    payload = {
+        "products": [{"id": _ARTICLE, "name": long_name, "sizes": [{"name": "36"}]}]
+    }
+    client = _client_with(_json_response(200, payload))
+    async with client:
+        result = await WbClient(client, StubWbAccess()).get_product_data(_ARTICLE)
+
+    assert isinstance(result, MarketplaceFetchFailure)
+    assert result.reason is FetchFailureReason.out_of_stock
+    assert result.product_name == "я" * 150
 
 
 @pytest.mark.asyncio
