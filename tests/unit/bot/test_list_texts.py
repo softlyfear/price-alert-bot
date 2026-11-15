@@ -12,6 +12,7 @@ from app.bot import texts
 from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 
 _NB = "\u00a0"
 _DISCLAIMER = "Цена без учёта персональных скидок"
@@ -151,6 +152,95 @@ def test_card_text_without_thresholds_has_no_legend_and_no_blank_tail() -> None:
 def test_direction_arrow_rejects_a_value_outside_the_enum() -> None:
     with pytest.raises(AssertionError):
         texts.direction_arrow(cast(AlertDirection, "sideways"))
+
+
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (ProductFailure.out_of_stock, "Сейчас нет в наличии."),
+        (ProductFailure.not_found, "Товар не найден на маркетплейсе."),
+        (ProductFailure.blocked, "Не удалось проверить цену."),
+        (ProductFailure.transport_error, "Не удалось проверить цену."),
+        (ProductFailure.bad_payload, "Не удалось проверить цену."),
+    ],
+)
+def test_availability_status_text_maps_each_failure(
+    failure: ProductFailure, status: str
+) -> None:
+    assert texts.availability_status_text(failure) == status
+
+
+def test_availability_status_text_is_empty_without_a_failure() -> None:
+    assert texts.availability_status_text(None) is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "short"),
+    [
+        (ProductFailure.out_of_stock, "Нет в наличии"),
+        (ProductFailure.not_found, "Не найден"),
+        (ProductFailure.blocked, "Не проверено"),
+        (ProductFailure.transport_error, "Не проверено"),
+        (ProductFailure.bad_payload, "Не проверено"),
+    ],
+)
+def test_availability_short_text_maps_each_failure(
+    failure: ProductFailure, short: str
+) -> None:
+    assert texts.availability_short_text(failure) == short
+
+
+def test_availability_texts_reject_a_value_outside_the_enum() -> None:
+    bogus = cast(ProductFailure, "gone")
+    with pytest.raises(AssertionError):
+        texts.availability_status_text(bogus)
+    with pytest.raises(AssertionError):
+        texts.availability_short_text(bogus)
+
+
+def test_card_of_an_unavailable_product_labels_the_stale_price_and_status() -> None:
+    """PAB-135 Р1: the price of a failed check is never presented as current."""
+    text = texts.product_card_text(
+        "Кроссовки",
+        Marketplace.wb,
+        "https://www.wildberries.ru/catalog/1/detail.aspx",
+        1_990_00,
+        [(AlertDirection.below, 1_000_00)],
+        "14:05",
+        last_failure=ProductFailure.out_of_stock,
+    )
+
+    assert f"Последняя известная цена: 1{_NB}990{_NB}₽ (цена на 14:05)" in text
+    assert "Сейчас нет в наличии." in text
+    assert "Текущая цена" not in text
+    assert text.index("Последняя известная цена") < text.index("Сейчас нет в наличии.")
+
+
+def test_card_without_a_known_price_never_shows_zero_rubles() -> None:
+    """PAB-135 Р1: a product added without a price has no fabricated amount."""
+    text = texts.product_card_text(
+        "Кроссовки",
+        Marketplace.wb,
+        "https://www.wildberries.ru/catalog/1/detail.aspx",
+        0,
+        [],
+        last_failure=ProductFailure.out_of_stock,
+    )
+
+    assert "Цена пока неизвестна." in text
+    assert "0" not in text.replace("catalog/1", "")
+    assert "Сейчас нет в наличии." in text
+    assert "Текущая цена" not in text
+
+
+def test_card_without_a_known_price_and_without_a_failure_still_says_unknown() -> None:
+    text = texts.product_card_text(
+        "Кроссовки", Marketplace.wb, "https://x.example/1", 0, []
+    )
+
+    assert "Цена пока неизвестна." in text
+    assert "Сейчас нет в наличии." not in text
+    assert "Не удалось проверить цену." not in text
 
 
 @pytest.mark.parametrize(

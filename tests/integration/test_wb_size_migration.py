@@ -105,18 +105,42 @@ def test_upgrade_preserves_dependents_high_water_and_roundtrip(tmp_path: Path) -
 
 
 def test_downgrade_refuses_selected_rows_without_changes(tmp_path: Path) -> None:
+    """A refused downgrade preserves product data and alerts.
+
+    Since PAB-135 the chain has a revision after `5d2df2075e03`, and Alembic's
+    SQLite DDL is non-transactional: the newer revision is reverted first, then
+    the selected-size guard refuses. The check therefore compares the columns
+    that exist at `5d2df2075e03`; the derived `last_failure` column is gone,
+    which is exactly what its own downgrade means.
+    """
     path = tmp_path / "migration.sqlite"
     _seed(path)
     assert _migrate(path, "upgrade", "head").returncode == 0
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("UPDATE products SET wb_size_id=42,wb_size_name='42' WHERE id=1")
-        before = db.execute("SELECT * FROM products").fetchall()
+        db.row_factory = sqlite3.Row
+        try:
+            before = {
+                key: value
+                for key, value in dict(
+                    db.execute("SELECT * FROM products").fetchone()
+                ).items()
+                if key != "last_failure"
+            }
+        finally:
+            db.row_factory = None
         alerts = db.execute("SELECT * FROM alerts").fetchall()
     result = _migrate(path, "downgrade", _OLD)
     assert result.returncode != 0
     assert "Cannot downgrade while selected WB sizes exist" in result.stderr
     with closing(sqlite3.connect(path)) as db, db:
-        assert db.execute("SELECT * FROM products").fetchall() == before
+        db.row_factory = sqlite3.Row
+        try:
+            after = dict(db.execute("SELECT * FROM products").fetchone())
+        finally:
+            db.row_factory = None
+        assert after == before
+        assert "last_failure" not in after
         assert db.execute("SELECT * FROM alerts").fetchall() == alerts
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
             "5d2df2075e03",

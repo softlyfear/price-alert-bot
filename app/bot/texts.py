@@ -20,6 +20,7 @@ from app.domain.money import PRICE_DISCLAIMER_SHORT
 from app.domain.money import format_price
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.schemas.marketplace import FetchFailureReason
 from app.services.price_service import RefreshFailure
 from app.services.price_service import RefreshReport
@@ -503,6 +504,42 @@ def list_text(total: int, page: int, pages: int, price_label: str | None = None)
     return f"{head}\n{prices_line}{PRICE_DISCLAIMER_SHORT}."
 
 
+def availability_status_text(failure: ProductFailure | None) -> str | None:
+    """Card status of the last fetch failure; `None` means the price is current."""
+    match failure:
+        case None:
+            return None
+        case ProductFailure.out_of_stock:
+            return "Сейчас нет в наличии."
+        case ProductFailure.not_found:
+            return "Товар не найден на маркетплейсе."
+        case (
+            ProductFailure.blocked
+            | ProductFailure.transport_error
+            | ProductFailure.bad_payload
+        ):
+            return "Не удалось проверить цену."
+        case _:
+            assert_never(failure)
+
+
+def availability_short_text(failure: ProductFailure) -> str:
+    """Short status of a failed product for a list button."""
+    match failure:
+        case ProductFailure.out_of_stock:
+            return "Нет в наличии"
+        case ProductFailure.not_found:
+            return "Не найден"
+        case (
+            ProductFailure.blocked
+            | ProductFailure.transport_error
+            | ProductFailure.bad_payload
+        ):
+            return "Не проверено"
+        case _:
+            assert_never(failure)
+
+
 def product_card_text(
     name: str,
     marketplace: Marketplace,
@@ -514,15 +551,26 @@ def product_card_text(
     initial_line: str | None = None,
     wb_size_id: int = 0,
     wb_size_name: str | None = None,
+    last_failure: ProductFailure | None = None,
 ) -> str:
-    """Product card with its thresholds (plain text, no markup)."""
+    """Product card with its thresholds and availability (plain text, no markup)."""
     when = f" (цена на {price_label})" if price_label is not None else ""
+    if current_price > 0:
+        price_word = (
+            "Последняя известная цена" if last_failure is not None else "Текущая цена"
+        )
+        price_line = f"{price_word}: {format_price(current_price)}{when}"
+    else:
+        price_line = "Цена пока неизвестна."
     lines = [
         f"{name}{size_suffix(wb_size_id, wb_size_name)}",
         f"Маркетплейс: {marketplace_title(marketplace)}",
         url,
-        f"Текущая цена: {format_price(current_price)}{when}",
+        price_line,
     ]
+    status = availability_status_text(last_failure)
+    if status is not None:
+        lines.append(status)
     if initial_line is not None:
         lines.append(initial_line)
     lines.extend([f"{PRICE_DISCLAIMER_SHORT}.", ""])
@@ -689,7 +737,9 @@ def refresh_list_summary(report: RefreshReport) -> str:
     return "\n".join(lines)
 
 
-def refresh_card_summary(report: RefreshReport, marketplace: Marketplace) -> str:
+def refresh_card_summary(
+    report: RefreshReport, marketplace: Marketplace, *, has_known_price: bool = True
+) -> str:
     """Summary above the card after a manual refresh of its single product."""
     if report.updated == report.total:
         return REFRESH_CARD_DONE_TEXT
@@ -697,4 +747,5 @@ def refresh_card_summary(report: RefreshReport, marketplace: Marketplace) -> str
     phrase = _REFRESH_CARD_REASONS[reason]
     if reason is RefreshFailure.blocked:
         phrase = f"{marketplace_title(marketplace)} {phrase}"
-    return f"{phrase} {REFRESH_OLD_PRICE_TEXT}"
+    tail = REFRESH_OLD_PRICE_TEXT if has_known_price else "Цена пока неизвестна."
+    return f"{phrase} {tail}"

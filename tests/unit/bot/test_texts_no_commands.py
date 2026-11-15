@@ -22,6 +22,7 @@ from aiogram.types import BotCommand
 from app.bot import texts
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.schemas.marketplace import FetchFailureReason
 from app.services.price_service import RefreshFailure
 from app.services.price_service import RefreshReport
@@ -63,6 +64,14 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
         "https://www.wildberries.ru/catalog/1/detail.aspx",
         1_990_00,
         [(AlertDirection.below, 1_000_00), (AlertDirection.above, 2_000_00)],
+    ),
+    "availability_status_text": lambda: "\n".join(
+        status
+        for failure in (None, *ProductFailure)
+        if (status := texts.availability_status_text(failure)) is not None
+    ),
+    "availability_short_text": lambda: "\n".join(
+        texts.availability_short_text(failure) for failure in ProductFailure
     ),
     "remove_alert_button_text": texts.remove_alert_button_text,
     "edit_alert_button_text": lambda: texts.edit_alert_button_text(

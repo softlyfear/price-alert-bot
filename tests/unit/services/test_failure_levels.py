@@ -2,8 +2,10 @@
 
 import pytest
 
+from app.models.enums import ProductFailure
 from app.schemas.marketplace import FetchFailureReason
 from app.services.failure_levels import failure_log_level
+from app.services.failure_levels import product_failure
 
 # Hand-copied from the PROJECT.md section 8.4 table, not derived from the code.
 _TABLE_8_4: dict[FetchFailureReason, str] = {
@@ -26,3 +28,16 @@ def test_section_8_4_table_covers_every_failure_reason() -> None:
     """A new `FetchFailureReason` member must be added to the table above and to
     the policy together; this fails if only one of them learns about it."""
     assert set(_TABLE_8_4) == set(FetchFailureReason)
+
+
+def test_persisted_product_failure_mirrors_the_fetch_reasons() -> None:
+    """`ProductFailure` is stored in the database and must accept exactly the
+    values the marketplace layer can produce (PAB-135)."""
+    assert {member.value for member in ProductFailure} == {
+        reason.value for reason in FetchFailureReason
+    }
+
+
+@pytest.mark.parametrize("reason", list(FetchFailureReason))
+def test_product_failure_mapping_keeps_the_value(reason: FetchFailureReason) -> None:
+    assert product_failure(reason) is ProductFailure(reason.value)

@@ -50,5 +50,6 @@ def card_screen(
         initial_line=initial_line,
         wb_size_id=product.wb_size_id,
         wb_size_name=product.wb_size_name,
+        last_failure=product.last_failure,
     )
     return text, product_card_keyboard(product.id, card.alerts, card.list_page)

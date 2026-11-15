@@ -39,6 +39,7 @@ from app.core.logging import setup_logging
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.models.product import Product
 from app.models.user import User
 from app.repositories.alert import AlertRepository
@@ -48,6 +49,7 @@ from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
+from app.schemas.marketplace import WbSizeData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.notification import NotificationService
 from app.services.price_service import PriceService
@@ -213,12 +215,12 @@ async def test_check_product_returns_early_when_product_is_missing() -> None:
         (FetchFailureReason.out_of_stock, "INFO"),
     ],
 )
-async def test_fetch_failure_updates_timestamp_only_and_logs_expected_level(
+async def test_fetch_failure_updates_timestamp_and_status_and_logs_expected_level(
     reason: FetchFailureReason, expected_level: str
 ) -> None:
     """AC3 (+ поправка 2026-09-23 для пятой категории): каждая из пяти
-    категорий обновляет только `last_checked_at`, не трогает цену и пишет в
-    лог на уровне из §8.4 с полем `reason`."""
+    категорий обновляет `last_checked_at` и сохранённый статус доступности,
+    не трогает цену и пишет в лог на уровне из §8.4 с полем `reason`."""
     product = _make_product(current_price=142900, previous_price=100000)
     failure = MarketplaceFetchFailure(reason=reason, detail="boom")
     harness = _build_harness(product=product, market_data=failure)
@@ -244,6 +246,7 @@ async def test_fetch_failure_updates_timestamp_only_and_logs_expected_level(
     assert product.previous_price == 100000
     assert product.last_checked_at is not None
     assert before <= product.last_checked_at <= after
+    assert product.last_failure is ProductFailure(reason.value)
 
     harness.alert_repo.get_active_by_product.assert_not_called()
     harness.user_repo.get_by_id.assert_not_called()
@@ -252,6 +255,45 @@ async def test_fetch_failure_updates_timestamp_only_and_logs_expected_level(
     assert len(records) == 1
     assert records[0]["level"].name == expected_level
     assert records[0]["extra"]["reason"] == reason.value
+
+
+@pytest.mark.asyncio
+async def test_success_clears_the_persisted_failure_status() -> None:
+    """PAB-135: a successful observation makes the price current again, so the
+    status disappears in the same write that updates the price."""
+    product = _make_product(current_price=142900)
+    product.last_failure = ProductFailure.out_of_stock
+    result = MarketplaceProductData(name="Товар", price=130000)
+    harness = _build_harness(product=product, market_data=result)
+
+    await harness.service.apply_result(1, result, cast(AsyncSession, harness.session))
+
+    assert product.current_price == 130000
+    assert product.last_failure is None
+
+
+@pytest.mark.asyncio
+async def test_missing_selected_size_persists_the_out_of_stock_status() -> None:
+    """PAB-135: a selected-size snapshot without that option is a real
+    `out_of_stock` observation, so the card must say so rather than keep a
+    price that this size no longer has."""
+    product = _make_product(current_price=142900)
+    product.wb_size_id = 7
+    result = MarketplaceProductData(
+        name="Товар",
+        price=130000,
+        wb_sizes={5: WbSizeData(name="41", price=130000)},
+    )
+    harness = _build_harness(product=product, market_data=result)
+
+    assert (
+        await harness.service.apply_result(
+            1, result, cast(AsyncSession, harness.session)
+        )
+        is FetchFailureReason.out_of_stock
+    )
+    assert product.current_price == 142900
+    assert product.last_failure is ProductFailure.out_of_stock
 
 
 @pytest.mark.asyncio

@@ -697,7 +697,11 @@ def create_router() -> Router:
             await _fail_refresh(progress, user_id, error, "card")
             return
         card_text, keyboard = card_screen(card, display_timezone)
-        summary = texts.refresh_card_summary(result, card.product.marketplace)
+        summary = texts.refresh_card_summary(
+            result,
+            card.product.marketplace,
+            has_known_price=card.product.current_price > 0,
+        )
         await edit_message_or_answer(
             progress, f"{summary}\n\n{card_text}", reply_markup=keyboard
         )

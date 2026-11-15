@@ -20,6 +20,7 @@ from app.domain.links import MAX_ARTICLE
 from app.domain.money import format_price
 from app.models.alert import Alert
 from app.models.enums import Marketplace
+from app.models.product import Product
 from app.services.tracking import ProductPage
 
 CB_ADD_CONFIRM: Final[str] = "add:confirm"
@@ -294,16 +295,26 @@ def _short_name(name: str) -> str:
     return flat
 
 
+def _product_button_text(product: Product) -> str:
+    """List button: the price, or the persisted failure status plus last price."""
+    name = (
+        f"{_short_name(product.product_name)}"
+        f"{texts.size_suffix(product.wb_size_id, product.wb_size_name)}"
+    )
+    if product.last_failure is not None:
+        status = texts.availability_short_text(product.last_failure)
+        if product.current_price > 0:
+            return f"{status} · {format_price(product.current_price)} · {name}"
+        return f"{status} · {name}"
+    return f"{format_price(product.current_price)} · {name}"
+
+
 def product_list_keyboard(page: ProductPage) -> InlineKeyboardMarkup:
     """One button per product of the page, nav row (if paged), refresh, menu."""
     rows = [
         [
             InlineKeyboardButton(
-                text=(
-                    f"{format_price(product.current_price)} · "
-                    f"{_short_name(product.product_name)}"
-                    f"{texts.size_suffix(product.wb_size_id, product.wb_size_name)}"
-                ),
+                text=_product_button_text(product),
                 callback_data=ProductCardCb(product_id=product.id).pack(),
             )
         ]

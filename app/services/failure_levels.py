@@ -2,6 +2,7 @@
 
 from typing import assert_never
 
+from app.models.enums import ProductFailure
 from app.schemas.marketplace import FetchFailureReason
 
 
@@ -24,3 +25,13 @@ def failure_log_level(reason: FetchFailureReason) -> str:
             return "WARNING"
         case _:
             assert_never(reason)
+
+
+def product_failure(reason: FetchFailureReason) -> ProductFailure:
+    """Map a fetch failure to the persisted product status.
+
+    The value sets are kept equal by `ProductFailure`'s guard test; a new
+    reason without a persistence member fails here with `ValueError` instead of
+    being stored silently.
+    """
+    return ProductFailure(reason.value)

@@ -34,6 +34,7 @@ from app.bot.states import AddProduct
 from app.bot.states import EditAlert
 from app.handlers.add_product import dismiss_link_prompt
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.services.price_service import RefreshFailure
 from app.services.price_service import RefreshGone
 from app.services.price_service import RefreshLimiter
@@ -750,6 +751,30 @@ async def test_card_refresh_of_a_forged_id_leaks_nothing_about_the_foreign_produ
     assert card_dialog.edits[1].text == f"{_GONE_LINE}\n\n{texts.LIST_EMPTY_TEXT}"
     assert "Маркетплейс" not in card_dialog.edits[1].text
     card_service.get_product_card.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_card_refresh_of_a_product_without_a_price_does_not_claim_a_stale_price(
+    card_dialog: _Dialog, refresher: MagicMock, card_service: MagicMock
+) -> None:
+    """PAB-135: a product added while unavailable has no old price to show."""
+    unavailable = card(price_fetched_at=None)
+    unavailable.product.current_price = 0
+    unavailable.product.last_failure = ProductFailure.out_of_stock
+    card_service.get_product_card.return_value = unavailable
+    refresher.refresh_product.return_value = RefreshReport(
+        1, 0, {RefreshFailure.out_of_stock: 1}
+    )
+
+    await card_dialog.press(f"pref:{PRODUCT_ID}")
+
+    text = card_dialog.edits[1].text
+    assert text is not None
+    assert text.startswith("Товара сейчас нет в наличии. Цена пока неизвестна.\n\n")
+    assert "Показана прежняя цена" not in text
+    assert "\nЦена пока неизвестна.\nСейчас нет в наличии.\n" in text
+    assert "Текущая цена" not in text
+    assert "Последняя известная цена" not in text
 
 
 @pytest.mark.asyncio

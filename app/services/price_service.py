@@ -30,6 +30,7 @@ from app.schemas.marketplace import MarketplaceFetchResult
 from app.schemas.marketplace import MarketplaceProductData
 from app.services.base_client import BaseMarketplaceClient
 from app.services.failure_levels import failure_log_level
+from app.services.failure_levels import product_failure
 from app.services.notification import NotificationService
 
 
@@ -132,9 +133,10 @@ class PriceService:
         market_data = select_wb_size(market_data, product.wb_size_id or 0)
 
         if isinstance(market_data, MarketplaceFetchFailure):
-            # Any failure category updates `last_checked_at` only; the known
-            # price is never overwritten on a failed fetch (PROJECT.md
-            # section 2.6). `isinstance` narrows `market_data` to
+            # Any failure category updates `last_checked_at` and the persisted
+            # availability status; the known price is never overwritten on a
+            # failed fetch (PROJECT.md section 2.6). `isinstance` narrows
+            # `market_data` to
             # `MarketplaceFetchFailure` here and, by exclusion on the
             # two-member `MarketplaceFetchResult` alias, to
             # `MarketplaceProductData` past this block - a copy of
@@ -142,6 +144,7 @@ class PriceService:
             # `object` breaks that exclusion and `mypy --strict` rejects the
             # `.price` access below (see the ticket report).
             product.last_checked_at = now_utc
+            product.last_failure = product_failure(market_data.reason)
             log_context = logger.bind(
                 product_id=product.id,
                 article=product.article,
@@ -162,6 +165,7 @@ class PriceService:
         product.current_price = current_price
         product.last_checked_at = now_utc
         product.price_fetched_at = market_data.fetched_at or now_utc
+        product.last_failure = None
         if product.wb_size_id:
             assert market_data.wb_sizes is not None
             product.wb_size_name = market_data.wb_sizes[product.wb_size_id].name

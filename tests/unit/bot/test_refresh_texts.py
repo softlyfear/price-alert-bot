@@ -225,6 +225,17 @@ def test_card_summary_of_an_inconsistent_report_does_not_claim_success() -> None
     assert summary == "Не удалось сохранить новую цену. Показана прежняя цена."
 
 
+def test_card_summary_without_a_known_price_does_not_show_a_stale_price() -> None:
+    """PAB-135: a product added without a price has nothing to show as old."""
+    summary = texts.refresh_card_summary(
+        RefreshReport(1, 0, {RefreshFailure.out_of_stock: 1}),
+        Marketplace.wb,
+        has_known_price=False,
+    )
+
+    assert summary == "Товара сейчас нет в наличии. Цена пока неизвестна."
+
+
 def test_progress_and_gone_texts_are_the_agreed_wording() -> None:
     assert texts.REFRESH_IN_PROGRESS_TEXT == "Обновляю цены…"
     assert texts.REFRESH_GONE_TEXT == "Этот товар больше не отслеживается."

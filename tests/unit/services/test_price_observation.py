@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.price_service as price_service_module
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.schemas.marketplace import MarketplaceProductData
@@ -74,6 +75,7 @@ async def test_preview_observation_blocks_an_older_fetch(
     product = _make_product(current_price=11_000, previous_price=10_000)
     product.price_fetched_at = _PREVIEW
     product.last_checked_at = _PREVIEW
+    product.last_failure = ProductFailure.blocked
     result = MarketplaceProductData(name="Old item", price=8_000, fetched_at=_OLD)
     harness = _build_harness(product=product, market_data=result)
 
@@ -85,6 +87,9 @@ async def test_preview_observation_blocks_an_older_fetch(
     )
     assert (product.current_price, product.previous_price) == (11_000, 10_000)
     assert (product.price_fetched_at, product.last_checked_at) == (_PREVIEW, _PREVIEW)
+    # A skipped stale success proves nothing about the current price, so the
+    # persisted failure status stays until a newer success (PAB-135).
+    assert product.last_failure is ProductFailure.blocked
     harness.session.flush.assert_not_awaited()
     harness.notification.send_alert.assert_not_awaited()
 

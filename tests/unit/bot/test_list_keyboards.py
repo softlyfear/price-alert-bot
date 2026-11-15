@@ -25,6 +25,7 @@ from app.domain.money import MAX_PRICE_KOPECKS
 from app.models.alert import Alert
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.models.product import Product
 from app.services.tracking import ProductPage
 
@@ -91,6 +92,39 @@ def test_list_keyboard_cuts_a_long_name_to_forty_characters_with_ellipsis() -> N
     ]
 
     assert button.text == f"1{_NB}990{_NB}₽ · " + "я" * 39 + "…"
+
+
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (ProductFailure.out_of_stock, "Нет в наличии"),
+        (ProductFailure.not_found, "Не найден"),
+        (ProductFailure.blocked, "Не проверено"),
+        (ProductFailure.transport_error, "Не проверено"),
+        (ProductFailure.bad_payload, "Не проверено"),
+    ],
+)
+def test_list_button_of_a_failed_product_starts_with_the_status(
+    failure: ProductFailure, status: str
+) -> None:
+    """PAB-135: the list carries the persisted status, not a bare stale price."""
+    product = _product(7, "Кроссовки", 199_000)
+    product.last_failure = failure
+
+    button = product_list_keyboard(_page([product])).inline_keyboard[0][0]
+
+    assert button.text == f"{status} · 1{_NB}990{_NB}₽ · Кроссовки"
+    assert button.callback_data == "pcard:7"
+
+
+def test_list_button_of_a_failed_product_without_a_price_has_no_amount() -> None:
+    product = _product(7, "Кроссовки", 0)
+    product.last_failure = ProductFailure.out_of_stock
+
+    button = product_list_keyboard(_page([product])).inline_keyboard[0][0]
+
+    assert button.text == "Нет в наличии · Кроссовки"
+    assert "₽" not in button.text
 
 
 def test_list_keyboard_button_starts_with_the_price_and_a_middle_dot_separator() -> (

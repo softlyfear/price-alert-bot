@@ -34,6 +34,7 @@ class ProductRepository(
             "previous_price",
             "price_fetched_at",
             "initial_price",
+            "last_failure",
         }
 
     @property

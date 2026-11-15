@@ -17,6 +17,7 @@ from app.models.base import Base
 from app.models.base import TimestampMixin
 from app.models.base import UTCDateTime
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 
 if TYPE_CHECKING:
     from app.models.alert import Alert
@@ -57,6 +58,9 @@ class Product(Base, TimestampMixin):
     )
     last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     price_fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_failure: Mapped[ProductFailure | None] = mapped_column(
+        Enum(ProductFailure, create_constraint=False, validate_strings=True)
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -77,6 +81,12 @@ class Product(Base, TimestampMixin):
         ),
         CheckConstraint(
             "wb_size_id != 0 OR wb_size_name IS NULL", name="ck_products_wb_size_name"
+        ),
+        CheckConstraint(
+            "last_failure IS NULL OR last_failure IN "
+            "('not_found', 'blocked', 'transport_error', 'bad_payload', "
+            "'out_of_stock')",
+            name="ck_products_last_failure",
         ),
         {"sqlite_autoincrement": True},
     )
