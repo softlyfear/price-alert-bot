@@ -38,6 +38,9 @@ from app.services.price_service import select_wb_size
 LIST_PAGE_SIZE = 10
 """Products per page of the "My products" list (PROJECT.md 2.13 R20)."""
 
+LOCATION_HOST_MAX_CHARS = 255
+"""Log-bound width of a `Location` host recorded in a log record."""
+
 
 @dataclass(frozen=True, slots=True)
 class ProductCard:
@@ -91,7 +94,7 @@ class AlertChange(StrEnum):
 def _location_host(location: str) -> str:
     """Host of a `Location` for the log (no path, no query); empty if unparsable."""
     try:
-        return (urlsplit(location).hostname or "")[:255]
+        return (urlsplit(location).hostname or "")[:LOCATION_HOST_MAX_CHARS]
     except ValueError:
         return ""
 

@@ -103,6 +103,15 @@ def _ozon_short_code(path: str) -> OzonShortLink:
     return ozon_short_link(parts[2])
 
 
+def _has_empty_port(netloc: str) -> bool:
+    """Tell ``host:`` (a port is named but empty) from ``host``.
+
+    ``urlsplit`` reports ``port is None`` for both, so the authority itself is
+    the only place where the empty port is visible.
+    """
+    return netloc.endswith(":")
+
+
 def parse_product_ref(text: str) -> ProductQuery:
     """Parse a product link into a `ProductRef`, bare digits into `BareArticle`.
 
@@ -133,7 +142,12 @@ def _parse_link(value: str) -> ProductRef | OzonShortLink:
         raise ProductRefParseError("malformed URL") from None
     if parts.scheme not in {"http", "https"}:
         raise ProductRefParseError("unsupported URL scheme")
-    if "@" in parts.netloc or port is not None or host is None:
+    if (
+        "@" in parts.netloc
+        or port is not None
+        or host is None
+        or _has_empty_port(parts.netloc)
+    ):
         raise ProductRefParseError("unsupported URL authority")
 
     if host in _WB_HOSTS:
@@ -172,7 +186,12 @@ def parse_ozon_product_location(location: str) -> ProductRef:
         raise ProductRefParseError("malformed location") from None
     if parts.scheme != "https" or not location.startswith("https://"):
         raise ProductRefParseError("unsupported location scheme")
-    if "@" in parts.netloc or port is not None or host not in _OZON_HOSTS:
+    if (
+        "@" in parts.netloc
+        or port is not None
+        or host not in _OZON_HOSTS
+        or _has_empty_port(parts.netloc)
+    ):
         raise ProductRefParseError("unsupported location host")
     return ProductRef(Marketplace.ozon, _ozon_article(parts.path))
 

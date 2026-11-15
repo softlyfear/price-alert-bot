@@ -148,6 +148,8 @@ def test_location_of_a_product_gives_an_ozon_ref(location: str) -> None:
         "https://user@www.ozon.ru/product/x-2622563074/",
         "https://www.ozon.ru@evil.com/product/x-2622563074/",
         "https://www.ozon.ru:8443/product/x-2622563074/",
+        "https://www.ozon.ru:/product/x-2622563074/",
+        "https://ozon.ru:/product/x-2622563074/",
         "https://www.ozon.ru/category/telefony-15501/",
         "https://www.ozon.ru/t/7GeNMx2",
         "https://www.ozon.ru/product/x-2622563074/ y",
