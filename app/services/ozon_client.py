@@ -159,6 +159,9 @@ class OzonClient(BaseMarketplaceClient):
     SHORT_LINK_URL = "https://ozon.ru/t/"
     TIMEOUT_SECONDS = 10.0
     MAX_BODY_BYTES = 4_194_304
+    # Mirrors MAX_SHORT_CODE_LENGTH in app.domain.links; the client must not
+    # import the domain package, so a test keeps the two values equal.
+    MAX_SHORT_CODE_LENGTH = 32
 
     def __init__(self, session: OzonSession, access: OzonAccessProvider) -> None:
         self._session = session
@@ -261,7 +264,11 @@ class OzonClient(BaseMarketplaceClient):
         The fixed host and validated code prevent SSRF; neither code nor
         Location is logged.
         """
-        if not (code.isascii() and code.isalnum() and 1 <= len(code) <= 32):
+        if not (
+            code.isascii()
+            and code.isalnum()
+            and 1 <= len(code) <= self.MAX_SHORT_CODE_LENGTH
+        ):
             logger.error("Ozon short link code rejected before the request")
             return MarketplaceFetchFailure(
                 reason=FetchFailureReason.bad_payload, detail="invalid code"

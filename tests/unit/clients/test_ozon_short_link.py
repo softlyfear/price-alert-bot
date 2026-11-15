@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from loguru import Message
     from loguru import Record
 
+from app.domain.links import MAX_SHORT_CODE_LENGTH
 from app.schemas.marketplace import FetchFailureReason
 from app.schemas.marketplace import MarketplaceFetchFailure
 from app.services.base_client import BaseMarketplaceClient
@@ -332,6 +333,12 @@ async def test_code_of_32_chars_is_requested_and_33_is_not() -> None:
 
     assert ok_session.requests == [("https://ozon.ru/t/" + "a" * 32, 10.0)]
     assert bad_session.requests == []
+
+
+def test_short_code_bound_mirrors_the_domain_rule() -> None:
+    """PAB-132: the client keeps a local bound (it must not import the domain
+    package), and this test makes any drift from the single domain rule red."""
+    assert OzonClient.MAX_SHORT_CODE_LENGTH == MAX_SHORT_CODE_LENGTH
 
 
 @pytest.mark.asyncio

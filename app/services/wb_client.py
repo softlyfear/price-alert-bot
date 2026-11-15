@@ -121,13 +121,13 @@ class WbClient(BaseMarketplaceClient):
             body = await self._request(nm, subject, access, max_body_bytes)
             if not isinstance(body, _TokenRejected):
                 return body
-            await self._access.invalidate(access)
             if attempt == 2:
                 logger.warning(f"Token rejected twice (HTTP 498) for {subject}")
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.blocked,
                     detail="HTTP 498",
                 )
+            await self._access.invalidate(access)
             logger.info(f"Token rejected (HTTP 498) for {subject}, retrying")
 
     async def _request(
@@ -222,7 +222,7 @@ class WbClient(BaseMarketplaceClient):
 
             if not parsed.products:
                 # WB returns HTTP 200 with an empty list for an unknown article.
-                logger.warning(f"Empty products for article {article} - not found")
+                logger.info(f"Empty products for article {article} - not found")
                 return MarketplaceFetchFailure(
                     reason=FetchFailureReason.not_found,
                     detail="empty products",

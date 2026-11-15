@@ -605,7 +605,9 @@ async def test_498_invalidates_the_pair_and_repeats_the_same_batch_once() -> Non
 
 @pytest.mark.asyncio
 async def test_498_twice_is_blocked_for_every_article_after_two_requests() -> None:
-    """AC2(д). Mutation: a third request, or ``blocked`` for the first only."""
+    """AC2(д), revised by PAB-132: only the first pair is invalidated and the
+    renewed pair stays cached. Mutation: a third request, or ``blocked`` for
+    the first article only."""
     seen: list[httpx.Request] = []
     access = StubWbAccess()
     records, sink_id = _capture()
@@ -620,7 +622,7 @@ async def test_498_twice_is_blocked_for_every_article_after_two_requests() -> No
     assert results == {1: expected, 2: expected}
     assert len(seen) == 2
     assert access.get_calls == 2
-    assert access.invalidated == [make_pair(1), make_pair(2)]
+    assert access.invalidated == [make_pair(1)]
     # Four lines for the whole chunk (two statuses, the retry note, the verdict),
     # all naming the batch, none naming a single article.
     assert len(records) == 4

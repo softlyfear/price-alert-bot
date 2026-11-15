@@ -416,12 +416,14 @@ async def test_bad_payload_when_one_size_price_is_negative_among_normal() -> Non
 
 
 @pytest.mark.asyncio
-async def test_not_found_when_products_is_empty() -> None:
+async def test_not_found_when_products_is_empty(log_records: list[Record]) -> None:
     """PAB-079 AC3(ж), changed assertion: AC13' of PAB-014 had `products == []`
     as `bad_payload` / "no product with matching id". The measured fact
     (`PROJECT.md` section 2.8) is that an unknown article is `200` with an
     empty list, so it is now `not_found` / "empty products"; a non-empty list
-    without the requested id stays `bad_payload` (next test)."""
+    without the requested id stays `bad_payload` (next test). PAB-132: the
+    client's own record is INFO, because the WB->Ozon routing decision belongs
+    to the service and its level policy."""
     client = _client_with(_json_response(200, {"products": []}))
     async with client:
         wb_client = WbClient(client, StubWbAccess())
@@ -430,6 +432,9 @@ async def test_not_found_when_products_is_empty() -> None:
     assert result == MarketplaceFetchFailure(
         reason=FetchFailureReason.not_found, detail="empty products"
     )
+    assert [(record["level"].name, record["message"]) for record in log_records] == [
+        ("INFO", f"Empty products for article {_ARTICLE} - not found")
+    ]
 
 
 @pytest.mark.asyncio
@@ -858,8 +863,9 @@ async def test_498_invalidates_the_same_pair_then_retries_once_with_a_new_one(
 
 @pytest.mark.asyncio
 async def test_498_twice_is_blocked_after_exactly_two_requests() -> None:
-    """AC3(в): the second `498` is `blocked` / "HTTP 498"; no third request,
-    no third `get`; both pairs were invalidated."""
+    """PAB-079 AC3(в) as revised by PAB-132: the second `498` is `blocked` /
+    "HTTP 498"; no third request, no third `get`; only the first pair is
+    invalidated, the renewed pair stays cached for the next fetch."""
     seen: list[httpx.Request] = []
     access = StubWbAccess()
     client = _client_with(
@@ -873,7 +879,34 @@ async def test_498_twice_is_blocked_after_exactly_two_requests() -> None:
     )
     assert len(seen) == 2
     assert access.get_calls == 2
-    assert access.invalidated == [make_pair(1), make_pair(2)]
+    assert access.invalidated == [make_pair(1)]
+
+
+@pytest.mark.asyncio
+async def test_second_498_keeps_the_renewed_pair_for_the_next_fetch(
+    fixture_bytes: bytes,
+) -> None:
+    """PAB-132: a sustained `498` keeps the renewed pair, so the next fetch
+    costs one request and no browser acquisition instead of two launches."""
+    seen: list[httpx.Request] = []
+    access = StubWbAccess()
+    client = _client_with(
+        _sequence([httpx.Response(498), httpx.Response(498), _ok(fixture_bytes)], seen)
+    )
+    async with client:
+        wb_client = WbClient(client, access)
+        first = await wb_client.get_product_data(_ARTICLE)
+        second = await wb_client.get_product_data(_ARTICLE)
+
+    assert first == MarketplaceFetchFailure(
+        reason=FetchFailureReason.blocked, detail="HTTP 498"
+    )
+    assert second == _RECOVERED
+    assert len(seen) == 3
+    assert access.get_calls == 3
+    assert access.issued == [make_pair(1), make_pair(2)]
+    assert access.invalidated == [make_pair(1)]
+    assert seen[2].headers["cookie"] == "x_wbaas_token=TOKEN-MARKER-2"
 
 
 @pytest.mark.asyncio
