@@ -174,10 +174,29 @@ Only `python-architect` edits the following Git-excluded protocol documents and
 does not edit implementation files:
 
 - `docs/PROJECT.md`: approved architecture.
-- `docs/TASKS.md`: conventions, checklists, open decisions, active ticket cards;
-  targeted edits, approximately 150 KB budget.
-- `docs/TASKS-archive.md`: closed cards, decisions, and agreement history;
-  append-only.
+- `docs/TASKS.md`: project rules and open tickets only — conventions, the AC
+  checklist, the ledger rules and card template, plus issued open tickets;
+  targeted edits, approximately 40 KB budget.
+- `docs/TASKS-archive.md`: closed cards, acceptance protocols, decisions and
+  agreement history; bounded by the retention rule below.
+
+### Ticket ledger retention
+
+The ledger must not accumulate closed work. Acceptance moves the card and its
+protocol into the archive in one insert and deletes that ticket's checklist row
+and card from `docs/TASKS.md`, so a closed ticket leaves no trace in the active
+file. The archive keeps the cards and protocols of the 30 most recently
+accepted tickets; when an acceptance pushes the count past that bound,
+`python-architect` deletes the oldest ticket entries, including older
+transition snapshots. Normative non-ticket blocks (agreement texts with their
+history, the archived `PROJECT.md` material) are not tickets and stay.
+
+IDs are never reused: numbering continues from the highest issued ID (the next
+ticket after `PAB-139` is `PAB-140`) even though old cards are gone, and commits
+address a ticket by `(PAB-NNN)` in the subject. Because these documents are
+Git-excluded, a deleted record is unrecoverable: decisions that must outlive a
+ticket belong in `docs/PROJECT.md` and in the commit message, not only in the
+archive.
 
 ## Repository synchronization
 
