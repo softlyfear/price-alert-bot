@@ -8,6 +8,7 @@ disclaimer wordings themselves are not duplicated: they are imported from
 """
 
 from datetime import datetime
+from datetime import timedelta
 from typing import Final
 from typing import assert_never
 from zoneinfo import ZoneInfo
@@ -590,6 +591,26 @@ def availability_short_text(failure: ProductFailure | None) -> str | None:
     """Short list-button prefix, only when the product is out of stock."""
     if failure is ProductFailure.out_of_stock:
         return "Нет в наличии"
+    return None
+
+
+STALE_PRICE_MARKER: Final[str] = "🕓"
+"""List-button prefix of a price that missed two scheduler cycles (PAB-140)."""
+
+
+def stale_price_short_text(
+    fetched_at: datetime | None, now: datetime, interval_seconds: int
+) -> str | None:
+    """Marker of a price older than two scheduler cycles (PAB-140).
+
+    Age is counted against ``now``, not against the freshest price of the page:
+    batches of one pass are seconds apart and must never be marked. A product
+    without a stamp has no price date to call stale.
+    """
+    if fetched_at is None:
+        return None
+    if now - fetched_at > timedelta(seconds=2 * interval_seconds):
+        return STALE_PRICE_MARKER
     return None
 
 

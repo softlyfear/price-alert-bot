@@ -387,6 +387,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             deadline_seconds=REFRESH_DEADLINE_SECONDS,
         )
         dispatcher["display_timezone"] = settings.app.DISPLAY_TIMEZONE
+        dispatcher["scheduler_interval_seconds"] = (
+            settings.app.SCHEDULER_INTERVAL_SECONDS
+        )
         await configure_bot_profile(bot)
 
         polling_task: asyncio.Task[None] = asyncio.create_task(

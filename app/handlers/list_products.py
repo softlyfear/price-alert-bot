@@ -82,26 +82,37 @@ async def _list_screen(
     tracking: TrackingService,
     user_id: int,
     display_timezone: ZoneInfo,
+    interval_seconds: int,
     page: int = 1,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Text and keyboard of one list page, shared by /list, the menu and paging.
 
-    ``page`` is user input; the service clamps it to the existing pages.
+    ``page`` is user input; the service clamps it to the existing pages. The
+    header names the freshest price of the shown page (PAB-140); a product whose
+    price missed two scheduler cycles stays visible through its button prefix,
+    so the single header time does not hide it.
     """
     product_page = await tracking.list_page(user_id, page)
-    keyboard = product_list_keyboard(product_page)
     if not product_page.products:
-        return texts.LIST_EMPTY_TEXT, keyboard
+        return texts.LIST_EMPTY_TEXT, product_list_keyboard(product_page)
+    now = datetime.now(UTC)
     stamps = [product.price_fetched_at for product in product_page.products]
     price_label = (
         texts.price_time_label(
-            min(stamp for stamp in stamps if stamp is not None),
-            datetime.now(UTC),
+            max(stamp for stamp in stamps if stamp is not None),
+            now,
             display_timezone,
         )
         if all(stamp is not None for stamp in stamps)
         else None
     )
+    stale_ids = {
+        product.id
+        for product in product_page.products
+        if texts.stale_price_short_text(product.price_fetched_at, now, interval_seconds)
+        is not None
+    }
+    keyboard = product_list_keyboard(product_page, stale_ids=stale_ids)
     return (
         texts.list_text(
             product_page.total, product_page.page, product_page.pages, price_label
@@ -198,23 +209,35 @@ def create_router() -> Router:
 
     @router.message(Command("list"))
     async def cmd_list(
-        message: Message, tracking: TrackingService, display_timezone: ZoneInfo
+        message: Message,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Show the caller's products; leaves the FSM state alone."""
         if message.from_user is None:
             return
         text, keyboard = await _list_screen(
-            tracking, message.from_user.id, display_timezone
+            tracking,
+            message.from_user.id,
+            display_timezone,
+            scheduler_interval_seconds,
         )
         await message.answer(text, reply_markup=keyboard, parse_mode=None)
 
     @router.callback_query(F.data == CB_MENU_LIST)
     async def on_menu_list(
-        callback: CallbackQuery, tracking: TrackingService, display_timezone: ZoneInfo
+        callback: CallbackQuery,
+        tracking: TrackingService,
+        display_timezone: ZoneInfo,
+        scheduler_interval_seconds: int,
     ) -> None:
         """ "My products" button: the /list screen in place, for the presser."""
         text, keyboard = await _list_screen(
-            tracking, callback.from_user.id, display_timezone
+            tracking,
+            callback.from_user.id,
+            display_timezone,
+            scheduler_interval_seconds,
         )
         await edit_callback_message(
             callback,
@@ -446,11 +469,15 @@ def create_router() -> Router:
         state: FSMContext,
         tracking: TrackingService,
         display_timezone: ZoneInfo,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Leave a dialog to the presser's list: clear the FSM, screen in place."""
         await state.clear()
         text, keyboard = await _list_screen(
-            tracking, callback.from_user.id, display_timezone
+            tracking,
+            callback.from_user.id,
+            display_timezone,
+            scheduler_interval_seconds,
         )
         await edit_callback_message(
             callback,
@@ -599,6 +626,7 @@ def create_router() -> Router:
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
         state: FSMContext,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Refresh all prices of the pressing user and redraw list page ``page``."""
         user_id = callback.from_user.id
@@ -614,7 +642,7 @@ def create_router() -> Router:
             )
             report = await price_refresher.refresh_list(user_id)
             text, keyboard = await _list_screen(
-                tracking, user_id, display_timezone, page
+                tracking, user_id, display_timezone, scheduler_interval_seconds, page
             )
         except Exception as error:
             await _fail_refresh(progress, user_id, error, "list")
@@ -633,10 +661,17 @@ def create_router() -> Router:
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
         state: FSMContext,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Old page-less "Refresh prices" button: stays on page 1."""
         await refresh_list_page(
-            callback, 1, tracking, price_refresher, display_timezone, state
+            callback,
+            1,
+            tracking,
+            price_refresher,
+            display_timezone,
+            state,
+            scheduler_interval_seconds,
         )
 
     @router.callback_query(ListRefreshCb.filter())
@@ -647,6 +682,7 @@ def create_router() -> Router:
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
         state: FSMContext,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Refresh prices and stay on the page the button was pressed on."""
         await refresh_list_page(
@@ -656,6 +692,7 @@ def create_router() -> Router:
             price_refresher,
             display_timezone,
             state,
+            scheduler_interval_seconds,
         )
 
     @router.callback_query(ListPageCb.filter())
@@ -664,10 +701,15 @@ def create_router() -> Router:
         callback_data: ListPageCb,
         tracking: TrackingService,
         display_timezone: ZoneInfo,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Turn the list page in place; the FSM is not touched."""
         text, keyboard = await _list_screen(
-            tracking, callback.from_user.id, display_timezone, callback_data.page
+            tracking,
+            callback.from_user.id,
+            display_timezone,
+            scheduler_interval_seconds,
+            callback_data.page,
         )
         await edit_callback_message(
             callback,
@@ -683,6 +725,7 @@ def create_router() -> Router:
         tracking: TrackingService,
         price_refresher: PriceRefresher,
         display_timezone: ZoneInfo,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Refresh the price of one product and redraw its card.
 
@@ -712,6 +755,7 @@ def create_router() -> Router:
                     tracking,
                     user_id,
                     display_timezone,
+                    scheduler_interval_seconds,
                     await tracking.list_page_of(user_id, callback_data.product_id),
                 )
                 await edit_message_or_answer(
@@ -739,6 +783,7 @@ def create_router() -> Router:
         callback_data: ProductRemoveCb,
         tracking: TrackingService,
         display_timezone: ZoneInfo,
+        scheduler_interval_seconds: int,
     ) -> None:
         """Stop tracking one product of the pressing user.
 
@@ -755,6 +800,7 @@ def create_router() -> Router:
             tracking,
             user_id,
             display_timezone,
+            scheduler_interval_seconds,
             await tracking.list_page_of(user_id, callback_data.product_id),
         )
         await edit_callback_message(

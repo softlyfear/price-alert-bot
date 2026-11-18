@@ -178,8 +178,10 @@ def real_dispatcher() -> Dispatcher:
         50,
         stub_client_factory(),
     )
-    # ``app/main.py`` adds these two after ``create_dispatcher`` (PAB-100).
+    # ``app/main.py`` adds these three after ``create_dispatcher`` (PAB-100,
+    # PAB-140).
     dispatcher["display_timezone"] = ZoneInfo("Europe/Moscow")
+    dispatcher["scheduler_interval_seconds"] = 900
     refresher = MagicMock(spec=PriceRefresher)
     refresher.reserve.return_value = None
     dispatcher["price_refresher"] = refresher

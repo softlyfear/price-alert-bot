@@ -7,6 +7,7 @@ payload. The /list keyboards carry a single database id in a typed
 """
 
 from collections import Counter
+from collections.abc import Collection
 from collections.abc import Sequence
 from typing import Final
 
@@ -325,25 +326,37 @@ def _short_name(name: str) -> str:
     return flat
 
 
-def _product_button_text(product: Product) -> str:
-    """List button: the last known price, with an out-of-stock prefix only."""
+def _product_button_text(product: Product, stale: bool = False) -> str:
+    """List button: a stale marker, an out-of-stock prefix, price and name.
+
+    ``stale`` is decided by the screen (PAB-140): the keyboard only renders.
+    """
     name = (
         f"{_short_name(product.product_name)}"
         f"{texts.size_suffix(product.wb_size_id, product.wb_size_name)}"
     )
-    parts = [texts.availability_short_text(product.last_failure)]
+    parts = [
+        texts.STALE_PRICE_MARKER if stale else None,
+        texts.availability_short_text(product.last_failure),
+    ]
     if product.current_price > 0:
         parts.append(format_price(product.current_price))
     parts.append(name)
     return " · ".join(part for part in parts if part is not None)
 
 
-def product_list_keyboard(page: ProductPage) -> InlineKeyboardMarkup:
-    """One button per product of the page, nav row (if paged), refresh, menu."""
+def product_list_keyboard(
+    page: ProductPage, *, stale_ids: Collection[int] = ()
+) -> InlineKeyboardMarkup:
+    """One button per product of the page, nav row (if paged), refresh, menu.
+
+    ``stale_ids`` are the products whose price the screen found older than two
+    scheduler cycles (PAB-140); they carry the ``🕓`` prefix.
+    """
     rows = [
         [
             InlineKeyboardButton(
-                text=_product_button_text(product),
+                text=_product_button_text(product, product.id in stale_ids),
                 callback_data=ProductCardCb(product_id=product.id).pack(),
             )
         ]

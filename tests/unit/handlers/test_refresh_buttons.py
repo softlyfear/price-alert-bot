@@ -62,7 +62,7 @@ _LIST_HEAD = (
     "Вы следите за товарами: 1.\nЦены на 14:05\nЦена без учёта персональных скидок."
 )
 _LIST_ROWS = [
-    [(f"1{NB}755{NB}₽ · Из базы <b>1", "pcard:5")],
+    [(f"🕓 · 1{NB}755{NB}₽ · Из базы <b>1", "pcard:5")],
     [("🔄 Обновить цены", "lref:1")],
     [("➕ Добавить товар", "menu:add"), ("Главное меню", "menu:start")],
 ]
@@ -170,7 +170,7 @@ async def test_list_refresh_keeps_product_rows_visible_while_waiting(
         progress_rows = rows(progress)
         assert len(progress_rows) == len(_LIST_ROWS)
         assert [[label for label, _ in row] for row in progress_rows] == [
-            ["1\u00a0755\u00a0₽ · Из базы <b>1"],
+            ["🕓 · 1\u00a0755\u00a0₽ · Из базы <b>1"],
             ["Обновляю цены…"],
             ["➕ Добавить товар", "Главное меню"],
         ]

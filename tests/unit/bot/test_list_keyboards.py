@@ -125,6 +125,26 @@ def test_list_button_of_an_out_of_stock_product_keeps_the_status_and_price() -> 
     assert button.text == f"Нет в наличии · 1{_NB}990{_NB}₽ · Кроссовки"
 
 
+def test_list_button_marks_a_stale_price_before_the_out_of_stock_status() -> None:
+    product = _product(7, "Кроссовки", 199_000)
+    product.last_failure = ProductFailure.out_of_stock
+
+    button = product_list_keyboard(_page([product]), stale_ids={7}).inline_keyboard[0][
+        0
+    ]
+
+    assert button.text == f"🕓 · Нет в наличии · 1{_NB}990{_NB}₽ · Кроссовки"
+
+
+def test_list_button_of_a_product_that_is_not_stale_has_no_marker() -> None:
+    button = product_list_keyboard(_page([_product(7)]), stale_ids={8}).inline_keyboard[
+        0
+    ][0]
+
+    assert button.text == f"1{_NB}990{_NB}₽ · Item"
+    assert texts.STALE_PRICE_MARKER not in button.text
+
+
 @pytest.mark.parametrize(
     "failure",
     [

@@ -85,7 +85,7 @@ async def test_dialog_list_clears_the_dialog_and_shows_the_list_of_the_presser(
         "Вы следите за товарами: 1.\nЦены на 14:05\nЦена без учёта персональных скидок."
     )
     assert [b for row in rows(edit) for b in row][0] == (
-        f"1{NB}755{NB}₽ · Из базы <b>1",
+        f"🕓 · 1{NB}755{NB}₽ · Из базы <b>1",
         "pcard:5",
     )
     assert len(card_dialog.callback_answers) == 1

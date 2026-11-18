@@ -78,6 +78,20 @@ _SAMPLE_FUNCTIONS: dict[str, Callable[[], str]] = {
         for failure in ProductFailure
         if (short := texts.availability_short_text(failure)) is not None
     ),
+    "stale_price_short_text": lambda: "\n".join(
+        marker
+        for fetched_at in (
+            None,
+            datetime(2026, 10, 21, 11, 5, tzinfo=UTC),
+            datetime(2026, 10, 21, 11, 59, tzinfo=UTC),
+        )
+        if (
+            marker := texts.stale_price_short_text(
+                fetched_at, datetime(2026, 10, 21, 12, 0, tzinfo=UTC), 900
+            )
+        )
+        is not None
+    ),
     "remove_alert_button_text": texts.remove_alert_button_text,
     "edit_alert_button_text": lambda: texts.edit_alert_button_text(
         AlertDirection.below, 1_000_00, with_arrow=True

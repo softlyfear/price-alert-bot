@@ -13,20 +13,35 @@ from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from aiogram.methods import EditMessageText
+from aiogram.methods import SendMessage
 
 from app.bot import texts
+from app.models.enums import ProductFailure
 from tests.unit.handlers.add_dialog_support import _USER
 from tests.unit.handlers.add_dialog_support import _Dialog
 from tests.unit.handlers.card_dialog_support import NB
 from tests.unit.handlers.card_dialog_support import card
 from tests.unit.handlers.card_dialog_support import page_of
 from tests.unit.handlers.card_dialog_support import product
+from tests.unit.handlers.card_dialog_support import rows
 
 _PRICES_LINE = "\nЦены на "
 
 
-def _at(hour: int, minute: int = 0, *, day: int = 21) -> datetime:
-    return datetime(2026, 10, day, hour, minute, tzinfo=UTC)
+def _at(hour: int, minute: int = 0, *, day: int = 21, second: int = 0) -> datetime:
+    return datetime(2026, 10, day, hour, minute, second, tzinfo=UTC)
+
+
+def _product_buttons(
+    request: SendMessage | EditMessageText,
+) -> list[tuple[str, str | None]]:
+    """Product buttons of a rendered list page, without the action rows."""
+    return [
+        row[0]
+        for row in rows(request)
+        if row[0][1] is not None and row[0][1].startswith("pcard:")
+    ]
 
 
 def _price_line(text: str) -> str | None:
@@ -36,20 +51,20 @@ def _price_line(text: str) -> str | None:
 
 
 @pytest.mark.asyncio
-async def test_list_label_is_the_oldest_price_among_the_shown_products(
+async def test_list_label_is_the_freshest_price_among_the_shown_products(
     card_dialog: _Dialog, card_service: MagicMock
 ) -> None:
     card_service.list_page.return_value = page_of(
         [
             product(1, _at(11, 5)),
-            product(2, _at(9, 0)),  # the oldest: 12:00 in Moscow
-            product(3, _at(11, 59)),
+            product(2, _at(9, 0)),
+            product(3, _at(11, 59)),  # the freshest: 14:59 in Moscow
         ]
     )
 
     await card_dialog.command("list")
 
-    assert _price_line(card_dialog.sent[0].text) == "Цены на 12:00"
+    assert _price_line(card_dialog.sent[0].text) == "Цены на 14:59"
 
 
 @pytest.mark.asyncio
@@ -58,31 +73,30 @@ async def test_list_label_does_not_depend_on_the_order_of_the_products(
 ) -> None:
     card_service.list_page.return_value = page_of(
         [
-            product(1, _at(9, 0)),
-            product(2, _at(11, 5)),
+            product(1, _at(11, 59)),
+            product(2, _at(9, 0)),
         ]
     )
 
     await card_dialog.command("list")
 
-    assert _price_line(card_dialog.sent[0].text) == "Цены на 12:00"
+    assert _price_line(card_dialog.sent[0].text) == "Цены на 14:59"
 
 
 @pytest.mark.asyncio
-async def test_list_label_adds_the_date_when_the_oldest_price_is_not_from_today(
+async def test_list_label_adds_the_date_when_the_freshest_price_is_not_from_today(
     card_dialog: _Dialog, card_service: MagicMock
 ) -> None:
     card_service.list_page.return_value = page_of(
         [
-            product(1, _at(11, 5)),
-            product(2, _at(21, 30, day=20)),  # 00:30 on the 21st in Moscow, still older
-            product(3, _at(23, 30, day=19)),  # 02:30 on the 20th in Moscow: the oldest
+            product(1, _at(10, 0, day=19)),
+            product(2, _at(10, 0, day=20)),  # the freshest: 13:00 on the 20th in Moscow
         ]
     )
 
     await card_dialog.command("list")
 
-    assert _price_line(card_dialog.sent[0].text) == "Цены на 20.10 02:30"
+    assert _price_line(card_dialog.sent[0].text) == "Цены на 20.10 13:00"
 
 
 @pytest.mark.asyncio
@@ -108,13 +122,94 @@ async def test_list_label_is_taken_from_the_products_of_the_shown_page(
     card_dialog: _Dialog, card_service: MagicMock
 ) -> None:
     shown = [product(i, _at(11, 5)) for i in range(11, 21)]
-    shown[3] = product(14, _at(8, 0))  # the oldest of the page: 11:00 in Moscow
+    shown[3] = product(14, _at(11, 30))  # the freshest of the page: 14:30 in Moscow
     card_service.list_page.return_value = page_of(shown, page=2, pages=3, total=23)
 
     await card_dialog.command("list")
 
     assert "Стр. 2/3." in card_dialog.sent[0].text
-    assert _price_line(card_dialog.sent[0].text) == "Цены на 11:00"
+    assert _price_line(card_dialog.sent[0].text) == "Цены на 14:30"
+
+
+@pytest.mark.asyncio
+async def test_list_marks_a_price_that_missed_two_scheduler_cycles(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    """The clock is 12:00 UTC and the interval is 900 s: the cutoff is 11:30."""
+    card_service.list_page.return_value = page_of(
+        [
+            product(1, _at(11, 29, second=59)),  # 1801 s old: stale
+            product(2, _at(11, 30)),  # exactly 1800 s old: still fresh
+        ]
+    )
+
+    await card_dialog.command("list")
+
+    buttons = _product_buttons(card_dialog.sent[0])
+    assert buttons[0] == (
+        f"{texts.STALE_PRICE_MARKER} · 1{NB}755{NB}₽ · Из базы <b>1",
+        "pcard:1",
+    )
+    assert buttons[1] == (f"1{NB}755{NB}₽ · Из базы <b>1", "pcard:2")
+
+
+@pytest.mark.asyncio
+async def test_list_marks_nothing_when_the_prices_came_from_one_pass(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    card_service.list_page.return_value = page_of(
+        [product(1, _at(11, 59, second=30)), product(2, _at(11, 59, second=50))]
+    )
+
+    await card_dialog.command("list")
+
+    buttons = _product_buttons(card_dialog.sent[0])
+    assert [text for text, _ in buttons] == [
+        f"1{NB}755{NB}₽ · Из базы <b>1",
+        f"1{NB}755{NB}₽ · Из базы <b>1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_marker_uses_the_scheduler_interval_of_the_dispatcher(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    card_dialog.dispatcher["scheduler_interval_seconds"] = 30
+    card_service.list_page.return_value = page_of([product(1, _at(11, 58))])
+
+    await card_dialog.command("list")
+
+    assert rows(card_dialog.sent[0])[0][0][0].startswith(texts.STALE_PRICE_MARKER)
+
+
+@pytest.mark.asyncio
+async def test_list_does_not_mark_a_product_without_a_price_stamp(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    card_service.list_page.return_value = page_of([product(1, None)])
+
+    await card_dialog.command("list")
+
+    assert rows(card_dialog.sent[0])[0][0] == (
+        f"1{NB}755{NB}₽ · Из базы <b>1",
+        "pcard:1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_marks_a_stale_out_of_stock_product_after_the_marker(
+    card_dialog: _Dialog, card_service: MagicMock
+) -> None:
+    stale = product(1, _at(10, 0))
+    stale.last_failure = ProductFailure.out_of_stock
+    card_service.list_page.return_value = page_of([stale])
+
+    await card_dialog.command("list")
+
+    assert rows(card_dialog.sent[0])[0][0] == (
+        f"{texts.STALE_PRICE_MARKER} · Нет в наличии · 1{NB}755{NB}₽ · Из базы <b>1",
+        "pcard:1",
+    )
 
 
 @pytest.mark.asyncio
