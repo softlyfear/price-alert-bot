@@ -139,11 +139,19 @@ def _wipes_project(target: str, cwd: str, project: str) -> bool:
     wipes_contents = target == "*" or target.endswith("/*")
     base = target[:-1] if wipes_contents else target
     path = os.path.normpath(os.path.join(cwd, os.path.expanduser(base or ".")))
+    data_root = os.path.join(project, "data")
     guarded = (
         project,
-        *(os.path.join(project, name) for name in ("docs", ".opencode", ".agents")),
+        *(
+            os.path.join(project, name)
+            for name in ("docs", ".opencode", ".agents", "data")
+        ),
     )
-    return path in guarded or project.startswith(path.rstrip("/") + "/")
+    return (
+        path in guarded
+        or path.startswith(data_root + "/")
+        or project.startswith(path.rstrip("/") + "/")
+    )
 
 
 def check(

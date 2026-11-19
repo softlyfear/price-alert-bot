@@ -609,7 +609,13 @@ def stale_price_short_text(
     """
     if fetched_at is None:
         return None
-    if now - fetched_at > timedelta(seconds=2 * interval_seconds):
+    try:
+        limit = timedelta(seconds=2 * interval_seconds)
+    except OverflowError:
+        # An absurd interval cannot be compared; crashing the list is worse
+        # than leaving the marker off.
+        return None
+    if now - fetched_at > limit:
         return STALE_PRICE_MARKER
     return None
 

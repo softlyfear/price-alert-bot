@@ -212,6 +212,13 @@ async def test_list_marks_a_stale_out_of_stock_product_after_the_marker(
     )
 
 
+def test_stale_marker_does_not_crash_when_the_interval_overflows_timedelta() -> None:
+    """A typo in the interval must not take down the product list."""
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+
+    assert texts.stale_price_short_text(now, now, 10**18) is None
+
+
 @pytest.mark.asyncio
 async def test_list_has_no_label_when_the_stamp_of_the_last_page_product_is_missing(
     card_dialog: _Dialog, card_service: MagicMock

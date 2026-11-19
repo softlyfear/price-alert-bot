@@ -78,7 +78,9 @@ def _article(token: str) -> int:
 
 
 def _wb_article(path: str) -> int:
-    parts = path.split("/")
+    # Share sheets and browsers append a trailing slash to an otherwise valid
+    # product URL. Extra path segments stay rejected.
+    parts = path.rstrip("/").split("/")
     if len(parts) != 4 or parts[0] != "" or parts[1] != "catalog":
         raise ProductRefParseError("unsupported Wildberries path")
     if parts[3] != "detail.aspx":

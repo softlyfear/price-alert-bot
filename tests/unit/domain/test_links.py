@@ -39,6 +39,14 @@ OZON = Marketplace.ozon
         ("www.wildberries.ru/catalog/12345678/detail.aspx", ProductRef(WB, 12345678)),
         ("wb.ru/catalog/7/detail.aspx", ProductRef(WB, 7)),
         (
+            "https://www.wildberries.ru/catalog/12345678/detail.aspx/",
+            ProductRef(WB, 12345678),
+        ),
+        (
+            "https://www.wb.ru/catalog/12345678/detail.aspx/?size=7",
+            ProductRef(WB, 12345678, 7),
+        ),
+        (
             "https://www.wildberries.ru/catalog/12345678/detail.aspx?targetUrl=GP#x",
             ProductRef(WB, 12345678),
         ),

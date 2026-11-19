@@ -75,11 +75,16 @@ class RedisSettings(BaseModel):
         return f"redis://{auth}{self.HOST}:{self.PORT}/{self.DB}"
 
 
+# Below ``timedelta``'s C limit, and above any real schedule. A larger value
+# crashes startup (cooldown) or the product list (stale-price marker).
+_MAX_SCHEDULE_SECONDS = 86_400 * 366 * 100
+
+
 class AppSettings(BaseModel):
     """Non-secret runtime settings with safe defaults."""
 
-    SCHEDULER_INTERVAL_SECONDS: int = Field(default=900, gt=0)
-    ALERT_COOLDOWN_SECONDS: int = Field(default=86400, gt=0)
+    SCHEDULER_INTERVAL_SECONDS: int = Field(default=900, gt=0, le=_MAX_SCHEDULE_SECONDS)
+    ALERT_COOLDOWN_SECONDS: int = Field(default=86400, gt=0, le=_MAX_SCHEDULE_SECONDS)
     MAX_PRODUCTS_PER_USER: int = Field(default=50, gt=0)
     MARKETPLACE_CONCURRENCY: int = Field(default=5, gt=0)
     HTTP_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=60, allow_inf_nan=False)
@@ -131,7 +136,12 @@ def _check_proxy_url(url: str) -> None:
         password = parts.password
     except ValueError:
         raise ValueError(msg) from None
-    if parts.scheme not in _PROXY_SCHEMES or not host or not host.strip():
+    if (
+        parts.scheme not in _PROXY_SCHEMES
+        or not host
+        or not host.strip()
+        or any(char.isspace() for char in host)
+    ):
         raise ValueError(msg)
     if port is None or not 1 <= port <= 65535:
         raise ValueError(msg)

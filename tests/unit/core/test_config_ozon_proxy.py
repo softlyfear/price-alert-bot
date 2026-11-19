@@ -45,6 +45,8 @@ _INVALID = {
     "ipv6-port-not-a-number": "socks5://LOGINMARK:PASSMARK@[::1]:abc",
     "host-empty": "socks5://LOGINMARK:PASSMARK@:1080",
     "host-blank": "socks5://LOGINMARK:PASSMARK@ :1080",
+    "host-internal-space": "socks5://LOGINMARK:PASSMARK@host mark.example:1080",
+    "host-trailing-space": "socks5://LOGINMARK:PASSMARK@hostmark.example :1080",
     "host-missing-entirely": "socks5://",
     "login-without-password": "socks5://LOGINMARK@hostmark.example:1080",
     "password-without-login": "socks5://:PASSMARK@hostmark.example:1080",

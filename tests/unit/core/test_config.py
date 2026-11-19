@@ -187,6 +187,30 @@ def test_app_settings_gt_zero_fields_reject_zero_and_negative_but_accept_one(
     assert getattr(AppSettings.model_validate({field_name: 1}), field_name) == 1
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    ["SCHEDULER_INTERVAL_SECONDS", "ALERT_COOLDOWN_SECONDS"],
+)
+def test_schedule_fields_reject_a_value_that_overflows_timedelta(
+    field_name: str,
+) -> None:
+    """A typo such as ``1e18`` must fail at startup, not crash the list later."""
+    from app.core.config import _MAX_SCHEDULE_SECONDS
+
+    assert (
+        getattr(
+            AppSettings.model_validate({field_name: _MAX_SCHEDULE_SECONDS}), field_name
+        )
+        == _MAX_SCHEDULE_SECONDS
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        AppSettings.model_validate({field_name: _MAX_SCHEDULE_SECONDS + 1})
+    assert any(
+        e["type"] == "less_than_equal" and e["loc"] == (field_name,)
+        for e in excinfo.value.errors()
+    )
+
+
 # --- HTTP_TIMEOUT_SECONDS: inf/nan and the two-sided upper boundary ------
 # (agreement 12: gt/le alone do not reject infinity)
 

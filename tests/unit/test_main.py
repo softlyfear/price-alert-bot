@@ -1063,6 +1063,87 @@ async def test_shutdown_runs_all_twelve_steps_in_the_exact_documented_order(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_cancels_polling_that_has_not_started_instead_of_hanging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop_polling`` raises before aiogram takes its lock; the wait must end."""
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(recorder)
+    doubles.polling_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await doubles.polling_task
+
+    async def stuck() -> None:
+        await asyncio.Event().wait()
+
+    stuck_task = asyncio.create_task(stuck())
+
+    class _NotStarted:
+        async def stop_polling(self) -> None:
+            recorder.events.append("stop_polling")
+            raise RuntimeError("Polling is not started")
+
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    await asyncio.wait_for(
+        main._shutdown(
+            cast(Dispatcher, _NotStarted()),
+            stuck_task,
+            doubles.scheduler_task,
+            doubles.stop_event,
+            doubles.bot,
+            doubles.http_client,
+            doubles.storage,
+            doubles.wb_access,
+            doubles.ozon_access,
+            doubles.ozon_session,
+        ),
+        timeout=2,
+    )
+
+    assert stuck_task.cancelled()
+    assert "stop_polling" in recorder.events
+    assert "dispose_engine" in recorder.events
+
+
+@pytest.mark.asyncio
+async def test_await_polling_task_cancels_when_the_wait_budget_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "_POLLING_STOP_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(main, "_SCHEDULER_CANCEL_TIMEOUT_SECONDS", 1.0)
+
+    async def stuck() -> None:
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(stuck())
+    await main._await_polling_task(task)
+
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_await_polling_task_logs_when_cancellation_does_not_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main, "_POLLING_STOP_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(main, "_SCHEDULER_CANCEL_TIMEOUT_SECONDS", 0.01)
+
+    async def immune() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(immune())
+    await main._await_polling_task(task)
+
+    assert not task.done()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_shutdown_skips_stop_polling_when_task_already_done(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3448,6 +3529,7 @@ def test_shutdown_budgets_are_30_45_5_and_wb_close_10_seconds() -> None:
     assert main._SCHEDULER_CANCEL_TIMEOUT_SECONDS == 5.0
     assert main._WB_ACCESS_CLOSE_TIMEOUT_SECONDS == 10.0
     assert main._OZON_ACCESS_CLOSE_TIMEOUT_SECONDS == 10.0
+    assert main._POLLING_STOP_TIMEOUT_SECONDS == 5.0
 
 
 # --- PAB-100: the manual refresher and the display zone reach the bot (AC10) ---

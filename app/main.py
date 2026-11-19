@@ -58,6 +58,9 @@ _SCHEDULER_STOP_TIMEOUT_SECONDS: Final[float] = 45.0
 _SCHEDULER_CANCEL_TIMEOUT_SECONDS: Final[float] = 5.0
 _WB_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 _OZON_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
+# A stop that lands before aiogram takes its lock must not wait forever.
+_POLLING_STOP_TIMEOUT_SECONDS: Final[float] = 5.0
+_POLLING_NOT_STARTED: Final[str] = "Polling is not started"
 
 
 def _log_task_failure(task: "asyncio.Task[None]", label: str) -> None:
@@ -138,15 +141,42 @@ async def _ensure_telegram_available(bot: Bot) -> None:
 async def _stop_polling_if_running(
     dispatcher: Dispatcher, polling_task: "asyncio.Task[None]"
 ) -> None:
-    """Avoid stop_polling raising when polling has already stopped."""
+    """Stop polling, or cancel it if it has not taken aiogram's lock yet.
+
+    ``stop_polling`` raises ``RuntimeError`` when ``start_polling`` has not
+    acquired its lock. Leaving the task running then makes the following wait
+    hang until the process is killed.
+    """
     if polling_task.done():
         return
-    await dispatcher.stop_polling()
+    try:
+        await dispatcher.stop_polling()
+    except RuntimeError as exc:
+        if _POLLING_NOT_STARTED not in str(exc):
+            raise
+        logger.warning("Polling had not started; cancelling the polling task")
+        polling_task.cancel()
 
 
 async def _await_polling_task(polling_task: "asyncio.Task[None]") -> None:
-    """Wait without re-raising an exception already logged by the done callback."""
-    await asyncio.wait({polling_task})
+    """Wait without re-raising an exception already logged by the done callback.
+
+    The wait is bounded: a task that ignores cancellation must not hold
+    shutdown until the container is killed.
+    """
+    done, _ = await asyncio.wait({polling_task}, timeout=_POLLING_STOP_TIMEOUT_SECONDS)
+    if done:
+        return
+    logger.warning(
+        "Timed out after {timeout}s waiting for polling to stop; cancelling",
+        timeout=_POLLING_STOP_TIMEOUT_SECONDS,
+    )
+    polling_task.cancel()
+    done, _ = await asyncio.wait(
+        {polling_task}, timeout=_SCHEDULER_CANCEL_TIMEOUT_SECONDS
+    )
+    if not done:
+        logger.warning("Polling task did not finish after cancellation")
 
 
 async def _await_inflight_updates(dispatcher: Dispatcher) -> None:
