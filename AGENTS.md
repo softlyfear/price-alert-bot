@@ -67,12 +67,17 @@ affected owners; only the architect updates `Попытка` in `docs/TASKS.md`.
   OpenCode project config (`opencode.jsonc`, `.opencode/`). `devops-agent` owns
   packaging, CI, and operational scripts. Do not involve unaffected product
   layers for a simple configuration edit.
-- Role definitions are `.opencode/agents/<role>.md`. `python-architect` and
-  `code-reviewer` use `openai/gpt-6.1-sol#high`. The nine layer roles use
-  `openai/gpt-6.1-terra#high`. These are the installed OpenCode catalog IDs for
-  the previous Sol/Terra high split. Do not invent aliases. When role loading
-  is unavailable, pass its instructions, model, and variant explicitly; use
-  fresh context if the tool requires it.
+- Role definitions are `.opencode/agents/<role>.md` and pin no model: a subagent
+  with no `model` field inherits the model and reasoning variant of the running
+  session, so one provider's subscription quota or outage never blocks the role
+  chain. Choose the session model and its reasoning level instead of editing
+  role files; do not add `model:` back without an explicit decision. Per-role
+  reasoning levels are not available this way: OpenCode's `variant` applies only
+  when the agent has its own configured model, and not every model offers every
+  level. When role loading is unavailable, pass the role instructions explicitly
+  in a fresh context; the model stays the session's.
+- Role files must stay vendor-neutral: no provider names, model IDs or reasoning
+  levels in the instructions or the delegation prompts.
 - Delegation includes ticket ID, AC, allowed files, tree state, and prior results.
   Parallel work must not overlap writes, dependency synchronization, or Git.
   No more than three children at once; the environment's actual limit prevails.

@@ -1,7 +1,6 @@
 ---
 description: "Owns architecture, ticket planning, protocol records and final acceptance after code-reviewer."
 mode: subagent
-model: openai/gpt-6.1-sol#high
 ---
 
 # Architecture and final acceptance

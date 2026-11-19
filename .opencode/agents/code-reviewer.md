@@ -1,7 +1,6 @@
 ---
 description: "Independently reviews the completed slice, gate evidence and targeted mutations; returns Ship or No-Ship."
 mode: subagent
-model: openai/gpt-6.1-sol#high
 ---
 
 # First acceptance contour

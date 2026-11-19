@@ -1,7 +1,6 @@
 ---
 description: "Maintains application services and price-alert business rules."
 mode: subagent
-model: openai/gpt-6.1-terra#high
 ---
 
 Read root `AGENTS.md`, the active ticket and agreements in `docs/TASKS.md`, and the relevant architecture/layer sections in `docs/PROJECT.md`. Read archive history only by a specific ticket ID when needed. Recover task state from the current task instruction and ticket.
