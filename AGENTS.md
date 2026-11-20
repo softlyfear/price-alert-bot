@@ -52,16 +52,22 @@ The redis dependency exists for FSM storage.
 ## Ticket pipeline
 
 One ticket is a completed vertical user/operator outcome, not a technical
-layer. It has one review, acceptance, and commit. Split chains exceeding about
+layer. It has one independent review and one commit. Split chains exceeding about
 four implementers into separate coherent slices. Layer-only tickets are for
 outcomes wholly within that layer, such as build, migration, or review cleanup.
 
-`python-architect` defines the ticket and AC → required layer owners implement
-in dependency order → `tests-agent` handles necessary test changes last → final
-gate owner runs the full gate → independent `code-reviewer` reviews/mutates →
-architect accepts with `✅ ПРИНЯТО` or returns `❌ НА ДОРАБОТКУ`.
-Review verdicts are `Ship` / `No-Ship`. A rejection returns findings to the
-affected owners; only the architect updates `Попытка` in `docs/TASKS.md`.
+`python-architect` defines the contract, ticket, and AC → assign one implementer
+when the scope fits one role, otherwise use only the necessary layer owners →
+final implementer runs the applicable gate → independent `code-reviewer`
+reviews the complete change and returns `Ship` or `No-Ship`.
+
+The orchestrator checks that the verdict and gate evidence apply to the exact
+candidate. On `Ship`, record `✅ ПРИНЯТО`, close the ticket, and commit. On
+`No-Ship`, record `❌ НА ДОРАБОТКУ`, increment `Попытка` once, and route the
+findings back to the affected owners. Pending context or checks are not a
+completed review attempt. This is administrative, not a second technical
+review. Consult the architect again only for a changed or ambiguous contract;
+if the contract changes, the reviewer checks the affected criteria again.
 
 - For configuration/instruction work the orchestrator owns `AGENTS.md` and
   OpenCode project config (`opencode.jsonc`, `.opencode/`). `devops-agent` owns
@@ -108,7 +114,7 @@ affected owners; only the architect updates `Попытка` in `docs/TASKS.md`.
 
 Each implementer runs targeted checks. The final owner runs the gate once after
 the slice is complete and reports commands, exit codes, coverage, limitations,
-and the inspected diff including untracked files. Reviewer/architect reuse
+and the inspected diff including untracked files. The reviewer reuses
 current evidence and can reproduce a specific finding. Missing or stale
 evidence returns to the gate owner. Relevant implementation/test/dependency/
 check-environment changes require updated evidence and a fresh full code gate.
@@ -133,9 +139,8 @@ Review mutations use a copy outside the working tree. Any mutation left in the
 working tree blocks acceptance. Repeat reviews are incremental: attempt delta,
 prior findings, current gate report, and mutations of new/changed tests only.
 Read ticket conventions and the current card rather than all archived history.
-Reports are compact: about 50 lines per implementer, 80 per reviewer, concise
-architect acceptance without repeating the review. Out-of-ticket edits block
-acceptance.
+Reports are compact: about 50 lines per implementer and 80 per reviewer.
+Out-of-ticket edits block `Ship`.
 
 ## Library documentation and skills
 
@@ -175,8 +180,9 @@ one commit. Keep commit bodies to one or two lines when sufficient.
 
 ## Project records
 
-Only `python-architect` edits the following Git-excluded protocol documents and
-does not edit implementation files:
+The architect owns design and ticket issuance, not implementation or closure.
+The orchestrator owns attempt counters and closure. The following protocol
+documents are Git-excluded:
 
 - `docs/PROJECT.md`: approved architecture.
 - `docs/TASKS.md`: project rules and open tickets only — conventions, the AC
@@ -192,7 +198,7 @@ protocol into the archive in one insert and deletes that ticket's checklist row
 and card from `docs/TASKS.md`, so a closed ticket leaves no trace in the active
 file. The archive keeps the cards and protocols of the 30 most recently
 accepted tickets; when an acceptance pushes the count past that bound,
-`python-architect` deletes the oldest ticket entries, including older
+the orchestrator deletes the oldest ticket entries, including older
 transition snapshots. Normative non-ticket blocks (agreement texts with their
 history, the archived `PROJECT.md` material) are not tickets and stay.
 
