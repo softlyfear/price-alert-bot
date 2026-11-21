@@ -92,6 +92,10 @@ if the contract changes, the reviewer checks the affected criteria again.
 - Only the orchestrator commits or switches branches. Start the next ticket
   after review and acceptance. Role file boundaries are behavioral instructions,
   not separate filesystem sandboxes.
+- The architect can edit only design and ticket records. The reviewer reads
+  project files and parent-provided evidence without shell or edit access.
+  The reviewer specifies and assesses independent mutation probes; the
+  orchestrator runs them on a disposable copy and returns the actual results.
 - Shell safety and post-edit Python lint live in the `project-guard` plugin.
   OpenCode's ruff formatter formats Python after `write`, `edit`, and `patch`.
   Changed plugin files apply on the next config reload.

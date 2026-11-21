@@ -7,7 +7,7 @@ import { editedPythonPaths } from "./edited-paths.mjs"
 const pluginDir = path.dirname(fileURLToPath(import.meta.url))
 const EDIT_TOOLS = new Set(["edit", "write", "patch"])
 
-function run(command, args, cwd, input) {
+function run(command, args, cwd, input, timeout) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd })
     let stdout = ""
@@ -18,28 +18,41 @@ function run(command, args, cwd, input) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk
     })
-    child.on("error", () => resolve({ code: 1, stdout, stderr }))
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }))
+    const timer = timeout && setTimeout(() => {
+      child.kill("SIGKILL")
+      resolve({ code: 1, stdout, stderr })
+    }, timeout)
+    const finish = (code) => {
+      if (timer) clearTimeout(timer)
+      resolve({ code: code ?? 1, stdout, stderr })
+    }
+    child.on("error", () => finish(1))
+    child.on("close", finish)
+    child.stdin.on("error", () => finish(1))
     if (input !== undefined) child.stdin.end(input)
     else child.stdin.end()
   })
 }
 
 async function guardCommand(command, cwd) {
+  const unavailable = { decision: "deny", reason: "shell guard could not verify this command" }
   const result = await run(
     "python3",
     [path.join(pluginDir, "guard_bash.py")],
     cwd,
     JSON.stringify({ command, cwd }),
+    8000,
   )
-  if (result.code !== 0) return null
+  if (result.code !== 0) return unavailable
   try {
     const parsed = JSON.parse(result.stdout)
-    if (parsed && (parsed.decision === "deny" || parsed.decision === "ask")) return parsed
+    if (parsed?.decision === "allow") return null
+    if ((parsed?.decision === "deny" || parsed?.decision === "ask") &&
+        typeof parsed.reason === "string" && parsed.reason) return parsed
   } catch {
-    return null
+    return unavailable
   }
-  return null
+  return unavailable
 }
 
 export default Plugin.define({
@@ -48,7 +61,7 @@ export default Plugin.define({
     const root = ctx.location.project?.canonical ?? ctx.location.directory
 
     await ctx.permission.hook("evaluate", async (event) => {
-      if (event.action !== "shell") return
+      if (event.action !== "shell" || event.effect === "deny") return
       for (const command of event.resources) {
         if (typeof command !== "string" || command.length === 0) continue
         const verdict = await guardCommand(command, root)

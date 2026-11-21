@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+
+def test_cli_returns_explicit_allow_for_routine_status() -> None:
+    root = Path(__file__).resolve().parents[3]
+    script = root / ".opencode" / "plugins" / "project-guard" / "guard_bash.py"
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps({"command": "git status", "cwd": str(root)}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {"decision": "allow"}
 
 
 def _load_check() -> Any:

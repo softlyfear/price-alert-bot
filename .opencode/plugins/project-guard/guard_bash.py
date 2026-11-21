@@ -278,7 +278,7 @@ def main() -> None:
     command = data.get("command") or ""
     verdict = check(command, data.get("cwd"))
     if verdict is None:
-        sys.stdout.write("{}\n")
+        sys.stdout.write('{"decision":"allow"}\n')
         return
     decision, reason = verdict
     sys.stdout.write(json.dumps({"decision": decision, "reason": reason}) + "\n")
