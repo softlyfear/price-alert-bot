@@ -61,6 +61,12 @@ when the scope fits one role, otherwise use only the necessary layer owners →
 final implementer runs the applicable gate → independent `code-reviewer`
 reviews the complete change and returns `Ship` or `No-Ship`.
 
+Trivial single-layer corrections with an unambiguous outcome may skip the
+architect: the orchestrator records the ticket ID, AC, owner and allowed paths
+in `docs/TASKS.md`, the owner implements it, and the same gate and independent
+review still apply. Architecture changes, cross-layer work, and ambiguous
+requirements always use the architect.
+
 The orchestrator checks that the verdict and gate evidence apply to the exact
 candidate. On `Ship`, record `✅ ПРИНЯТО`, close the ticket, and commit. On
 `No-Ship`, record `❌ НА ДОРАБОТКУ`, increment `Попытка` once, and route the
@@ -90,8 +96,9 @@ if the contract changes, the reviewer checks the affected criteria again.
 - A layer owner requests foreign-layer edits through
   `Требуется правка в чужом слое` rather than editing those files.
 - Only the orchestrator commits or switches branches. Start the next ticket
-  after review and acceptance. Role file boundaries are behavioral instructions,
-  not separate filesystem sandboxes.
+  after review and acceptance. Role file boundaries are behavioral instructions;
+  native permissions enforce the read, edit, and shell restrictions only where
+  an agent declares them.
 - The architect can edit only design and ticket records. The reviewer reads
   project files and parent-provided evidence without shell or edit access.
   The reviewer specifies and assesses independent mutation probes; the
@@ -112,14 +119,18 @@ if the contract changes, the reviewer checks the affected criteria again.
 | `tests-agent` | `tests/**` |
 | `devops-agent` | Dockerfile, docker-compose.yml, Makefile, pyproject.toml, pre-commit config, CI |
 
+Assign only owners whose files the ticket changes; do not convene unaffected
+roles.
+
 ### Checks and review evidence
 
 Each implementer runs targeted checks. The final owner runs the gate once after
 the slice is complete and reports commands, exit codes, coverage, limitations,
 and the inspected diff including untracked files. The reviewer reuses
-current evidence and can reproduce a specific finding. Missing or stale
-evidence returns to the gate owner. Relevant implementation/test/dependency/
-check-environment changes require updated evidence and a fresh full code gate.
+current evidence and can specify a targeted reproduction for a specific
+finding. Missing or stale evidence returns to the gate owner. Relevant
+implementation/test/dependency/check-environment changes require updated
+evidence and a fresh full code gate.
 
 ```sh
 uv run ruff check .
@@ -182,9 +193,9 @@ one commit. Keep commit bodies to one or two lines when sufficient.
 
 ## Project records
 
-The architect owns design and ticket issuance, not implementation or closure.
-The orchestrator owns attempt counters and closure. The following protocol
-documents are Git-excluded:
+The architect owns design and ticket issuance, except for the trivial path
+above; never implementation or closure. The orchestrator owns attempt counters
+and closure. The following protocol documents are Git-excluded:
 
 - `docs/PROJECT.md`: approved architecture.
 - `docs/TASKS.md`: project rules and open tickets only — conventions, the AC
