@@ -168,9 +168,8 @@ services:
     # Shutdown budgets in app/main.py are sequential: 30 (in-flight updates)
     # + 45 (scheduler stop) + 5 (scheduler cancel) + 10 (WB token step: closing
     # the browser) + 10 (Ozon access step, close_ozon_access) = 100 s.
-    # A polling task that has not started, or that ignores cancellation, is
-    # bounded by 5 s + 5 s and stays inside the remaining 20 s margin for
-    # steps without their own budget. Total remains 120 s.
+    # Polling has up to 5 s for the dispatcher's stop request, 5 s to join
+    # and 5 s after cancellation. The 120 s grace leaves 5 s for other steps.
     # Recompute if a constant changes or the process tree changes.
     # `init` is on: with it the exit code of uvicorn on SIGTERM is 143, not 0;
     # `restart: unless-stopped` does not care.

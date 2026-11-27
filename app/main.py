@@ -58,7 +58,6 @@ _SCHEDULER_STOP_TIMEOUT_SECONDS: Final[float] = 45.0
 _SCHEDULER_CANCEL_TIMEOUT_SECONDS: Final[float] = 5.0
 _WB_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 _OZON_ACCESS_CLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
-# A stop that lands before aiogram takes its lock must not wait forever.
 _POLLING_STOP_TIMEOUT_SECONDS: Final[float] = 5.0
 _POLLING_NOT_STARTED: Final[str] = "Polling is not started"
 
@@ -141,16 +140,16 @@ async def _ensure_telegram_available(bot: Bot) -> None:
 async def _stop_polling_if_running(
     dispatcher: Dispatcher, polling_task: "asyncio.Task[None]"
 ) -> None:
-    """Stop polling, or cancel it if it has not taken aiogram's lock yet.
-
-    ``stop_polling`` raises ``RuntimeError`` when ``start_polling`` has not
-    acquired its lock. Leaving the task running then makes the following wait
-    hang until the process is killed.
-    """
+    """Request graceful polling shutdown, with cancellation as a fallback."""
     if polling_task.done():
         return
     try:
-        await dispatcher.stop_polling()
+        # aiogram waits for its stopped event after sending the stop signal.
+        async with asyncio.timeout(_POLLING_STOP_TIMEOUT_SECONDS):
+            await dispatcher.stop_polling()
+    except TimeoutError:
+        logger.warning("Dispatcher did not stop polling in time; cancelling the task")
+        polling_task.cancel()
     except RuntimeError as exc:
         if _POLLING_NOT_STARTED not in str(exc):
             raise

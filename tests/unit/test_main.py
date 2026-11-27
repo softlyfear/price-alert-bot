@@ -1106,6 +1106,33 @@ async def test_shutdown_cancels_polling_that_has_not_started_instead_of_hanging(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_continues_when_dispatcher_never_finishes_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder()
+    doubles = _build_shutdown_doubles(recorder)
+    _patch_generic_shutdown_steps(monkeypatch, recorder, doubles)
+    monkeypatch.setattr(main, "_POLLING_STOP_TIMEOUT_SECONDS", 0.01)
+
+    async def stuck_stop() -> None:
+        recorder.events.append("stop_polling")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(doubles.dispatcher, "stop_polling", stuck_stop)
+    try:
+        await asyncio.wait_for(doubles.shutdown(), timeout=1)
+        assert doubles.polling_task.cancelled()
+        assert recorder.events == _EXPECTED_ORDER
+    finally:
+        for task in (doubles.polling_task, doubles.scheduler_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(
+            doubles.polling_task, doubles.scheduler_task, return_exceptions=True
+        )
+
+
+@pytest.mark.asyncio
 async def test_await_polling_task_cancels_when_the_wait_budget_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
