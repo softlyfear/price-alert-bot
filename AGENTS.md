@@ -51,6 +51,8 @@ The redis dependency exists for FSM storage.
 
 ## Ticket pipeline
 
+OpenCode starts new sessions with the project `orchestrator` primary agent.
+
 One ticket is a completed vertical user/operator outcome, not a technical
 layer. It has one independent review and one commit. Split chains exceeding about
 four implementers into separate coherent slices. Layer-only tickets are for

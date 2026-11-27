@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
   // Python formatting uses the same uv-managed ruff invocation as the former
   // post-edit hook. Other built-ins stay off so only that formatter runs.
   "formatter": {
