@@ -36,6 +36,27 @@ def test_product_fetched_at_rejects_naive_datetime() -> None:
         MarketplaceProductData(name="Item", price=1, fetched_at=datetime(2026, 1, 1))  # noqa: DTZ001
 
 
+def test_failure_fetched_at_is_optional_and_normalized_to_utc() -> None:
+    reason = FetchFailureReason.out_of_stock
+    assert MarketplaceFetchFailure(reason=reason).fetched_at is None
+    assert MarketplaceFetchFailure(reason=reason, fetched_at=None).fetched_at is None
+
+    received = datetime(2026, 11, 14, 12, tzinfo=timezone(timedelta(hours=3)))
+    failure = MarketplaceFetchFailure(reason=reason, fetched_at=received)
+    assert failure.fetched_at == datetime(2026, 11, 14, 9, tzinfo=UTC)
+    assert failure.fetched_at is not None and failure.fetched_at.tzinfo is UTC
+
+
+def test_failure_fetched_at_rejects_naive_datetime() -> None:
+    with pytest.raises(ValidationError) as exc:
+        MarketplaceFetchFailure(
+            reason=FetchFailureReason.out_of_stock,
+            fetched_at=datetime(2026, 11, 14),  # noqa: DTZ001
+        )
+    assert exc.value.errors()[0]["loc"] == ("fetched_at",)
+    assert exc.value.errors()[0]["type"] == "timezone_aware"
+
+
 # Reference set of (member name, member value) pairs per PROJECT.md section
 # 2.6. A flat set of bare values would miss a swap between two existing
 # values (name diverges from its own value while the overall value set is

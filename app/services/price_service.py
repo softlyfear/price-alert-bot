@@ -90,8 +90,6 @@ class PriceService:
         fetched_at = datetime.now(UTC)
         return {
             article: result.model_copy(update={"fetched_at": fetched_at})
-            if isinstance(result, MarketplaceProductData)
-            else result
             for article, result in results.items()
         }
 
@@ -121,12 +119,12 @@ class PriceService:
     ) -> FetchFailureReason | None:
         """Write a fetch result to the loaded product and notify (no commit)."""
 
-        if (
-            isinstance(market_data, MarketplaceProductData)
-            and market_data.fetched_at is not None
+        covered_by_stored_price = (
+            market_data.fetched_at is not None
             and product.price_fetched_at is not None
             and market_data.fetched_at <= product.price_fetched_at
-        ):
+        )
+        if covered_by_stored_price and isinstance(market_data, MarketplaceProductData):
             return None
 
         alert_repo = self._alert_repo_factory(session)
@@ -135,18 +133,6 @@ class PriceService:
         market_data = select_wb_size(market_data, product.wb_size_id or 0)
 
         if isinstance(market_data, MarketplaceFetchFailure):
-            # Any failure category updates `last_checked_at` and the persisted
-            # availability status; the known price is never overwritten on a
-            # failed fetch (PROJECT.md section 2.6). `isinstance` narrows
-            # `market_data` to
-            # `MarketplaceFetchFailure` here and, by exclusion on the
-            # two-member `MarketplaceFetchResult` alias, to
-            # `MarketplaceProductData` past this block - a copy of
-            # `app/schemas/marketplace.py` with the alias widened to
-            # `object` breaks that exclusion and `mypy --strict` rejects the
-            # `.price` access below (see the ticket report).
-            product.last_checked_at = now_utc
-            product.last_failure = product_failure(market_data.reason)
             log_context = logger.bind(
                 product_id=product.id,
                 article=product.article,
@@ -157,6 +143,12 @@ class PriceService:
             log_context.log(
                 failure_log_level(market_data.reason), "Marketplace fetch failed"
             )
+            # Covered successes return before projection, so this only skips
+            # persistence of a raw failure, not a selected-size outcome.
+            if covered_by_stored_price:
+                return market_data.reason
+            product.last_checked_at = now_utc
+            product.last_failure = product_failure(market_data.reason)
             await session.flush()
             return market_data.reason
 

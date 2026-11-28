@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.services.price_service as price_service_module
 from app.models.enums import AlertDirection
 from app.models.enums import Marketplace
+from app.models.enums import ProductFailure
 from app.repositories.alert import AlertRepository
 from app.repositories.product import ProductRepository
 from app.repositories.user import UserRepository
@@ -220,6 +221,7 @@ async def test_apply_result_never_assigns_triggered_at() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("covered", [False, True], ids=["newer", "covered"])
 @pytest.mark.parametrize(
     ("reason", "level"),
     [
@@ -230,13 +232,19 @@ async def test_apply_result_never_assigns_triggered_at() -> None:
         (FetchFailureReason.out_of_stock, "INFO"),
     ],
 )
-async def test_apply_result_failure_changes_only_last_checked_at(
-    frozen_now: datetime, reason: FetchFailureReason, level: str
+async def test_apply_result_logs_failure_whether_or_not_it_changes_status(
+    frozen_now: datetime, reason: FetchFailureReason, level: str, covered: bool
 ) -> None:
-    """AC3(б). Each category: price untouched, no alert evaluation, one flush, one
-    record at the level of PROJECT.md 8.4 carrying the product context."""
     product = _make_product(current_price=142_900, previous_price=100_000)
-    failure = MarketplaceFetchFailure(reason=reason, detail="why")
+    product.price_fetched_at = _NOW - timedelta(minutes=3)
+    previous_check = _NOW - timedelta(minutes=1)
+    product.last_checked_at = previous_check
+    product.last_failure = ProductFailure.transport_error
+    failure = MarketplaceFetchFailure(
+        reason=reason,
+        detail="why",
+        fetched_at=_NOW - timedelta(minutes=4 if covered else 2),
+    )
     harness = _build_harness(
         product=product,
         market_data=failure,
@@ -250,22 +258,31 @@ async def test_apply_result_failure_changes_only_last_checked_at(
 
     sink_id = logger.add(_sink, level=0)
     try:
-        await harness.service.apply_result(1, failure, _session(harness))
+        outcome = await harness.service.apply_result(1, failure, _session(harness))
     finally:
         logger.remove(sink_id)
 
     assert product.current_price == 142_900
     assert product.previous_price == 100_000
-    assert product.last_checked_at == frozen_now
+    assert outcome is reason
+    assert product.last_checked_at == (previous_check if covered else frozen_now)
+    assert product.last_failure is (
+        ProductFailure.transport_error if covered else ProductFailure(reason.value)
+    )
     harness.alert_repo.get_active_by_product.assert_not_called()
     harness.user_repo.get_by_id.assert_not_called()
     harness.notification.send_alert.assert_not_called()
-    _flush(harness).assert_called_once()
+    if covered:
+        _flush(harness).assert_not_awaited()
+    else:
+        _flush(harness).assert_awaited_once()
     assert len(records) == 1
     assert records[0]["level"].name == level
     assert records[0]["extra"]["reason"] == reason.value
     assert records[0]["extra"]["detail"] == "why"
     assert records[0]["extra"]["product_id"] == product.id
+    assert records[0]["extra"]["article"] == product.article
+    assert records[0]["extra"]["marketplace"] == product.marketplace.value
 
 
 @pytest.mark.asyncio
@@ -386,40 +403,61 @@ def _service_with_factory(
 
 
 @pytest.mark.asyncio
-async def test_fetch_prices_stamps_success_copies_and_preserves_failures(
-    frozen_now: datetime,
+async def test_fetch_prices_stamps_all_copies_once_after_batch_return(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     http = _http()
-    expected: dict[int, MarketplaceFetchResult] = {
-        5: MarketplaceProductData(
-            name="Пять", price=500, fetched_at=datetime(2020, 1, 1, tzinfo=UTC)
+    supplied_at = datetime(2020, 1, 1, tzinfo=UTC)
+    completed_at = _NOW + timedelta(seconds=1)
+    source: dict[int, MarketplaceFetchResult] = {
+        5: MarketplaceProductData(name="Пять", price=500, fetched_at=supplied_at),
+        6: MarketplaceFetchFailure(
+            reason=FetchFailureReason.out_of_stock,
+            detail="no price",
+            product_name="Шесть",
+            fetched_at=supplied_at,
         ),
-        6: MarketplaceFetchFailure(reason=FetchFailureReason.not_found),
         7: MarketplaceProductData(name="Семь", price=700),
+        8: MarketplaceFetchFailure(reason=FetchFailureReason.bad_payload),
     }
+    clock = MagicMock()
+    clock.now.return_value = _NOW
+    monkeypatch.setattr(price_service_module, "datetime", clock)
+
+    async def receive(_articles: list[int]) -> dict[int, MarketplaceFetchResult]:
+        clock.now.return_value = completed_at
+        return source
+
     client = MagicMock(spec=BaseMarketplaceClient)
-    client.get_products_data.return_value = expected
+    client.get_products_data.side_effect = receive
     calls: list[tuple[Marketplace, httpx.AsyncClient]] = []
     service = _service_with_factory(calls, cast(BaseMarketplaceClient, client), http)
 
-    result = await service.fetch_prices(Marketplace.ozon, [5, 6, 7])
+    result = await service.fetch_prices(Marketplace.ozon, [5, 6, 7, 8])
 
     assert result == {
-        5: MarketplaceProductData(name="Пять", price=500, fetched_at=frozen_now),
-        6: expected[6],
-        7: MarketplaceProductData(name="Семь", price=700, fetched_at=frozen_now),
+        5: MarketplaceProductData(name="Пять", price=500, fetched_at=completed_at),
+        6: MarketplaceFetchFailure(
+            reason=FetchFailureReason.out_of_stock,
+            detail="no price",
+            product_name="Шесть",
+            fetched_at=completed_at,
+        ),
+        7: MarketplaceProductData(name="Семь", price=700, fetched_at=completed_at),
+        8: MarketplaceFetchFailure(
+            reason=FetchFailureReason.bad_payload, fetched_at=completed_at
+        ),
     }
-    assert result[5] is not expected[5]
-    assert result[7] is not expected[7]
-    assert result[6] is expected[6]
-    original = expected[5]
-    assert isinstance(original, MarketplaceProductData)
-    assert original.fetched_at == datetime(2020, 1, 1, tzinfo=UTC)
-    original_other = expected[7]
-    assert isinstance(original_other, MarketplaceProductData)
-    assert original_other.fetched_at is None
+    assert all(result[article] is not original for article, original in source.items())
+    assert {article: item.fetched_at for article, item in source.items()} == {
+        5: supplied_at,
+        6: supplied_at,
+        7: None,
+        8: None,
+    }
+    clock.now.assert_called_once_with(UTC)
     assert calls == [(Marketplace.ozon, http)]
-    client.get_products_data.assert_called_once_with([5, 6, 7])
+    client.get_products_data.assert_awaited_once_with([5, 6, 7, 8])
     client.get_product_data.assert_not_called()
 
 

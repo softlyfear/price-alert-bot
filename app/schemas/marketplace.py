@@ -88,6 +88,12 @@ class MarketplaceFetchFailure(BaseModel):
     # Set only when the product itself was identified but has no price to
     # track (`out_of_stock`): the add dialog offers to track it anyway.
     product_name: Annotated[str | None, Field(max_length=150)] = None
+    fetched_at: AwareDatetime | None = None
+
+    @field_validator("fetched_at")
+    @classmethod
+    def _normalize_fetched_at(cls, value: datetime | None) -> datetime | None:
+        return value.astimezone(UTC) if value is not None else None
 
 
 type MarketplaceFetchResult = MarketplaceProductData | MarketplaceFetchFailure
